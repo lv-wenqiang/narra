@@ -273,7 +273,9 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 **两处实现决策**（TS 原版行为与 Rust 实现的取舍）：
 
 1. **字体**：TS 原版水印用 Inter。Rust 版**统一用 `dingliesongtypeface`**，不再内嵌第二套字体——可省约 500KB 二进制体积，代价是水印的拉丁字形与现状有可见差异。水印在 27%~40% 不透明度下属装饰元素，判定可接受。
-2. **GitHub 图标**：原版是单条 SVG path（`fill="currentColor"`，纯单色）。Rust 版**预先光栅化为 128px 的 alpha 通道 PNG 内嵌**，绘制时按预设颜色着色并缩放到目标尺寸。这样避免引入 SVG 解析依赖（`resvg`/`usvg`）。
+2. **GitHub 图标**：原版是单条 SVG path（`fill="currentColor"`，纯单色，含 `a` 圆弧指令）。Rust 版**内嵌 SVG 源码，启动时用 `resvg` 光栅化一次并缓存**，绘制时按预设颜色着色。
+
+   选它而非"预先光栅化成 PNG 内嵌"的原因有二：(a) 本机没有任何 SVG 光栅化工具（`resvg`/`rsvg-convert`/`inkscape`/`magick` 均不存在），生成不出那个 PNG；(b) `resvg` 的渲染后端本来就是 `tiny-skia`，与本项目的 2D 栈同源，不引入第二套图形依赖。路径里的圆弧指令也意味着手写 path 解析不划算。
 
 ### 8.5 动画函数移植
 
