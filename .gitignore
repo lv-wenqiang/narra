@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+
+# 本地素材与产物
+/output
+/assets/bg
