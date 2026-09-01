@@ -171,7 +171,9 @@ segment_duration = paragraph_duration * segment_chars / paragraph_chars
 
 ### 7.5 时间格式
 
-`HH:MM:SS.mmm`，秒数保留 3 位小数后截断取前 3 位（`toFixed(3)` 后 `slice(0,3)`）。注意这是**截断**而非四舍五入，Rust 侧要显式对齐。
+`HH:MM:SS.mmm`。TS 实现是 `secs.toFixed(3).split('.')` 后 `slice(0,3).padEnd(3,'0')`——由于 `toFixed(3)` 恒定产出 3 位小数，后两步是恒等操作，因此实际语义是**四舍五入到 3 位小数**，Rust 用 `format!("{:.3}", secs)` 等价。
+
+时、分由 `Math.floor` 独立计算，秒由 `seconds % 60` 得出。**这会在秒数进位时产生已知缺陷**：例如 `59.9996` 会渲染成 `00:00:60.000`。首版为保证与 TS 版逐字节一致，**照样复刻此缺陷**，并在测试中显式记录。
 
 ## 8. 渲染子系统
 
