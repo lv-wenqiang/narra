@@ -2,7 +2,12 @@
 //
 // 覆盖：短中文文本（基本冒烟）、长文本（200 字以上）、不同音色（zh-CN-XiaoxiaoNeural）。
 // 顾虑 3（Task 0 遗留）：探针只验证过单次、单音色、短文本，这里补齐长文本 + 换音色的验证。
+//
+// 必修/Minor 8（复审）：只判断 `audio.len() > N` 对"服务端返回 N+1 字节垃圾"也会通过。
+// 落盘后用 `panda::duration::mp3_duration_seconds` 解码，断言能解出一个合理的时长，
+// 这样断言的是"确实是可播放的 mp3"，而不仅仅是"字节数够多"。
 
+use panda::duration::mp3_duration_seconds;
 use panda::tts::backend::TtsBackend;
 use panda::tts::edge::EdgeBackend;
 use std::time::Duration;
@@ -13,6 +18,11 @@ async fn synthesizes_a_short_chinese_line() {
     let b = EdgeBackend::new("zh-CN-YunjianNeural", Duration::from_secs(120));
     let r = b.synth("这是一段测试文本。").await.unwrap();
     assert!(r.audio.len() > 5000, "音频过小：{} 字节", r.audio.len());
+
+    let path = std::env::temp_dir().join("panda_edge_smoke_short.mp3");
+    std::fs::write(&path, &r.audio).unwrap();
+    let secs = mp3_duration_seconds(&path);
+    assert!(secs > 1.0, "落盘后应能解出 > 1 秒的可播放 mp3，实际 {secs}s");
 }
 
 #[tokio::test]
@@ -32,6 +42,11 @@ async fn synthesizes_a_long_chinese_paragraph() {
     let r = b.synth(text).await.unwrap();
     assert!(r.audio.len() > 20_000, "长文本音频过小：{} 字节", r.audio.len());
 
+    let path = std::env::temp_dir().join("panda_edge_smoke_long.mp3");
+    std::fs::write(&path, &r.audio).unwrap();
+    let secs = mp3_duration_seconds(&path);
+    assert!(secs > 10.0, "长文本落盘后应能解出较长时长，实际 {secs}s");
+
     let timings = r.timings.expect("长文本应收到 WordBoundary 元数据");
     assert!(
         timings.len() > 10,
@@ -39,7 +54,7 @@ async fn synthesizes_a_long_chinese_paragraph() {
         timings.len()
     );
     eprintln!(
-        "[long-text] 音频 {} 字节，WordBoundary {} 条",
+        "[long-text] 音频 {} 字节，时长 {secs}s，WordBoundary {} 条",
         r.audio.len(),
         timings.len()
     );
@@ -51,5 +66,10 @@ async fn synthesizes_with_a_different_voice() {
     let b = EdgeBackend::new("zh-CN-XiaoxiaoNeural", Duration::from_secs(120));
     let r = b.synth("这是使用另一个音色的测试文本。").await.unwrap();
     assert!(r.audio.len() > 5000, "音频过小：{} 字节", r.audio.len());
-    eprintln!("[xiaoxiao] 音频 {} 字节", r.audio.len());
+
+    let path = std::env::temp_dir().join("panda_edge_smoke_xiaoxiao.mp3");
+    std::fs::write(&path, &r.audio).unwrap();
+    let secs = mp3_duration_seconds(&path);
+    assert!(secs > 1.0, "落盘后应能解出 > 1 秒的可播放 mp3，实际 {secs}s");
+    eprintln!("[xiaoxiao] 音频 {} 字节，时长 {secs}s", r.audio.len());
 }

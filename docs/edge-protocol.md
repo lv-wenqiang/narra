@@ -57,21 +57,40 @@ fn sec_ms_gec(unix_secs: u64) -> String {
 
 ## 必需的 WebSocket 请求头
 
+**（Task 6 更新，2026-09-01）：以下四个头已通过消融实验确认为必需/足够，`docs` 本节
+之前列的另外三个头——`Accept-Encoding`、`Accept-Language`、`Cookie: muid=...`——已
+实测验证为非必需，Task 6 的生产实现已不再发送它们。**
+
 ```
 Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0
 Pragma: no-cache
 Cache-Control: no-cache
-Accept-Encoding: gzip, deflate, br, zstd
-Accept-Language: en-US,en;q=0.9
-Cookie: muid=<32 位随机大写 hex>;
 ```
 
 `Sec-WebSocket-Version: 13` 等标准握手头由 `tokio-tungstenite` 自动生成，不要手动设置
 （手动设置会与库内部重复/冲突）。
 
-`Cookie: muid=...` 不确定是否为必需项（edge-tts 会加，探针也加了、且探针一次成功），
-未做“去掉这个头是否仍然成功”的对照实验，Task 6 如需精简可自行验证后再去掉。
+### 消融实验结论（Task 6，针对真实端点）
+
+用临时探针针对 `speech.platform.bing.com` 做了逐个/组合去掉三个头的对照实验：
+
+| 模式 | 结果 |
+|---|---|
+| baseline（7 个头全部保留） | 成功 |
+| 只去掉 `Cookie: muid=...` | 成功 |
+| 只去掉 `Accept-Encoding` | 成功 |
+| 只去掉 `Accept-Language` | 成功 |
+| 三个一起去掉 | 成功（重复 4 轮均成功，不 flaky） |
+
+结论：服务端只依据 `Origin`/`User-Agent`/`Sec-MS-GEC`/`TrustedClientToken` 校验请求，
+这三个头对本机测试出口 IP 均非必需，已从生产实现中精简掉。
+
+**若在其他出口 IP（例如不同地区、不同云厂商、不同代理链路）上遇到 403，这三个头是
+第一个该恢复的回退项**——不能排除服务端的 WAF/风控策略按 IP 信誉分层生效，本机的
+"非必需"结论不能无条件推广到所有网络环境。恢复方式：在
+`src/tts/edge.rs::EdgeBackend::build_request` 里把这三个头加回去即可（原代码结构
+未变，加回是纯增量操作）。
 
 ## 消息 1：speech.config（TEXT 帧）
 
@@ -142,7 +161,7 @@ Path:ssml
 | Sec-MS-GEC 算法 | 取模写法：先乘 10^7 再对 3×10^9 取模 | 算法等价，已改写成先对 300 取模再乘 10^7（更接近 Python 源码，可读性更好），两种写法都对 |
 | `TrustedClientToken` | `6A5AA1D4EAFF4E9FB37E23D68491D6F4` | 一致，未变 |
 | 二进制帧结构（2 字节大端头部长度） | 假设如此 | 核实一致 |
-| 额外请求头 | brief 只给了 4 个头（Origin/User-Agent/Pragma/Cache-Control） | 额外加了 `Accept-Encoding`、`Accept-Language`、`Cookie: muid=...`（跟随 edge-tts，未做逐一去除的对照实验，不确定是否都必需） |
+| 额外请求头 | brief 只给了 4 个头（Origin/User-Agent/Pragma/Cache-Control） | 探针阶段跟随 edge-tts 额外加了 `Accept-Encoding`、`Accept-Language`、`Cookie: muid=...`；Task 6 做了消融实验（见上文「消融实验结论」），确认这三个头非必需，生产实现只保留 brief 原本的 4 个头 |
 
 ## 遇到并解决的问题
 
