@@ -18,7 +18,17 @@ pub fn concat_list_body(inputs: &[PathBuf]) -> Result<String> {
     let mut lines = Vec::with_capacity(inputs.len());
     for p in inputs {
         let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-        let s = abs.to_string_lossy().replace('\'', r"'\''");
+        let path_str = abs.to_string_lossy();
+
+        // concat 清单是逐行文本格式，无法承载含换行符的路径
+        if path_str.contains('\n') || path_str.contains('\r') {
+            bail!(
+                "concat 清单是逐行文本格式，无法承载含换行符的路径：{}",
+                path_str
+            );
+        }
+
+        let s = path_str.replace('\'', r"'\''");
         lines.push(format!("file '{s}'"));
     }
     Ok(lines.join("\n"))

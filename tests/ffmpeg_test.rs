@@ -32,3 +32,11 @@ fn rejects_empty_input_list() {
     let err = panda::ffmpeg::merge_mp3_with_speed(&[], Path::new("/tmp/x.mp3"), 1.1).unwrap_err();
     assert!(err.to_string().contains("no input files"));
 }
+
+#[test]
+fn rejects_paths_with_newlines() {
+    let err = panda::ffmpeg::concat_list_body(&[PathBuf::from("/tmp/with\nnewline.mp3")]).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("换行符") || msg.contains("newline"));
+    assert!(msg.contains("/tmp/with"));
+}
