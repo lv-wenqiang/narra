@@ -181,6 +181,21 @@ mod tests {
     }
 
     #[test]
+    fn split_scans_beyond_lookahead_in_phase3() {
+        // 专门测试 Phase 3 分支：标点落在 [max_length*2, ...) 外
+        // 构造：30 个"一" + 30 个"二" + "。" + 10 个字
+        // 总长 71。Phase 2 扫描 [30, 60)（不含 60），标点恰好在 60，所以 Phase 2 找不到，
+        // 必须进 Phase 3 从 [30, 71) 全扫描才能找到。
+        let text = "一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一二二二二二二二二二二二二二二二二二二二二二二二二二二二二二二。一二三四五六七八九十";
+        assert_eq!(text.chars().count(), 71);
+        let got = split_text_for_vtt(text, 30);
+        assert_eq!(got.len(), 2, "期望切成 2 个片段");
+        assert!(got[0].ends_with('。'), "第一个片段应以「。」结尾");
+        assert_eq!(got[0].chars().count(), 61, "第一个片段应为 61 个字符");
+        assert_eq!(got[1], "一二三四五六七八九十", "第二个片段应为剩余 10 字");
+    }
+
+    #[test]
     fn vtt_starts_with_header_and_numbers_cues_from_one() {
         let lines = vec!["第一段。".to_string(), "第二段。".to_string()];
         let out = generate_vtt(&lines, &[2.0, 3.0], 30);
