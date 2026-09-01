@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tokio::task::{JoinSet, LocalSet};
+use tokio::task::JoinSet;
 
 use crate::duration::mp3_duration_seconds;
 use crate::ffmpeg;
@@ -84,12 +84,15 @@ pub async fn process_narration_file(
 /// 取消 / 清理这些无法用真实网络稳定复现的行为，能够用一个可控的假后端
 /// 做确定性的离线测试（见下方 `tests` 模块）。
 ///
-/// 用 `JoinSet::spawn_local` 而非 `tokio::spawn`：原生 `async fn` trait 方法
-/// （`TtsBackend::synth`）返回的 Future 类型没有对外暴露、也无法在不修改
-/// `backend.rs` 的前提下约束其 `Send`，`tokio::spawn` 要求 Future: Send 会
-/// 在泛型场景下无法通过编译。`spawn_local` 不要求 Send，只需要在 `LocalSet`
-/// 内运行；由于本流水线是网络 IO 密集型而非 CPU 密集型，单线程协作式并发
-/// 仍能拿到并发等待网络的收益（不影响此前审查已确认的并发上限/顺序行为）。
+/// 用 `tokio::spawn`（而非 `spawn_local`）调度每段合成任务：`TtsBackend::synth`
+/// 现在显式声明返回 `impl Future<...> + Send`（见 `src/tts/backend.rs`），
+/// 所以这里可以直接要求 `B: TtsBackend + Send + Sync + 'static`，让
+/// `run_pipeline`（进而 `process_narration_file`）返回的 Future 保持 `Send`，
+/// 可以被外部 `tokio::spawn` 调度——这是下一个任务（CLI 需要并行跑多个文稿 /
+/// 与进度 UI 并跑）能编译通过的前提。此前用 `LocalSet` + `spawn_local` 绕开
+/// Send 约束的做法已经废弃：那样会让 `process_narration_file` 返回的 Future
+/// 变成 `!Send`（内部持有 `Rc<tokio::task::local::Context>`），外部一
+/// `tokio::spawn` 包裹就编译失败。
 async fn run_pipeline<B>(
     backend: Arc<B>,
     lines: Vec<String>,
@@ -97,22 +100,7 @@ async fn run_pipeline<B>(
     opts: &ProcessOptions,
 ) -> Result<()>
 where
-    B: TtsBackend + 'static,
-{
-    let local = LocalSet::new();
-    local
-        .run_until(run_pipeline_inner(backend, lines, output_dir, opts))
-        .await
-}
-
-async fn run_pipeline_inner<B>(
-    backend: Arc<B>,
-    lines: Vec<String>,
-    output_dir: &Path,
-    opts: &ProcessOptions,
-) -> Result<()>
-where
-    B: TtsBackend + 'static,
+    B: TtsBackend + Send + Sync + 'static,
 {
     let sem = Arc::new(Semaphore::new(opts.batch_size.max(1)));
     let total = lines.len();
@@ -132,14 +120,20 @@ where
         let path = output_dir.join(format!("sentence{index}.mp3"));
         let (backend, sem, text) = (backend.clone(), sem.clone(), text.clone());
 
-        set.spawn_local(async move {
+        set.spawn(async move {
             let _permit = sem.acquire_owned().await?;
             let preview: String = text.chars().take(40).collect();
             let ellipsis = if text.chars().count() > 40 { "…" } else { "" };
             println!("[{index}/{total}] {preview}{ellipsis}");
 
             let audio = synth_with_retry(backend.as_ref(), &text).await?;
-            tokio::fs::write(&path, &audio).await?;
+            // 有意用同步 `std::fs::write` 而非 `tokio::fs::write`：后者内部走
+            // `spawn_blocking`，一旦已经派发给阻塞线程池，`abort()` 取消不掉
+            // 它——写操作可能在 cleanup 跑完之后才落地。段落音频只有几十 KB，
+            // 同步写入让这一步对 abort 变成原子的（要么在被取消前完整写完，
+            // 要么根本没开始写），零成本封死这条极窄的竞争窗口。
+            std::fs::write(&path, &audio)
+                .with_context(|| format!("写入 {} 失败", path.display()))?;
             let dur = mp3_duration_seconds(&path);
             println!("    ✅ {} ({dur:.2}s)\n", path.display());
             Ok::<(usize, PathBuf, f64), anyhow::Error>((index, path, dur))
@@ -179,7 +173,7 @@ where
     }
 
     if let Some(e) = first_err {
-        cleanup_sentence_files(output_dir, total).await;
+        cleanup_after_failure(output_dir, total).await;
         return Err(e);
     }
 
@@ -196,7 +190,7 @@ where
         merged.display()
     );
     if let Err(e) = ffmpeg::merge_mp3_with_speed(&temp_paths, &merged, opts.speed_factor) {
-        cleanup_sentence_files(output_dir, total).await;
+        cleanup_after_failure(output_dir, total).await;
         return Err(e);
     }
 
@@ -204,13 +198,13 @@ where
 
     let vtt_path = output_dir.join("audio.vtt");
     if let Err(e) = tokio::fs::write(&vtt_path, generate_vtt(&lines, &adjusted, 30)).await {
-        cleanup_sentence_files(output_dir, total).await;
+        cleanup_after_failure(output_dir, total).await;
         return Err(e.into());
     }
     println!("📝 VTT：{}", vtt_path.display());
 
     println!("🗑️  清理 sentence*.mp3…");
-    cleanup_sentence_files(output_dir, total).await;
+    remove_sentence_files(output_dir, total).await;
 
     let total_secs: f64 = adjusted.iter().sum();
     println!(
@@ -222,12 +216,21 @@ where
 
 /// 尽力而为地删除 `sentence1.mp3..sentenceN.mp3`。路径是可预知的，不依赖
 /// 成功任务的返回值——失败时我们恰恰拿不到那些返回值。忽略删除失败（文件
-/// 本就可能从未写入过）。
-async fn cleanup_sentence_files(output_dir: &Path, total: usize) {
+/// 本就可能从未写入过）。成功路径也用它清理中间文件，此时不动 `audio.mp3`
+/// （那是本次运行的交付物）。
+async fn remove_sentence_files(output_dir: &Path, total: usize) {
     for i in 1..=total {
         let p = output_dir.join(format!("sentence{i}.mp3"));
         let _ = tokio::fs::remove_file(p).await;
     }
+}
+
+/// 失败退出时的清理：除了 `sentence*.mp3`，还要把可能已经生成的半成品
+/// `audio.mp3` 一并删掉——写 VTT 失败、或合并失败留下的半成品，看起来会
+/// 像一次成功的产出，具有误导性，不能留在目录里。
+async fn cleanup_after_failure(output_dir: &Path, total: usize) {
+    remove_sentence_files(output_dir, total).await;
+    let _ = tokio::fs::remove_file(output_dir.join("audio.mp3")).await;
 }
 
 #[cfg(test)]
@@ -253,6 +256,14 @@ mod tests {
     fn paragraphs_handle_crlf_line_endings() {
         let got = parse_paragraphs("第一行\r\n\r\n  第二行  \r\n\r\n第三行\r\n");
         assert_eq!(got, vec!["第一行", "第二行", "第三行"]);
+    }
+
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "panda_pipeline_{tag}_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
     }
 
     /// 假后端：按文本内容配置行为，用于离线、确定性地测试重试/取消/清理逻辑，
@@ -299,24 +310,22 @@ mod tests {
         assert_eq!(start.elapsed(), Duration::from_millis(6000));
     }
 
-    /// 必修项回归：复现审查者的孤儿任务实验。段落 A 会在重试耗尽后
-    /// （虚拟时间 6s）永久失败；段落 B/C 配置为 8s 后才会"成功写文件"。
-    /// 修复前的行为是：`run_pipeline` 在 t=6s 就返回 Err，但 B/C 的
-    /// `tokio::spawn` 任务不受影响地继续跑，在 t=8s 各自补写了
-    /// `sentence2.mp3` / `sentence3.mp3`——调用方早已认为这次运行失败，
-    /// 目录里却"事后"冒出了新文件。
+    /// 必修项回归：复现审查者的孤儿任务实验，并用耗时断言把 `abort_all` 钉住
+    /// （复审的变异测试发现：只看"目录是否为空"测不出删掉 `abort_all` 的
+    /// 回归——因为即便不 abort，drain 循环最终也会等到 B/C 真正跑完再清理，
+    /// 目录最终还是空的，只是要多等 2 秒）。
     ///
-    /// 修复后：一旦观测到 A 失败就 `abort_all` 并 drain 到底，因此
-    /// (a) 函数返回瞬间目录里不应有任何 sentence*.mp3；
-    /// (b) 把虚拟时钟推过原本 B/C 会完成的 t=8s 之后，目录里依然没有
-    ///     新文件出现——证明 B/C 是被真正取消掉了，而不是碰巧还没跑到。
+    /// 场景：段落 A 会在重试耗尽后（虚拟时间 6s）永久失败；段落 B/C 配置为
+    /// 8s 后才会"成功写文件"。
+    /// - 有 `abort_all`：A 失败后立刻取消 B/C，drain 在 t=6s 就结束。
+    /// - 没有 `abort_all`：B/C 不受影响地跑到 t=8s 才自然完成，drain 才结束。
+    ///
+    /// 所以断言总耗时**恰好** 6s（而不是 8s），才能把 `abort_all` 这个机制
+    /// 本身钉住，而不只是钉住"最终目录为空"这个由 drain 循环单独就能保证
+    /// 的结果。
     #[tokio::test(start_paused = true)]
     async fn failing_segment_aborts_in_flight_tasks_and_leaves_no_orphan_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "panda_pipeline_orphan_test_{}_{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let dir = unique_tmp_dir("orphan_test");
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
         let mut behavior = HashMap::new();
@@ -333,8 +342,18 @@ mod tests {
             timeout: Duration::from_secs(60),
         };
 
+        let start = tokio::time::Instant::now();
         let result = run_pipeline(backend, lines, &dir, &opts).await;
         assert!(result.is_err(), "段落 A 永久失败后整体应返回 Err");
+
+        // 关键断言：恰好 6s，不是 8s。这把 abort_all 钉住——去掉它之后
+        // drain 循环要等 B/C 在 t=8s 自然完成才能结束。
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_secs(6),
+            "应在 A 耗尽重试的 t=6s 就返回（B/C 应已被 abort_all 取消，\
+             而不是等到它们 t=8s 自然完成）"
+        );
 
         let list = |dir: &Path| -> Vec<String> {
             std::fs::read_dir(dir)
@@ -358,5 +377,72 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// 加固项：把 cleanup 钉住。复审的变异测试发现：只删掉合成失败出口的
+    /// `cleanup_sentence_files` 调用，上面那条孤儿任务测试仍然通过——因为
+    /// 那条测试里 B/C 从未真正落盘过（它们在写文件之前就被 abort 了），
+    /// 所以"目录为空"这个结果跟 cleanup 是否被调用无关，测不出 cleanup
+    /// 被删掉的回归。
+    ///
+    /// 这里构造一个不同的场景：段落 S 在 F 永久失败之前就已经**成功落盘**
+    /// （S 在 t=1s 完成，F 在 t=6s 才耗尽重试），所以 sentence1.mp3 在错误
+    /// 出现前就已经是磁盘上的真实文件，不依赖任何取消时机。如果 cleanup
+    /// 被删掉，它会在函数返回后原样残留；断言它必须消失，就把 cleanup
+    /// 这个机制本身钉住了。
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_removes_a_segment_file_that_had_already_succeeded_before_the_failure() {
+        let dir = unique_tmp_dir("cleanup_pin_test");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let mut behavior = HashMap::new();
+        behavior.insert("S".to_string(), Behavior::SucceedAfter(Duration::from_secs(1)));
+        behavior.insert("F".to_string(), Behavior::AlwaysFail);
+        let backend = Arc::new(FakeBackend { behavior });
+
+        let lines = vec!["S".to_string(), "F".to_string()];
+        let opts = ProcessOptions {
+            voice: "irrelevant".into(),
+            speed_factor: 1.1,
+            batch_size: 2,
+            timeout: Duration::from_secs(60),
+        };
+
+        let result = run_pipeline(backend, lines, &dir, &opts).await;
+        assert!(result.is_err(), "段落 F 永久失败后整体应返回 Err");
+
+        // sentence1.mp3 对应 "S"：它在 t=1s 就已经真实成功落盘，早于 F 在
+        // t=6s 才暴露的失败。如果没有 cleanup，它会原样残留在目录里。
+        assert!(
+            !dir.join("sentence1.mp3").exists(),
+            "已经成功落盘的 sentence1.mp3 应该在失败退出时被 cleanup 清理掉"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// 必修项 1 的核心验收点：`process_narration_file` 返回的 Future 必须是
+    /// `Send`，否则下一个任务（CLI）想 `tokio::spawn` 并行处理多个文稿、或
+    /// 与进度 UI 并跑时会直接编译失败（这正是引入 `LocalSet` 后出现过的
+    /// 真实回归：`E0277: Rc<tokio::task::local::Context> cannot be sent
+    /// between threads safely`）。这里不是纸面上的编译期断言，而是真的
+    /// `tokio::spawn` 一次、真的 `.await` 它、真的断言返回值——如果 Future
+    /// 不是 Send，这个测试函数本身就编译不过。
+    #[tokio::test]
+    async fn process_narration_file_future_is_send_and_spawnable() {
+        let dir = unique_tmp_dir("send_probe");
+        let missing_input = dir.join("does-not-exist.txt");
+        let opts = ProcessOptions {
+            voice: "zh-CN-XiaoxiaoNeural".into(),
+            speed_factor: 1.1,
+            batch_size: 1,
+            timeout: Duration::from_millis(50),
+        };
+
+        let handle =
+            tokio::spawn(async move { process_narration_file(&missing_input, &dir, &opts).await });
+
+        let result = handle.await.expect("spawn 出去的任务不应 panic 或被取消");
+        assert!(result.is_err(), "读取不存在的文稿应该报错，而不是 panic 或挂起");
     }
 }
