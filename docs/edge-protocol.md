@@ -184,10 +184,14 @@ Could not automatically determine the process-level CryptoProvider from Rustls c
    显式 `--no-default-features` 只留 `ring` 后端即可避免这个依赖，且更轻量。）
 2. 程序入口处调用一次：
    ```rust
-   rustls::crypto::ring::default_provider()
-       .install_default()
-       .expect("安装 rustls ring CryptoProvider 失败");
+   let _ = rustls::crypto::ring::default_provider().install_default();
    ```
+   **不要用 `.expect(...)` 包裹返回值**（Task 6 复审已实测踩过这个坑并修复）：
+   `install_default()` 在进程里**已经有 provider**时会返回 `Err`——这既包括这段代码
+   自己被调用了不止一次的情况，也包括宿主进程或其他库先一步装好了 provider 的情况；
+   单靠 `Once`/"只调一次"的保证防不住后一种情况。用 `.expect(...)` 会在这些完全正常
+   的场景下把程序直接 panic 掉。忽略返回值即可：失败恰恰说明已经有可用的 provider，
+   正是我们想要的结果，不需要区分"谁装的"。
 
 ### 2. 网络环境
 

@@ -35,10 +35,10 @@ fn generate_muid() -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     // rustls 0.23 需要显式安装 CryptoProvider；用 ring 后端（见 docs/edge-protocol.md
-    // 的“遇到并解决的问题”一节）。
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("安装 rustls ring CryptoProvider 失败");
+    // 的“遇到并解决的问题”一节）。忽略返回值而不是 `.expect(...)`：install_default()
+    // 在进程里已有 provider 时返回 Err，Once/"只调一次"防不住"别人先装好了"这种情况，
+    // `.expect(...)` 会在完全正常的场景下把程序 panic 掉（Task 6 复审已实测踩过并修复）。
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
