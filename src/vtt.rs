@@ -1,13 +1,14 @@
-/// 移植自 packages/tts-node/src/vtt.ts 的 formatVttTime。
-/// 时分用 floor 独立计算，秒取 `seconds % 60` 后四舍五入到 3 位小数——
-/// 与 TS 版一致，包括秒进位不回填的缺陷。
+/// 格式化为 WebVTT 时间戳 `HH:MM:SS.mmm`。
+/// 先把秒四舍五入到毫秒再拆分时/分/秒，因此进位始终正确
+/// （`59.9996` → `00:01:00.000`，而非 TS 原版会产生的非法值 `00:00:60.000`）。
 pub fn format_vtt_time(seconds: f64) -> String {
-    let hours = (seconds / 3600.0).floor() as i64;
-    let minutes = ((seconds % 3600.0) / 60.0).floor() as i64;
-    let secs = seconds % 60.0;
-    let formatted = format!("{:.3}", secs);
-    let (int_part, frac_part) = formatted.split_once('.').unwrap_or((formatted.as_str(), "000"));
-    format!("{:02}:{:02}:{:0>2}.{}", hours, minutes, int_part, frac_part)
+    let total_ms = (seconds * 1000.0).round().max(0.0) as u64;
+    let ms = total_ms % 1000;
+    let total_secs = total_ms / 1000;
+    let secs = total_secs % 60;
+    let minutes = (total_secs / 60) % 60;
+    let hours = total_secs / 3600;
+    format!("{hours:02}:{minutes:02}:{secs:02}.{ms:03}")
 }
 
 const SENTENCE_ENDINGS: [char; 3] = ['。', '！', '？'];
@@ -74,6 +75,49 @@ fn cut(segments: &mut Vec<String>, remaining: Vec<char>, pos: usize) -> Vec<char
     tail.trim().chars().collect()
 }
 
+/// 由段落文本与各段时长生成 WebVTT。
+/// 段落过长时先切句，再按 `片段字符数 / 原段字符数` 比例摊分该段时长。
+/// 片段经过 trim，其字符数之和可能小于原段，故摊分后的总时长可能略小于 duration。
+pub fn generate_vtt(lines: &[String], durations: &[f64], vtt_max_length: usize) -> String {
+    let mut out: Vec<String> = vec!["WEBVTT".to_string(), String::new()];
+    let mut current_time = 0.0_f64;
+    let mut vtt_index = 1_usize;
+
+    for (i, text) in lines.iter().enumerate() {
+        let duration = durations[i];
+        let segments = split_text_for_vtt(text, vtt_max_length);
+
+        let total_chars = text.chars().count().max(1) as f64;
+        let segment_durations: Vec<f64> = if segments.len() == 1 {
+            vec![duration]
+        } else {
+            segments
+                .iter()
+                .map(|s| duration * s.chars().count() as f64 / total_chars)
+                .collect()
+        };
+
+        for (segment_text, segment_duration) in segments.iter().zip(segment_durations) {
+            let start_time = current_time;
+            let end_time = current_time + segment_duration;
+
+            out.push(vtt_index.to_string());
+            out.push(format!(
+                "{} --> {}",
+                format_vtt_time(start_time),
+                format_vtt_time(end_time)
+            ));
+            out.push(segment_text.clone());
+            out.push(String::new());
+
+            current_time = end_time;
+            vtt_index += 1;
+        }
+    }
+
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,11 +135,12 @@ mod tests {
         assert_eq!(format_vtt_time(12.3456), "00:00:12.346");
     }
 
-    /// TS 版的已知缺陷：时分由 floor 独立计算，秒进位时不回填。
-    /// 首版刻意复刻以保证逐字节一致。
     #[test]
-    fn format_vtt_time_replicates_ts_carry_bug() {
-        assert_eq!(format_vtt_time(59.9996), "00:00:60.000");
+    fn format_vtt_time_carries_into_minutes() {
+        // 四舍五入到毫秒后恰好满 60 秒，必须进位而不是输出非法的 :60.000
+        assert_eq!(format_vtt_time(59.9996), "00:01:00.000");
+        assert_eq!(format_vtt_time(3599.9999), "01:00:00.000");
+        assert_eq!(format_vtt_time(59.9994), "00:00:59.999");
     }
 
     #[test]
@@ -133,5 +178,58 @@ mod tests {
         let text = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十";
         assert_eq!(text.chars().count(), 30);
         assert_eq!(split_text_for_vtt(text, 30), vec![text]);
+    }
+
+    #[test]
+    fn vtt_starts_with_header_and_numbers_cues_from_one() {
+        let lines = vec!["第一段。".to_string(), "第二段。".to_string()];
+        let out = generate_vtt(&lines, &[2.0, 3.0], 30);
+        assert!(out.starts_with("WEBVTT\n\n"), "缺少 WEBVTT 头：{out}");
+        assert!(out.contains("\n1\n00:00:00.000 --> 00:00:02.000\n第一段。\n"));
+        assert!(out.contains("\n2\n00:00:02.000 --> 00:00:05.000\n第二段。\n"));
+    }
+
+    #[test]
+    fn long_paragraph_splits_and_shares_duration_by_char_count() {
+        // 一段 40 字、含一个句号，会被切成两片；两片时长按字符数比例摊分
+        let text = "第一句话写得比较长一点用来触发切分。第二句话也在这里继续往后写。";
+        let lines = vec![text.to_string()];
+        let out = generate_vtt(&lines, &[10.0], 30);
+        let cues: Vec<&str> = out.lines().filter(|l| l.contains("-->")).collect();
+        assert_eq!(cues.len(), 2, "期望切成 2 条 cue，实得 {}：{out}", cues.len());
+        // 切片文本不丢字
+        assert!(out.contains("第一句话写得比较长一点用来触发切分。"));
+        assert!(out.contains("第二句话也在这里继续往后写。"));
+    }
+
+    #[test]
+    fn timeline_is_monotonically_increasing() {
+        let lines = vec![
+            "短句。".to_string(),
+            "这是一段明显更长的文字用来触发切句逻辑从而产生多条字幕。后面还有一句。".to_string(),
+            "结尾。".to_string(),
+        ];
+        let out = generate_vtt(&lines, &[1.5, 8.25, 2.0], 30);
+        let mut prev_end = 0.0_f64;
+        let mut cue_count = 0;
+        for line in out.lines().filter(|l| l.contains("-->")) {
+            let (start, end) = line.split_once(" --> ").unwrap();
+            let (s, e) = (parse_ts(start), parse_ts(end));
+            assert!(s >= prev_end - 1e-6, "时间轴回退：{line}");
+            assert!(e >= s, "cue 结束早于开始：{line}");
+            prev_end = e;
+            cue_count += 1;
+        }
+        assert!(cue_count >= 4, "期望至少 4 条 cue，实得 {cue_count}");
+    }
+
+    /// 把 `HH:MM:SS.mmm` 解析回秒，仅测试用。
+    fn parse_ts(s: &str) -> f64 {
+        let p: Vec<&str> = s.trim().split(':').collect();
+        let sec: Vec<&str> = p[2].split('.').collect();
+        p[0].parse::<f64>().unwrap() * 3600.0
+            + p[1].parse::<f64>().unwrap() * 60.0
+            + sec[0].parse::<f64>().unwrap()
+            + sec[1].parse::<f64>().unwrap() / 1000.0
     }
 }
