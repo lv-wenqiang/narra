@@ -71,6 +71,43 @@ Cache-Control: no-cache
 `Sec-WebSocket-Version: 13` 等标准握手头由 `tokio-tungstenite` 自动生成，不要手动设置
 （手动设置会与库内部重复/冲突）。
 
+## 时钟偏移校正（403/407 重试一次）
+
+**（终审必修项，2026-09-01 补充：生产实现里的这条协议层行为此前一直没记录进本文档。）**
+
+`Sec-MS-GEC` 的签名依赖本机 unix 时间（见上一节算法第 1 步），如果本机时钟与服务端
+时钟偏差过大（实测偏差 1 小时即会触发），服务端会以 HTTP `403` 或 `407` 拒绝
+WebSocket 握手。生产实现（`src/tts/edge.rs::EdgeBackend::connect`）内置一次自动重试：
+
+**触发条件**：`tokio_tungstenite::connect_async` 返回
+`Error::Http(resp)`，且 `resp.status()` 是 `403` 或 `407`。
+
+**如何从 `Date` 头解析偏移**：
+
+1. 读取响应头 `Date`（HTTP 标准头，服务端总会带），用 RFC 2822 格式解析
+   （`chrono::DateTime::parse_from_rfc2822`）。若响应没有 `Date` 头，或解析失败，
+   放弃重试，直接把原始 HTTP 状态码错误返回给调用方。
+2. 计算偏移：`skew = server_time.timestamp() - local_unix_secs()`（服务端时间减
+   本机时间，单位秒）。
+3. 把 `skew` 写入进程级全局状态 `CLOCK_SKEW_SECS`（`AtomicI64`）——**同一进程内
+   所有 `EdgeBackend` 实例共享同一份校正值**，因为本机时钟偏差不会在两次调用之间
+   变化，没必要每个实例各校正一次。
+
+**偏移如何应用**：后续（包括这次重试）计算 `Sec-MS-GEC` 时，不再直接用
+`local_unix_secs()`，而是用 `corrected_unix_secs() = (local_unix_secs() + skew).max(0)`
+——即“本机时间 + 已知偏移”，得到一个更接近服务端视角的时间戳，再代入
+`sec_ms_gec()` 算法。
+
+**重试几次**：只重试一次。第一次握手失败且成功从 `Date` 头算出偏移后，立即用校正
+后的时间戳重新走一遍“生成 URL → 发起握手”，再失败就不再重试，直接把第二次的错误
+（或“时钟偏移校正不适用”的错误）返回给调用方。也就是说一次 `connect()` 调用最多
+发起 **2 次** 握手尝试。
+
+**实现位置**：`try_correct_clock_skew()` 负责判断触发条件、解析 `Date`、写入
+`CLOCK_SKEW_SECS`；`corrected_unix_secs()` 负责在生成 `Sec-MS-GEC` 时应用偏移；
+重试循环本身在 `EdgeBackend::connect()` 里，用一个 `retried` 布尔位保证最多重试
+一次，避免死循环。
+
 ### 消融实验结论（Task 6，针对真实端点）
 
 用临时探针针对 `speech.platform.bing.com` 做了逐个/组合去掉三个头的对照实验：
@@ -119,6 +156,13 @@ Path:ssml
   </voice>
 </speak>
 ```
+
+> **排版说明（Task 0 提出、此前一直未补，2026-09-01 补充）**：上面这段 SSML 是为
+> 方便阅读手动缩进、换行的美化版。生产实现（`src/tts/edge.rs::synth_inner`）实际
+> 拼接、发送的是**单行、无缩进**的字符串——`<speak ...><voice ...><prosody ...>
+> 文本</prosody></voice></speak>` 中间没有任何换行或空格。二者语义完全等价（SSML
+> 是 XML，标签间的空白不影响解析），只是发送形态不同，照抄本文档时不要把换行/
+> 缩进也一并发送出去。
 
 **关键差异点（与 brief 假设不同，务必注意）**：`xml:lang` 固定写死为 `'en-US'`，
 **与 `voice name` 的实际语言无关**。这是 edge-tts 官方实现 `mkssml()` 里硬编码的行为
@@ -216,10 +260,14 @@ futures-util = "0.3.34"
 hex = "0.4.3"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.11.0"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "io-util", "net"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "io-util", "net", "sync", "fs"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 uuid = { version = "1.26.0", features = ["v4"] }
 ```
+
+`sync`、`fs` 两个 feature 是 Task 6 实现管线编排（`src/tts/pipeline.rs`）时补上的，
+探针阶段（本文档最初版本）不需要：`sync` 提供并发限流用的 `tokio::sync::Semaphore`，
+`fs` 提供异步的 `tokio::fs::read_to_string`/`write`/`remove_file`/`create_dir_all`。
 
 ## 参考来源
 

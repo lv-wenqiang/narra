@@ -46,9 +46,12 @@ async fn main() -> Result<()> {
             let opts = ProcessOptions {
                 voice: panda::tts::edge::normalize_voice_for_edge(&voice_raw),
                 speed_factor: config::SPEED_FACTOR,
-                batch_size: batch_size.map(|n| n.clamp(1, 8)).unwrap_or_else(|| {
-                    config::resolve_batch_size(std::env::var("EDGE_TTS_BATCH_SIZE").ok().as_deref())
-                }),
+                batch_size: match batch_size {
+                    Some(n) => config::resolve_batch_size_from_value(Some(n)),
+                    None => config::resolve_batch_size(
+                        std::env::var("EDGE_TTS_BATCH_SIZE").ok().as_deref(),
+                    ),
+                },
                 timeout: Duration::from_millis(config::resolve_timeout_ms(
                     std::env::var("EDGE_TTS_TIMEOUT_MS").ok().as_deref(),
                 )),

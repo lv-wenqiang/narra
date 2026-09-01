@@ -32,16 +32,6 @@ pub fn normalize_voice_for_edge(voice_raw: &str) -> String {
     v.replacen(':', "", 1)
 }
 
-/// 取音色名的前两段作为语言标签，不足两段时回退 zh-CN。
-pub fn voice_to_lang(voice: &str) -> String {
-    let parts: Vec<&str> = voice.split('-').collect();
-    if parts.len() >= 2 {
-        format!("{}-{}", parts[0], parts[1])
-    } else {
-        "zh-CN".to_string()
-    }
-}
-
 use crate::tts::backend::{Synthesized, TtsBackend, WordTiming};
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -378,13 +368,6 @@ mod tests {
             normalize_voice_for_edge("  zh-CN-YunjianNeural  "),
             "zh-CN-YunjianNeural"
         );
-    }
-
-    #[test]
-    fn lang_takes_first_two_segments() {
-        assert_eq!(voice_to_lang("zh-CN-YunjianNeural"), "zh-CN");
-        assert_eq!(voice_to_lang("en-US-AriaNeural"), "en-US");
-        assert_eq!(voice_to_lang("weird"), "zh-CN");
     }
 
     /// 必修 1：`install_default()` 在进程里已有 provider 时会返回 `Err`。这既覆盖

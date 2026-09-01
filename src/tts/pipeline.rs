@@ -173,7 +173,10 @@ where
     }
 
     if let Some(e) = first_err {
-        cleanup_after_failure(output_dir, total).await;
+        // 走到这里说明失败发生在合并之前：本次运行从未写过 audio.mp3，
+        // 传 `false` 确保清理不会碰 output_dir 里可能已经存在的、上一次
+        // 成功运行留下的 audio.mp3（见 cleanup_after_failure 文档注释）。
+        cleanup_after_failure(output_dir, total, false).await;
         return Err(e);
     }
 
@@ -190,7 +193,9 @@ where
         merged.display()
     );
     if let Err(e) = ffmpeg::merge_mp3_with_speed(&temp_paths, &merged, opts.speed_factor) {
-        cleanup_after_failure(output_dir, total).await;
+        // 合并本身失败：audio.mp3 没有被本次运行成功产出，传 `false`——
+        // 不动 output_dir 里可能已经存在的上一次成功产物。
+        cleanup_after_failure(output_dir, total, false).await;
         return Err(e);
     }
 
@@ -198,7 +203,9 @@ where
 
     let vtt_path = output_dir.join("audio.vtt");
     if let Err(e) = tokio::fs::write(&vtt_path, generate_vtt(&lines, &adjusted, 30)).await {
-        cleanup_after_failure(output_dir, total).await;
+        // 合并已经成功，audio.mp3 是本次运行刚写出的半成品：传 `true`，
+        // 必须清理掉，否则会留下一个没有对应 VTT 的孤儿音频文件。
+        cleanup_after_failure(output_dir, total, true).await;
         return Err(e.into());
     }
     println!("📝 VTT：{}", vtt_path.display());
@@ -225,12 +232,24 @@ async fn remove_sentence_files(output_dir: &Path, total: usize) {
     }
 }
 
-/// 失败退出时的清理：除了 `sentence*.mp3`，还要把可能已经生成的半成品
-/// `audio.mp3` 一并删掉——写 VTT 失败、或合并失败留下的半成品，看起来会
-/// 像一次成功的产出，具有误导性，不能留在目录里。
-async fn cleanup_after_failure(output_dir: &Path, total: usize) {
+/// 失败退出时的清理：`sentence*.mp3` 总是无条件清理（它们只可能是本次运行
+/// 写出来的中间文件）。`audio.mp3` 则只有在 `this_run_wrote_audio_mp3` 为
+/// `true`（即本次运行已经跑完合并、audio.mp3 确实是这次运行的半成品——例如
+/// 合并成功但随后写 VTT 失败）时才删除。
+///
+/// 这个参数是本轮终审必修项的核心：CLI 把 `output_dir` 接成了跨多次运行
+/// 稳定复用的目录（例如 `output/tts`），一次瞬时失败（网络抖动、Edge 临时
+/// 403、音色打错）如果在合并之前就发生——此时 `audio.mp3` 根本不存在于这
+/// 次运行的产出中，output_dir 里若有 `audio.mp3` 只可能是上一次成功运行
+/// 留下的好产物——无条件删除会把它连带上一次成功的 `audio.vtt` 一起变成
+/// 误导性的“看起来正常、实际半成品”状态（更糟的是留下一个没有音频对应的
+/// 孤儿 vtt）。只有当本次运行真的执行到“合并成功”这一步之后又失败时，
+/// `audio.mp3` 才是这次运行自己产出的半成品，才需要清理。
+async fn cleanup_after_failure(output_dir: &Path, total: usize, this_run_wrote_audio_mp3: bool) {
     remove_sentence_files(output_dir, total).await;
-    let _ = tokio::fs::remove_file(output_dir.join("audio.mp3")).await;
+    if this_run_wrote_audio_mp3 {
+        let _ = tokio::fs::remove_file(output_dir.join("audio.mp3")).await;
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +290,10 @@ mod tests {
     enum Behavior {
         AlwaysFail,
         SucceedAfter(Duration),
+        /// 返回调用方提供的真实音频字节（而非占位的全零字节），用于需要真的
+        /// 跑到 ffmpeg 合并阶段（进而验证合并成功后 `audio.mp3` 清理标志）
+        /// 的测试——全零字节不是合法 mp3，ffmpeg 合并会直接失败。
+        SucceedWithAudio(Vec<u8>),
     }
 
     struct FakeBackend {
@@ -287,9 +310,37 @@ mod tests {
                         timings: None,
                     })
                 }
+                Some(Behavior::SucceedWithAudio(bytes)) => Ok(Synthesized {
+                    audio: bytes.clone(),
+                    timings: None,
+                }),
                 _ => anyhow::bail!("模拟合成失败：{text}"),
             }
         }
+    }
+
+    /// 用 ffmpeg 现生成一段极短的合法 mp3（1 秒正弦波），供需要真的跑通合并
+    /// 阶段的测试使用。若本机没有 ffmpeg，直接 panic——这些测试本就依赖
+    /// ffmpeg（`process_narration_file`/`run_pipeline` 的合并步骤本身就
+    /// 需要它），与 `tests/ffmpeg_test.rs` 里生成测试音频的方式一致。
+    fn tiny_valid_mp3_bytes() -> Vec<u8> {
+        let path = std::env::temp_dir().join(format!(
+            "panda_pipeline_tiny_mp3_{}_{}.mp3",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let out = std::process::Command::new("ffmpeg")
+            .args([
+                "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-c:a", "libmp3lame", "-b:a", "48k", "-ar", "24000", "-ac", "1",
+                &path.to_string_lossy(),
+            ])
+            .output()
+            .expect("启动 ffmpeg 失败");
+        assert!(out.status.success(), "ffmpeg 生成测试音频失败：{}", String::from_utf8_lossy(&out.stderr));
+        let bytes = std::fs::read(&path).expect("读取生成的测试音频失败");
+        let _ = std::fs::remove_file(&path);
+        bytes
     }
 
     /// Minor 1 回归：最后一次重试失败后不应再白等一次退避。
@@ -416,6 +467,90 @@ mod tests {
         assert!(
             !dir.join("sentence1.mp3").exists(),
             "已经成功落盘的 sentence1.mp3 应该在失败退出时被 cleanup 清理掉"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// 终审必修项 1 的核心回归：合成失败（发生在合并之前，`audio.mp3` 根本
+    /// 不是本次运行的产物）时，不能删掉 `output_dir` 里已经存在的、上一次
+    /// 成功运行留下的 `audio.mp3`。这正是复审报告里描述的真实场景：CLI 把
+    /// `output_dir` 接成跨运行复用的稳定目录，一次瞬时失败（网络抖动 /
+    /// 音色打错）不该抹掉上一份好音频。
+    #[tokio::test(start_paused = true)]
+    async fn synth_failure_does_not_delete_preexisting_audio_mp3_from_a_previous_run() {
+        let dir = unique_tmp_dir("preexisting_audio_test");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let audio_path = dir.join("audio.mp3");
+        let previous_run_bytes = b"previous successful run's audio bytes".to_vec();
+        tokio::fs::write(&audio_path, &previous_run_bytes).await.unwrap();
+
+        let mut behavior = HashMap::new();
+        behavior.insert("F".to_string(), Behavior::AlwaysFail);
+        let backend = Arc::new(FakeBackend { behavior });
+
+        let lines = vec!["F".to_string()];
+        let opts = ProcessOptions {
+            voice: "irrelevant".into(),
+            speed_factor: 1.1,
+            batch_size: 1,
+            timeout: Duration::from_secs(60),
+        };
+
+        let result = run_pipeline(backend, lines, &dir, &opts).await;
+        assert!(result.is_err(), "段落 F 永久失败后整体应返回 Err");
+
+        let bytes_after = tokio::fs::read(&audio_path)
+            .await
+            .expect("上一次成功运行留下的 audio.mp3 不应被删除");
+        assert_eq!(
+            bytes_after, previous_run_bytes,
+            "失败清理不应删除或改动不是本次运行产生的 audio.mp3"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// 终审必修项 1 的另一半：本次运行如果已经跑到“合并成功”这一步，
+    /// `audio.mp3` 就确实是这次运行自己产出的东西——随后如果写 VTT 失败，
+    /// 这个半成品必须被清理掉，否则会留下一个没有对应 VTT 的孤儿音频文件。
+    ///
+    /// 用预先把 `audio.vtt` 建成一个目录的方式，制造“合并成功、写 VTT 失败”
+    /// 这个场景（对一个目录路径 `tokio::fs::write` 必然失败）。
+    #[tokio::test]
+    async fn merge_success_but_vtt_write_failure_cleans_up_this_runs_audio_mp3() {
+        let dir = unique_tmp_dir("vtt_failure_cleanup_test");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        // 让 audio.vtt 这个路径本身是个目录，逼 `tokio::fs::write` 失败。
+        tokio::fs::create_dir_all(dir.join("audio.vtt")).await.unwrap();
+
+        let mut behavior = HashMap::new();
+        behavior.insert("S".to_string(), Behavior::SucceedWithAudio(tiny_valid_mp3_bytes()));
+        let backend = Arc::new(FakeBackend { behavior });
+
+        let lines = vec!["S".to_string()];
+        let opts = ProcessOptions {
+            voice: "irrelevant".into(),
+            speed_factor: 1.1,
+            batch_size: 1,
+            timeout: Duration::from_secs(60),
+        };
+
+        let result = run_pipeline(backend, lines, &dir, &opts).await;
+        assert!(
+            result.is_err(),
+            "audio.vtt 路径被占用为目录，写 VTT 应该失败，整体应返回 Err"
+        );
+
+        assert!(
+            !dir.join("audio.mp3").exists(),
+            "合并已经成功产出的 audio.mp3 是本次运行的半成品，写 VTT 失败后应被清理掉"
+        );
+        assert!(
+            !dir.join("sentence1.mp3").exists(),
+            "sentence*.mp3 中间文件也应被清理"
         );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
