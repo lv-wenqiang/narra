@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 用 Rust 实现「口播文稿 → `audio.mp3` + `audio.vtt`」，输出与现有 `packages/tts-node` 逐字节对齐，替代 `pnpm tts`。
+**Goal:** 用 Rust 实现「口播文稿 → `audio.mp3` + `audio.vtt`」，功能等价于现有 `packages/tts-node`，替代 `pnpm tts`。
 
-**Architecture:** 单二进制的第一个子命令 `panda tts`。文稿按非空行分段，经 Edge read-aloud WebSocket 并发合成为逐段 mp3，用外部 ffmpeg 做 concat 合并与 `atempo` 加速，再按字符数比例摊分时长生成 WebVTT。纯逻辑（切句、时间格式、VTT 生成）与 IO/网络严格分离，前者可与 TS 版做黄金文件对拍。
+**Architecture:** 单二进制的第一个子命令 `panda tts`。文稿按非空行分段，经 Edge read-aloud WebSocket 并发合成为逐段 mp3，用外部 ffmpeg 做 concat 合并与 `atempo` 加速，再按字符数比例摊分时长生成 WebVTT。纯逻辑（切句、时间格式、VTT 生成）与 IO/网络严格分离，前者可独立单测。
 
 **Tech Stack:** Rust 2021 / tokio / tokio-tungstenite / symphonia / clap / anyhow / sha2 / serde_json；外部依赖仅 ffmpeg。
 
@@ -21,6 +21,7 @@
 - 切句最大长度 **30** 字符；句末标点集合为 `。！？`（仅此三个）。
 - 字符计数一律用 `chars().count()`（Unicode 标量），不使用字节长度。
 - 首版**不使用** WordBoundary 词级时间戳，字幕时长按字符数比例摊分。
+- **验收标准是功能正确可用，不要求与 TS 版逐字节一致**；TS 版仅作行为参考，不作测试基线。不依赖 `pnpm`。
 
 ---
 
@@ -38,8 +39,6 @@
 | `src/tts/backend.rs` | `TtsBackend` trait 与数据类型 |
 | `src/tts/edge.rs` | Edge read-aloud WebSocket 客户端 |
 | `src/tts/pipeline.rs` | 分段、并发、重试、合并、清理的编排 |
-| `tests/vtt_golden.rs` | 与 TS 版 VTT 输出的黄金文件对拍 |
-| `tests/fixtures/` | 对拍用的输入文稿与基线 VTT |
 
 ---
 
@@ -232,7 +231,7 @@ mod tests {
     }
 
     /// TS 版的已知缺陷：时分由 floor 独立计算，秒进位时不回填。
-    /// 首版刻意复刻以保证逐字节一致。
+    /// 注意：此测试已在 Task 3 Step 1 被替换为期望正确进位行为。
     #[test]
     fn format_vtt_time_replicates_ts_carry_bug() {
         assert_eq!(format_vtt_time(59.9996), "00:00:60.000");
@@ -416,84 +415,135 @@ git commit -m "feat(vtt): 移植 splitTextForVtt 切句逻辑"
 
 ---
 
-### Task 3: VTT 生成与黄金文件对拍
+### Task 3: VTT 生成
 
 **Files:**
 - Modify: `src/vtt.rs`
-- Create: `tests/vtt_golden.rs`
-- Create: `tests/fixtures/narration.txt`
-- Create: `tests/fixtures/durations.json`
-- Create: `tests/fixtures/expected.vtt`
+- Create: `src/lib.rs`
+- Modify: `src/main.rs`
 
 **Interfaces:**
 - Consumes: `format_vtt_time`、`split_text_for_vtt`
 - Produces: `pub fn generate_vtt(lines: &[String], durations: &[f64], vtt_max_length: usize) -> String`
 
-- [ ] **Step 1: 生成对拍基线**
+> **验收标准变更**：本任务原计划与 TS 版做黄金文件逐字节对拍，现已取消。验收标准改为**功能正确**：时间轴单调递增、时间戳合法、切片不丢字。不再依赖 `pnpm`。
 
-用现有 TS 实现产出基线。在 `panda-video-ts` 目录下（需先装好 pnpm）：
+- [ ] **Step 1: 修正 `format_vtt_time` 的进位缺陷**
 
-```bash
-cd ../panda-video-ts
-# 脚本放在仓库内，避免 /tmp 下相对导入解析失败
-cat > gen-golden.mjs <<'EOF'
-import { generateVtt } from './packages/tts-node/src/vtt.ts';
-import fs from 'node:fs';
-const lines = fs.readFileSync('/tmp/narration.txt', 'utf-8')
-  .split('\n').map(s => s.trim()).filter(Boolean);
-const durations = JSON.parse(fs.readFileSync('/tmp/durations.json', 'utf-8'));
-fs.writeFileSync('/tmp/expected.vtt', generateVtt(lines, durations), 'utf-8');
-EOF
-```
+Task 1 曾刻意复刻 TS 原版的一个缺陷：时分由 floor 独立计算、秒由 `seconds % 60` 得出，导致 `59.9996` 输出 `00:00:60.000`——这是**非法的 WebVTT 时间戳**。当初复刻它的唯一理由是逐字节对拍，该要求已取消，故予以修正。
 
-先准备 `/tmp/narration.txt`（至少 5 段，需覆盖：短于 30 字的段、长于 30 字且含句末标点的段、长于 30 字但无句末标点的段）与 `/tmp/durations.json`（等长的秒数数组，用非整数如 `[3.271, 5.02, 8.449, 2.6, 11.135]`），然后：
-
-```bash
-pnpm exec tsx gen-golden.mjs
-mkdir -p ../panda-video-rs/tests/fixtures
-cp /tmp/narration.txt /tmp/durations.json /tmp/expected.vtt \
-   ../panda-video-rs/tests/fixtures/
-rm gen-golden.mjs
-```
-
-> 若 pnpm 不可用而无法产出基线，**停止并向用户报告**——不要凭想象手写 `expected.vtt`，那会让对拍失去意义。
-
-- [ ] **Step 2: 写失败的测试**
+先把 Task 1 里那个测试改成期望正确行为：
 
 ```rust
-// tests/vtt_golden.rs
-use std::fs;
-
+// src/vtt.rs 的 mod tests：把 format_vtt_time_replicates_ts_carry_bug 整体替换为
 #[test]
-fn generate_vtt_matches_ts_golden_file() {
-    let narration = fs::read_to_string("tests/fixtures/narration.txt").unwrap();
-    let lines: Vec<String> = narration
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let durations: Vec<f64> =
-        serde_json::from_str(&fs::read_to_string("tests/fixtures/durations.json").unwrap()).unwrap();
-    let expected = fs::read_to_string("tests/fixtures/expected.vtt").unwrap();
-
-    assert_eq!(panda::vtt::generate_vtt(&lines, &durations, 30), expected);
+fn format_vtt_time_carries_into_minutes() {
+    // 四舍五入到毫秒后恰好满 60 秒，必须进位而不是输出非法的 :60.000
+    assert_eq!(format_vtt_time(59.9996), "00:01:00.000");
+    assert_eq!(format_vtt_time(3599.9999), "01:00:00.000");
+    assert_eq!(format_vtt_time(59.9994), "00:00:59.999");
 }
 ```
 
-需要让集成测试能引用库代码：新建 `src/lib.rs` 内容为 `pub mod vtt; pub mod config;`（后续任务继续追加模块），`src/main.rs` 改为 `use panda::...`。并 `cargo add serde_json --dev`。
+- [ ] **Step 2: 运行测试确认失败**
 
-- [ ] **Step 3: 运行测试确认失败**
+Run: `cargo test vtt::tests::format_vtt_time_carries_into_minutes`
+Expected: FAIL，实际得到 `00:00:60.000`
 
-Run: `cargo test --test vtt_golden`
-Expected: FAIL，`cannot find function generate_vtt`
-
-- [ ] **Step 4: 实现**
+- [ ] **Step 3: 改实现——先归一化到毫秒再拆分**
 
 ```rust
-/// 移植自 packages/tts-node/src/vtt.ts 的 generateVtt。
-/// 多片段时按 `片段字符数 / 原段字符数` 比例摊分该段时长。
-/// 注意：片段经过 trim，其字符数之和可能小于原段，因此摊分后的总时长
-/// 可能略小于 duration——TS 原版即如此，保持一致。
+/// 格式化为 WebVTT 时间戳 `HH:MM:SS.mmm`。
+/// 先把秒四舍五入到毫秒再拆分时/分/秒，因此进位始终正确
+/// （`59.9996` → `00:01:00.000`，而非 TS 原版会产生的非法值 `00:00:60.000`）。
+pub fn format_vtt_time(seconds: f64) -> String {
+    let total_ms = (seconds * 1000.0).round().max(0.0) as u64;
+    let ms = total_ms % 1000;
+    let total_secs = total_ms / 1000;
+    let secs = total_secs % 60;
+    let minutes = (total_secs / 60) % 60;
+    let hours = total_secs / 3600;
+    format!("{hours:02}:{minutes:02}:{secs:02}.{ms:03}")
+}
+```
+
+注意 `.max(0.0)`：负数时长在本流程中不应出现，钳制到 0 比产生回绕的巨大数值安全。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cargo test vtt::`
+Expected: 原有测试加新测试全部 PASS（`format_vtt_time_basics` 与 `format_vtt_time_rounds_to_three_decimals` 的期望值不受影响，因为它们不涉及进位）
+
+- [ ] **Step 5: 建立 lib.rs 并写 `generate_vtt` 的失败测试**
+
+新建 `src/lib.rs`，内容**只有**一行 `pub mod vtt;`（后续任务各自追加自己的模块声明）。把 `src/main.rs` 里的 `mod vtt;` 删掉。
+
+```rust
+// 追加到 src/vtt.rs 的 mod tests
+#[test]
+fn vtt_starts_with_header_and_numbers_cues_from_one() {
+    let lines = vec!["第一段。".to_string(), "第二段。".to_string()];
+    let out = generate_vtt(&lines, &[2.0, 3.0], 30);
+    assert!(out.starts_with("WEBVTT\n\n"), "缺少 WEBVTT 头：{out}");
+    assert!(out.contains("\n1\n00:00:00.000 --> 00:00:02.000\n第一段。\n"));
+    assert!(out.contains("\n2\n00:00:02.000 --> 00:00:05.000\n第二段。\n"));
+}
+
+#[test]
+fn long_paragraph_splits_and_shares_duration_by_char_count() {
+    // 一段 40 字、含一个句号，会被切成两片；两片时长按字符数比例摊分
+    let text = "第一句话写得比较长一点用来触发切分。第二句话也在这里继续往后写。";
+    let lines = vec![text.to_string()];
+    let out = generate_vtt(&lines, &[10.0], 30);
+    let cues: Vec<&str> = out.lines().filter(|l| l.contains("-->")).collect();
+    assert_eq!(cues.len(), 2, "期望切成 2 条 cue，实得 {}：{out}", cues.len());
+    // 切片文本不丢字
+    assert!(out.contains("第一句话写得比较长一点用来触发切分。"));
+    assert!(out.contains("第二句话也在这里继续往后写。"));
+}
+
+#[test]
+fn timeline_is_monotonically_increasing() {
+    let lines = vec![
+        "短句。".to_string(),
+        "这是一段明显更长的文字用来触发切句逻辑从而产生多条字幕。后面还有一句。".to_string(),
+        "结尾。".to_string(),
+    ];
+    let out = generate_vtt(&lines, &[1.5, 8.25, 2.0], 30);
+    let mut prev_end = 0.0_f64;
+    let mut cue_count = 0;
+    for line in out.lines().filter(|l| l.contains("-->")) {
+        let (start, end) = line.split_once(" --> ").unwrap();
+        let (s, e) = (parse_ts(start), parse_ts(end));
+        assert!(s >= prev_end - 1e-6, "时间轴回退：{line}");
+        assert!(e >= s, "cue 结束早于开始：{line}");
+        prev_end = e;
+        cue_count += 1;
+    }
+    assert!(cue_count >= 4, "期望至少 4 条 cue，实得 {cue_count}");
+}
+
+/// 把 `HH:MM:SS.mmm` 解析回秒，仅测试用。
+fn parse_ts(s: &str) -> f64 {
+    let p: Vec<&str> = s.trim().split(':').collect();
+    let sec: Vec<&str> = p[2].split('.').collect();
+    p[0].parse::<f64>().unwrap() * 3600.0
+        + p[1].parse::<f64>().unwrap() * 60.0
+        + sec[0].parse::<f64>().unwrap()
+        + sec[1].parse::<f64>().unwrap() / 1000.0
+}
+
+- [ ] **Step 6: 运行测试确认失败**
+
+Run: `cargo test vtt::`
+Expected: FAIL，`cannot find function generate_vtt`
+
+- [ ] **Step 7: 实现**
+
+```rust
+/// 由段落文本与各段时长生成 WebVTT。
+/// 段落过长时先切句，再按 `片段字符数 / 原段字符数` 比例摊分该段时长。
+/// 片段经过 trim，其字符数之和可能小于原段，故摊分后的总时长可能略小于 duration。
 pub fn generate_vtt(lines: &[String], durations: &[f64], vtt_max_length: usize) -> String {
     let mut out: Vec<String> = vec!["WEBVTT".to_string(), String::new()];
     let mut current_time = 0.0_f64;
@@ -535,16 +585,16 @@ pub fn generate_vtt(lines: &[String], durations: &[f64], vtt_max_length: usize) 
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 8: 运行测试确认通过**
 
 Run: `cargo test`
-Expected: 单测与黄金对拍全部 PASS
+Expected: 全部 PASS
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 9: 提交**
 
 ```bash
-git add src/vtt.rs src/lib.rs src/main.rs tests/
-git commit -m "feat(vtt): 移植 generateVtt 并与 TS 版黄金文件对拍"
+git add src/vtt.rs src/lib.rs src/main.rs
+git commit -m "feat(vtt): 实现 generateVtt 并修正时间戳进位缺陷"
 ```
 
 ---
@@ -1119,7 +1169,7 @@ async fn synthesizes_a_short_chinese_line() {
 Run: `cargo test --test edge_smoke -- --ignored`
 Expected: PASS
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add src/tts/ src/lib.rs tests/edge_smoke.rs
@@ -1500,19 +1550,7 @@ printf '大家好，欢迎收看本期节目。\n今天我们来聊一个有意�
 - `ffprobe /tmp/e2e-out/audio.mp3` 时长约 8–12 秒
 - `audio.vtt` 首行为 `WEBVTT`，最后一条字幕结束时间与音频时长相差 < 0.5 秒
 
-- [ ] **Step 7: 与 TS 版做端到端交叉验证**
-
-用同一份 `/tmp/e2e.txt` 跑 TS 版：
-
-```bash
-cd ../panda-video-ts
-TTS_INPUT_FILE=/tmp/e2e.txt TTS_OUTPUT_DIR=/tmp/e2e-ts pnpm exec tsx packages/tts-node/src/cli.ts
-diff <(grep -c '\-\->' /tmp/e2e-ts/audio.vtt) <(grep -c '\-\->' /tmp/e2e-out/audio.vtt)
-```
-
-期望：两版字幕条数一致；总时长差异 < 0.5 秒（网络合成不保证音频字节一致，故不比对音频本身）。
-
-- [ ] **Step 8: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add src/config.rs src/main.rs src/lib.rs
@@ -1523,7 +1561,7 @@ git commit -m "feat(cli): 加入 panda tts 子命令与环境变量解析"
 
 ## 完成标准
 
-- `cargo test` 全绿（含与 TS 版的 VTT 黄金文件对拍）
+- `cargo test` 全绿
 - `panda tts` 能独立完成 `pnpm tts` 的产出，中间文件清理干净
 - `docs/edge-protocol.md` 记录了实测通过的协议细节
 

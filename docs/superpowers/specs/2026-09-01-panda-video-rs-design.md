@@ -80,7 +80,7 @@ panda-video-rs/
     ffmpeg.rs                  命令构造 + 进程管理
 ```
 
-每个模块的可测性：`vtt`、`anim`、`timeline` 是纯函数（可单测且能与 TS 版对拍）；`tts` 只依赖网络；`render::draw` 输出位图（可做像素比对）；`ffmpeg` 只构造参数（可断言命令行）。
+每个模块的可测性：`vtt`、`anim`、`timeline` 是纯函数（可单测）；`tts` 只依赖网络；`render::draw` 输出位图（可抽帧核对）；`ffmpeg` 只构造参数（可断言命令行）。
 
 ## 6. CLI 契约
 
@@ -94,7 +94,7 @@ panda render --audio <mp3> --vtt <vtt> [--title <s>] [--title-json <path>]
 panda make   [INPUT] [--title <s>] [--bg <mp4>] [--bgm <mp3>] -o <out.mp4>
 ```
 
-沿用现有环境变量作为默认值兜底，便于过渡期与 pnpm 脚本互换、逐段对拍：
+沿用现有环境变量作为默认值兜底，便于与现有 pnpm 脚本互换：
 
 | 变量 | 默认 |
 |---|---|
@@ -122,7 +122,7 @@ panda make   [INPUT] [--title <s>] [--bg <mp4>] [--bgm <mp3>] -o <out.mp4>
 
 ### 7.1 流程
 
-照搬 `packages/tts-node/src/process.ts` 的语义，以保证输出可对拍：
+照搬 `packages/tts-node/src/process.ts` 的语义：
 
 1. 读文稿，**非空行 = 一段**；无非空行则报错退出
 2. `tokio::sync::Semaphore` 限制并发（默认 3），每段独立合成为 `sentence{i}.mp3`
@@ -150,13 +150,13 @@ struct Synthesized {
 
 ### 7.3 字幕时间轴
 
-**首版刻意沿用现有的估算方式**：按字符数比例把段时长摊给切出来的字幕片段。
+首版沿用现有的估算方式：按字符数比例把段时长摊给切出来的字幕片段。
 
 ```
 segment_duration = paragraph_duration * segment_chars / paragraph_chars
 ```
 
-理由是首版的验收标准是「与 TS 版输出一致」，引入 WordBoundary 精确对齐会让对拍失效。精确对齐作为后续增强项，用命令行开关切换。
+理由是这套算法简单、无额外依赖，且在现有成片里表现可接受。WordBoundary 词级精确对齐作为后续增强项，首版不引入。
 
 ### 7.4 切句规则（移植自 `vtt.ts`）
 
@@ -173,7 +173,7 @@ segment_duration = paragraph_duration * segment_chars / paragraph_chars
 
 `HH:MM:SS.mmm`。TS 实现是 `secs.toFixed(3).split('.')` 后 `slice(0,3).padEnd(3,'0')`——由于 `toFixed(3)` 恒定产出 3 位小数，后两步是恒等操作，因此实际语义是**四舍五入到 3 位小数**，Rust 用 `format!("{:.3}", secs)` 等价。
 
-时、分由 `Math.floor` 独立计算，秒由 `seconds % 60` 得出。**这会在秒数进位时产生已知缺陷**：例如 `59.9996` 会渲染成 `00:00:60.000`。首版为保证与 TS 版逐字节一致，**照样复刻此缺陷**，并在测试中显式记录。
+TS 原版的时、分由 `Math.floor` 独立计算，秒由 `seconds % 60` 得出，**在秒数进位时会产生非法时间戳**：`59.9996` 渲染成 `00:00:60.000`。本项目**不复刻该缺陷**——先把秒四舍五入到毫秒，再由归一化后的总毫秒数推导时、分、秒，保证输出恒为合法 WebVTT 时间戳。
 
 ## 8. 渲染子系统
 
@@ -312,23 +312,23 @@ BGM 音量包络用 `volume` 滤镜的时间表达式实现，`amix` 时需设 `
 
 ## 10. 验证策略
 
+验收标准是**功能正确可用**，不要求与 TS 版逐字节一致。TS 版仅作为行为参考实现，不作为测试基线，因此**不依赖 `pnpm` 环境**。
+
 | 层 | 方法 | 通过标准 |
 |---|---|---|
-| `vtt` 切句与生成 | 单测 + 与 TS 版对拍：以现有 `output/tts/audio.vtt` 为黄金文件 | 逐字节一致 |
-| `anim`（spring / interpolate） | 导出两版在相同帧号的数值序列比对 | 误差 < 1e-6 |
-| `timeline` | 单测覆盖若干音频时长下的段落布局 | 帧数完全一致 |
-| TTS 音频 | 同文稿跑两版，比总时长与各段时长 | 误差 < 50ms（网络合成不保证字节一致） |
-| 渲染 | ffmpeg 抽关键帧与 Remotion 成片做像素差 | Cover/Intro/Outro 静态帧高度接近；字幕帧允许排版微差 |
+| `vtt` 切句与生成 | 单测覆盖各分支与边界 | 时间轴单调递增、时间戳合法、切片不丢字 |
+| `anim`（spring / interpolate） | 单测覆盖端点与钳制行为 | 端点精确、区间内单调、无 NaN |
+| `timeline` | 单测覆盖若干音频时长下的段落布局 | 各段首尾相接无空洞、总帧数正确 |
+| TTS 音频 | 端到端跑真实文稿 | 音频可播放、时长与文稿相称、字幕与音频不明显错位 |
+| 渲染 | 抽关键帧人工核对 | 各段视觉符合规格描述，字幕与音频同步 |
 | 端到端 | `panda make` 跑通真实文稿 | 产出可播放 mp4，人工观感验收 |
-
-对拍所需的 TS 版基线需在动工前先跑一次现有流水线保存下来（注意当前环境 `pnpm` 未安装）。
 
 ## 11. 分期计划
 
 | 阶段 | 内容 | 风险 |
 |---|---|---|
 | **0** | **Edge read-aloud WebSocket 协议验证**：能否完成 `Sec-MS-GEC` 签名并成功合成一段音频 | **高，唯一未知数** |
-| 1 | TTS 全链路（分段、并发、重试、合并、VTT），与 TS 版对拍通过 | 低 |
+| 1 | TTS 全链路（分段、并发、重试、合并、VTT），端到端跑通 | 低 |
 | 2 | `timeline` + `anim` + `text`：只渲染 Content 字幕层，与 Remotion 比对 | 中（CJK 排版调参） |
 | 3 | Cover / Intro / Outro / 水印 | 低 |
 | 4 | ffmpeg 滤镜图 + 音频混合 + `make` 一条龙 | 低 |
