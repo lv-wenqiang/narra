@@ -733,7 +733,7 @@ use std::path::{Path, PathBuf};
 #[test]
 fn concat_list_escapes_single_quotes() {
     let body = panda::ffmpeg::concat_list_body(&[PathBuf::from("/tmp/it's here.mp3")]).unwrap();
-    assert_eq!(body, r"file '/tmp/it'\'' here.mp3'");
+    assert_eq!(body, r"file '/tmp/it'\''s here.mp3'");
 }
 
 #[test]
