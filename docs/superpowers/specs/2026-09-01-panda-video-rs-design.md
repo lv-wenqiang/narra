@@ -209,8 +209,12 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 
 **Cover（0.5s）**
 - 白底 `#FFFFFF`
-- 居中标题
-- 水印（`cover` 预设，居中）
+- 居中容器：画面正中，宽度 80%，内容居中对齐
+  - **上排**（整体 `opacity 0.30`，左偏移 40px，水平排列、垂直居中）：
+    - `logo.png`，36px（`min(1280,720) * 0.1 / 2`），四周 margin 8px
+    - 紧邻的「熊猫智研社」：38px 粗体，`dingliesongtypeface`，行高 1.2
+  - **主标题**：100px 粗体，`dingliesongtypeface`，左右 padding 40px，行高 1.2，支持换行（`pre-line` + 长词断行）
+- 水印（`cover` 预设）
 
 **Intro（3.5s）— 打字机**
 - 白底
@@ -251,13 +255,33 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 
 > **已知差异**：现有 TS 版片尾标题指定的是 Inter 字体，但内容是中文，Chrome 实际回退到系统字体渲染。Rust 版统一使用 `dingliesongtypeface`，成片会与现状有可见差异。这被视为修正而非回归。
 
+### 8.6 水印规格
+
+两处预设，内容都是 **GitHub 图标 + `Panda Video Generator`**，`cover` 预设额外追加 ` · 熊猫视频自动化引擎`。
+
+| | `cover`（用于 Cover / Outro） | `content`（用于 Content） |
+|---|---|---|
+| 位置 | 画面水平居中，垂直方向自顶部偏移 432px | 左下角，距左 40px、距下 40px |
+| 字号 | 28px | 24px |
+| 颜色 | `rgba(23, 23, 23, 0.4)` | `rgba(255, 255, 255, 0.27)` |
+| 字重 | 400 | 500 |
+| 字距 | 默认 | `0.01em` |
+| 图标尺寸 | 32px | 28px |
+| 图标与文字间距 | 12px | 10px |
+| 中文后缀 | 有（间隔点 `·` 不透明度 0.75） | 无 |
+
+**两处实现决策**（TS 原版行为与 Rust 实现的取舍）：
+
+1. **字体**：TS 原版水印用 Inter。Rust 版**统一用 `dingliesongtypeface`**，不再内嵌第二套字体——可省约 500KB 二进制体积，代价是水印的拉丁字形与现状有可见差异。水印在 27%~40% 不透明度下属装饰元素，判定可接受。
+2. **GitHub 图标**：原版是单条 SVG path（`fill="currentColor"`，纯单色）。Rust 版**预先光栅化为 128px 的 alpha 通道 PNG 内嵌**，绘制时按预设颜色着色并缩放到目标尺寸。这样避免引入 SVG 解析依赖（`resvg`/`usvg`）。
+
 ### 8.5 动画函数移植
 
 `interpolate(x, input_range, output_range, clamp)` — 线性插值 + 边界钳制，直接实现。
 
 `spring` — Remotion 使用阻尼谐振子解析解，参数 `mass = 1, stiffness = 100, damping = 200, overshoot_clamping = false`。传入 `durationInFrames` 时 Remotion 会把曲线在时间轴上**重新缩放**到指定帧数，移植时必须包含这一步，否则动画节奏会错。
 
-移植后需与 TS 版逐帧比对数值（见 §10）。
+移植后用单测覆盖端点与钳制行为（见 §10）：端点精确、区间内单调、无 NaN。
 
 ## 9. ffmpeg 调用
 
