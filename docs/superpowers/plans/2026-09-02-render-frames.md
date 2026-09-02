@@ -247,7 +247,7 @@ pub fn github_mark_rgba(size: u32) -> Result<(Vec<u8>, u32, u32)> {
 >
 > **请打开实际源码确认**（`~/.cargo/registry/src/*/resvg-*/src/lib.rs`，或 `cargo doc --open`），按真实 API 写。
 >
-> **必须保持的语义**：输入是内嵌的 SVG 字节和目标边长，输出 `size × size` 的 RGBA8 像素，图标等比缩放铺满画布。改了什么写进报告。
+> **必须保持的语义**：输入是内嵌的 SVG 字节和目标边长，输出 `size × size` 的 RGBA8 像素，图标**拉伸铺满**画布（源 viewBox 是 `98 × 96` 非正方形，x/y 各自缩放，约 2% 形变，肉眼不可见；不要 letterbox 留白）。改了什么写进报告。
 >
 > 另注意：若 `resvg` 重导出的 `tiny_skia` 与本项目直接依赖的 `tiny-skia` **版本不一致**，两者的 `Pixmap` 会是不同类型、不能直接互传。真遇到就通过原始字节 `Vec<u8>` 交接（本函数的返回类型已经是字节，正是为此）。
 
