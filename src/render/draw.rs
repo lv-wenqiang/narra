@@ -12,7 +12,9 @@
 //! `PreparedWatermark` 的文档注释）。
 
 use anyhow::Context;
-use tiny_skia::{Color, FillRule, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{
+    Color, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, Transform,
+};
 
 use crate::assets::{github_mark_rgba, logo_rgba};
 use crate::render::anim::{interpolate, interpolate3, spring};
@@ -830,11 +832,21 @@ impl Painter {
         let logo_transform = Transform::from_translate(-half, -half)
             .post_scale(logo_scale, logo_scale)
             .post_translate(logo_center_x, logo_center_y);
+        // **修复轮 1（I2）**：`PixmapPaint::default()` 的 `quality` 是
+        // `FilterQuality::Nearest`——这里的 transform 带缩放（frame 0..23
+        // 把 216px logo 最近邻缩到 43..216px），最近邻在圆形边缘会产生肉眼
+        // 可见的锯齿/爬行。Cover 的 36px logo 不构成先例：那里的 transform
+        // 是 `Transform::identity()`（不缩放），不经过这条重采样路径。这是
+        // Outro 唯一带缩放动画的位图绘制，改成 `Bilinear`。
         pixmap.draw_pixmap(
             0,
             0,
             self.logo_216.as_ref(),
-            &PixmapPaint { opacity: fade_opacity, ..Default::default() },
+            &PixmapPaint {
+                opacity: fade_opacity,
+                quality: FilterQuality::Bilinear,
+                ..Default::default()
+            },
             logo_transform,
             None,
         );
@@ -2524,11 +2536,31 @@ mod tests {
         );
     }
 
+    /// **修复轮 1（I1，协调者裁定，豁免 brief 的「原样照抄」要求）**：这条测试
+    /// 原名 `outro_never_produces_non_finite_geometry`，但它其实测不出那件事——
+    /// 审查把 `outro_ring_scale` 里的 `.min(OUTRO_RING_OUT_PROGRESS_MAX)` 删掉
+    /// （真实制造 `outro_ring_scale(45) == inf`）后，这条测试**仍然通过**：
+    /// `tiny_skia::PathBuilder::from_circle` 遇到非有限半径时静默返回 `None`，
+    /// `draw_outro` 里 `if let Some(path) = ...` 直接跳过那个圆，既不 panic
+    /// 也不改变 `pixmap` 的尺寸——`assert_eq!(p.width(), 1280)` 因此是一句
+    /// 永真断言。真正钉住「钳制没被删」这件事的是下面的
+    /// `outro_ring_scale_is_finite_and_clamps_to_100_from_frame_45`（直接对
+    /// `outro_ring_scale` 的返回值断言，不经过这层「非有限半径被静默吞掉」
+    /// 的 `Option` 屏障）。
+    ///
+    /// 这条测试改名后测的是它真正能测到的东西：**代表帧渲染不 panic**（换
+    /// 字体排版参数、除零之外的其它路径出问题时的兜底），用一组覆盖 logo
+    /// 缩放端点（`0/23/24`）、标题淡入端点（`29/30/44/45/46`——同时也是
+    /// spring 的 delay/duration 边界）、稳态（`60/104`）、整体淡出起止
+    /// （`105/118/119`）的代表帧，而不是逐帧扫 0..120（那样跑 27s 却没有
+    /// 换来任何额外的鉴别力）。写法仿照既有的
+    /// `typewriter_ink_width_steps_up_and_matches_full_title_when_done` 一带
+    /// 的代表帧手法（`src/render/draw.rs` 里 `for f in [0u32, 5, 10, 15, 29,
+    /// 45, 59, 60]`）。
     #[test]
-    fn outro_never_produces_non_finite_geometry() {
-        // 圆环的 scale = 1/(1-out_progress)，out_progress→1 时发散，必须钳制
+    fn outro_renders_representative_frames_without_panicking() {
         let mut painter = Painter::new().unwrap();
-        for f in 0..120 {
+        for f in [0u32, 23, 24, 29, 30, 44, 45, 46, 60, 104, 105, 118, 119] {
             let mut p = Pixmap::new(1280, 720).unwrap();
             painter.draw_outro(&mut p, f); // 不 panic 即通过
             assert_eq!(p.width(), 1280);
