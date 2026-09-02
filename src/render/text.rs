@@ -178,6 +178,50 @@ impl TextRenderer {
         (max_w, max_bottom - min_top)
     }
 
+    /// 返回「最后一行」（`layout_runs()` 中 `line_top` 最大的那一行）的
+    /// `(该行排版宽度, 该行顶部相对于文本块顶部的偏移, 该行行高)`；没有任何
+    /// layout run（理论上只有极端输入才会发生）时返回 `None`。
+    ///
+    /// **为什么不能用「对每个字符前缀分别 `measure()`、找高度跳变点」来推断
+    /// 换行位置**（Task 6 修复轮 1 的真实教训）：那种推断法默认换行只发生在
+    /// 字符边界（对纯 CJK 逐字换行成立），但 `cosmic-text` 遇到英文/数字等
+    /// 做 word-wrap 时，一次性挪到下一行的是**整个单词**——高度跳变点会落在
+    /// 单词内部而不是行首，据此推算出的"最后一行"会把这个单词的前半截也算进
+    /// 上一行，导致宽度算少、位置算错（实测：光标被画到英文单词中间，穿过
+    /// 字母本身）。这个方法直接读 `shape()`/`layout_runs()` 产出的断行结果，
+    /// 与真实断行算法同源，无论逐字符还是整词换行都精确；而且只需一次
+    /// `shape()`，比"对每个前缀各 measure 一次"快得多（原来是 O(n²) 次
+    /// `shape()`，这里是 O(1) 次）。
+    ///
+    /// 三个返回值的用途：`last_top_rel` 与 `last_h` 之和就是整个文本块的高度
+    /// （因为"最后一行"就是 `line_top` 最大的那一行，它的下边缘天然是全文本块
+    /// 的 `max_bottom`）——所以调用方不需要再额外调用一次 `measure()` 去拿
+    /// 总高度；结合 `draw_centered` 的垂直居中公式可以推出：若整块文本居中于
+    /// `center_y`，则最后一行自身的垂直中心就是 `center_y + last_top_rel / 2.0`
+    /// （代数展开：`center_y - total_h/2 + last_top_rel + last_h/2`，代入
+    /// `total_h = last_top_rel + last_h` 化简即得）。
+    pub fn last_line_metrics(&mut self, text: &str, style: &TextStyle) -> Option<(f32, f32, f32)> {
+        let buffer = self.shape(text, style);
+        let mut min_top = f32::MAX;
+        let mut max_top = f32::MIN;
+        let mut last_w = 0.0f32;
+        let mut last_h = 0.0f32;
+        let mut any = false;
+        for run in buffer.layout_runs() {
+            any = true;
+            min_top = min_top.min(run.line_top);
+            if run.line_top >= max_top {
+                max_top = run.line_top;
+                last_w = run.line_w;
+                last_h = run.line_height;
+            }
+        }
+        if !any {
+            return None;
+        }
+        Some((last_w, max_top - min_top, last_h))
+    }
+
     /// 以 `(center_x, center_y)` 为文本块的中心绘制。`scale` 以该点为原点整体缩放
     /// （包括字形轮廓和描边宽度——是一次真正的几何缩放，不是只挪位置）；`opacity`
     /// 是**整块文字的组透明度**（等同 CSS `opacity`），不并入每一遍绘制的颜色
@@ -731,6 +775,117 @@ mod tests {
             }
             let center = (x0 + x1) as f32 / 2.0;
             assert!((center - 450.0).abs() < 15.0, "行未居中：center={center}");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Task 6 修复轮 1（I1）：`last_line_metrics` 的测试。纯追加方法，
+    // 覆盖单行、CJK 逐字换行、英文 word-wrap、`\n` 强制换行、空串。
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn last_line_metrics_single_line_matches_measure() {
+        let mut r = TextRenderer::new().unwrap();
+        let s = style(60.0);
+        let (w, h) = (r.measure("熊猫智研社", &s).0, r.measure("熊猫智研社", &s).1);
+        let (last_w, top_rel, last_h) = r.last_line_metrics("熊猫智研社", &s).unwrap();
+        assert!(
+            (last_w - w).abs() < 0.01,
+            "单行时最后一行宽度应与 measure 的整体宽度一致：last_w={last_w} w={w}"
+        );
+        assert_eq!(top_rel, 0.0, "单行时最后一行顶部相对偏移应为 0");
+        assert!(
+            (top_rel + last_h - h).abs() < 0.01,
+            "单行时 top_rel+last_h 应等于 measure 的整体高度：{} vs {h}",
+            top_rel + last_h
+        );
+    }
+
+    #[test]
+    fn last_line_metrics_cjk_char_wrap_is_self_consistent_with_measure() {
+        let mut r = TextRenderer::new().unwrap();
+        let mut s = style(70.0);
+        s.max_width_px = 300.0; // 强制逐字换行成多行
+        let text = "这是一段需要换行的比较长的中文文字内容";
+        let (_, total_h) = r.measure(text, &s);
+        let (last_w, top_rel, last_h) = r.last_line_metrics(text, &s).unwrap();
+        assert!(top_rel > 0.0, "多行时最后一行顶部相对偏移应 > 0，实得 {top_rel}");
+        assert!(
+            (top_rel + last_h - total_h).abs() < 0.01,
+            "top_rel+last_h 应等于 measure 的整体高度（最后一行的下边缘就是全文本块的下边缘）：{} vs {total_h}",
+            top_rel + last_h
+        );
+        assert!(last_w > 0.0 && last_w < 300.0 + 24.0, "最后一行宽度应在合理范围：{last_w}");
+    }
+
+    /// I1 的核心场景：英文 word-wrap（挪到下一行的是整个单词，不是单个字符）。
+    /// 用「self-consistency」而不是猜测具体断行点来验证——这正是
+    /// `last_line_metrics` 相对旧的「前缀高度跳变点」推断法的优势：不管
+    /// cosmic-text 实际在哪个单词边界断行，`top_rel+last_h` 恒等于
+    /// `measure()` 给出的整体高度，因为它直接读断行结果而不是猜测规则。
+    #[test]
+    fn last_line_metrics_english_word_wrap_is_self_consistent_with_measure() {
+        let mut r = TextRenderer::new().unwrap();
+        let mut s = style(40.0);
+        s.max_width_px = 220.0; // 窄到必然把长单词挤到下一行
+        let text = "Panda Video Generator automated engine";
+        let (unwrapped_w, _) = {
+            let mut wide = style(40.0);
+            wide.max_width_px = 4000.0;
+            r.measure(text, &wide)
+        };
+        let (_, total_h) = r.measure(text, &s);
+        let (last_w, top_rel, last_h) = r.last_line_metrics(text, &s).unwrap();
+        assert!(top_rel > 0.0, "word-wrap 应产生多行，top_rel 应 > 0，实得 {top_rel}");
+        assert!(
+            (top_rel + last_h - total_h).abs() < 0.01,
+            "top_rel+last_h 应等于 measure 的整体高度：{} vs {total_h}",
+            top_rel + last_h
+        );
+        assert!(
+            last_w < unwrapped_w,
+            "换行后最后一行宽度应明显小于不换行时的整体宽度：last_w={last_w} unwrapped_w={unwrapped_w}"
+        );
+    }
+
+    #[test]
+    fn last_line_metrics_forced_newline_matches_second_line_alone() {
+        let mut r = TextRenderer::new().unwrap();
+        let s = style(60.0);
+        let (last_w, top_rel, last_h) = r.last_line_metrics("上一行\n下一行", &s).unwrap();
+        let (line_h_alone,) = (r.measure("下一行", &s).1,);
+        assert!(
+            (top_rel - line_h_alone).abs() < 1.0,
+            "强制换行后最后一行顶部相对偏移应约等于单行行高：top_rel={top_rel} line_h={line_h_alone}"
+        );
+        assert!(
+            (last_h - line_h_alone).abs() < 1.0,
+            "最后一行行高应与单独渲染该行时的行高一致：last_h={last_h} line_h_alone={line_h_alone}"
+        );
+        let (w_alone, _) = r.measure("下一行", &s);
+        assert!(
+            (last_w - w_alone).abs() < 0.01,
+            "最后一行宽度应与单独渲染「下一行」时的宽度一致：last_w={last_w} w_alone={w_alone}"
+        );
+    }
+
+    #[test]
+    fn last_line_metrics_empty_string_is_consistent_with_measure() {
+        let mut r = TextRenderer::new().unwrap();
+        let s = style(60.0);
+        let (_, h) = r.measure("", &s);
+        match r.last_line_metrics("", &s) {
+            None => {
+                // 允许的另一种合法实现：空文本没有任何 layout run。
+            }
+            Some((w, top_rel, last_h)) => {
+                assert_eq!(w, 0.0, "空字符串最后一行宽度应为 0");
+                assert!(
+                    (top_rel + last_h - h).abs() < 0.01,
+                    "空字符串时 top_rel+last_h 应等于 measure 的高度：{} vs {h}",
+                    top_rel + last_h
+                );
+            }
         }
     }
 }

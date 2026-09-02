@@ -119,8 +119,16 @@ const INTRO_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
 const INTRO_TITLE_CENTER_Y: f32 = CANVAS_H / 2.0;
 /// 打字机 2 秒内打完（brief 数值，逐字照用）。
 const INTRO_TYPEWRITER_SECONDS: f64 = 2.0;
-/// 光标只在打字未完成时显示：`local_frame < 60`。
-const INTRO_TYPEWRITER_FRAMES: u32 = 60;
+/// 光标只在打字未完成时显示：`local_frame < INTRO_TYPEWRITER_SECONDS * FPS`。
+/// **修复轮 1（M3）**：从 `秒数 * FPS` 推导而不是硬编码 `60`——改
+/// `INTRO_TYPEWRITER_SECONDS` 或 `FPS` 时这个截止帧会自动跟着走，数值本身
+/// 不变（`2.0*30.0=60.0`）。
+const INTRO_TYPEWRITER_FRAMES: u32 = (INTRO_TYPEWRITER_SECONDS * FPS) as u32;
+/// 光标 2 次/秒闪烁：一个完整的「亮→暗」周期是 `FPS/2` 帧。**修复轮 1
+/// （M3）**：从 `FPS` 推导而不是硬编码 `15`，数值不变（`30.0/2.0=15.0`）；
+/// `interpolate3` 的三个断点 `[0, 半周期, 整周期]` 在使用处按这个常量算出，
+/// 不再是字面量 `[0.0, 7.5, 15.0]`。
+const INTRO_CURSOR_BLINK_PERIOD_FRAMES: u32 = (FPS / 2.0) as u32;
 const INTRO_CURSOR_TEXT: &str = "|";
 const INTRO_CURSOR_GAP_PX: f32 = 4.0;
 /// 3.0s -> 3.5s 线性淡出（brief 数值，逐字照用）。
@@ -628,12 +636,16 @@ impl Painter {
         );
 
         if local_frame < INTRO_TYPEWRITER_FRAMES {
-            let blink_opacity =
-                interpolate3((local_frame % 15) as f64, [0.0, 7.5, 15.0], [1.0, 1.0, 0.0]) as f32;
+            let period = INTRO_CURSOR_BLINK_PERIOD_FRAMES as f64;
+            let blink_opacity = interpolate3(
+                (local_frame % INTRO_CURSOR_BLINK_PERIOD_FRAMES) as f64,
+                [0.0, period / 2.0, period],
+                [1.0, 1.0, 0.0],
+            ) as f32;
             let cursor_opacity = fade_opacity * blink_opacity;
             if cursor_opacity > 0.0 {
                 let (right_edge_x, last_line_center_y) =
-                    self.intro_last_line_anchor(&title_chars, visible, &style);
+                    self.intro_last_line_anchor(&display_text, &style);
                 let (cursor_w, _) = self.renderer.measure(INTRO_CURSOR_TEXT, &style);
                 let cursor_center_x = right_edge_x + INTRO_CURSOR_GAP_PX + cursor_w / 2.0;
                 self.renderer.draw_centered(
@@ -649,45 +661,30 @@ impl Painter {
         }
     }
 
-    /// 定位「当前已显示文字」（`chars[..visible]`）最后一行的右边缘 x 与
-    /// 垂直中心 y，用于放置打字机光标（brief 提醒 6）。
+    /// 定位「当前已显示文字」（`display_text`）最后一行的右边缘 x 与垂直
+    /// 中心 y，用于放置打字机光标（brief 提醒 6）。
     ///
-    /// **定位办法**：对 `chars[0..=k]`（`k` 从 0 递增到 `visible`）逐个调用
-    /// `measure()`，比较相邻两次排版高度——70px 标题在 944px 宽度下常常换行，
-    /// 而 `measure` 返回的排版高度只在真正发生换行的那个字符处跳变一整行
-    /// 行高（`TextRenderer::measure` 文档：行高由 `Metrics` 直接给定，与
-    /// 字形/字符数无关，因此跳变点精确对应换行位置，不依赖任何行数估算）。
-    /// 高度不再变化时，从最后一次跳变位置到 `visible` 就是最后一行的内容；
-    /// 从未跳变（单行标题）时，最后一行就是整个 `display_text`——这也是本
-    /// 方法在不换行场景下自然退化为「整块即最后一行」的原因，对多行标题同样
-    /// 成立（每帧都重新扫一遍当前已显示的前缀，不依赖上一帧的状态）。
-    fn intro_last_line_anchor(
-        &mut self,
-        chars: &[char],
-        visible: usize,
-        style: &TextStyle,
-    ) -> (f32, f32) {
-        let heights: Vec<f32> = (0..=visible)
-            .map(|k| {
-                let prefix: String = chars[..k].iter().collect();
-                self.renderer.measure(&prefix, style).1
-            })
-            .collect();
-
-        let mut last_break = 0usize;
-        for k in 1..=visible {
-            if heights[k] > heights[k - 1] {
-                last_break = k - 1; // 第 k 个字符（0-based 索引 k-1）另起一行
-            }
-        }
-
-        let last_line: String = chars[last_break..visible].iter().collect();
-        let (last_line_w, _) = self.renderer.measure(&last_line, style);
-        let block_h = heights[visible];
-        let line_h = style.size_px * style.line_height;
-
-        let right_edge_x = INTRO_TITLE_CENTER_X + last_line_w / 2.0;
-        let last_line_center_y = INTRO_TITLE_CENTER_Y + block_h / 2.0 - line_h / 2.0;
+    /// **修复轮 1（I1）**：原实现用「对每个字符前缀分别 `measure()`、找高度
+    /// 跳变点」推断换行位置，默认换行只发生在字符边界——对纯 CJK 逐字换行
+    /// 成立，但英文/数字等 word-wrap 一次性挪到下一行的是整个单词，跳变点会
+    /// 落在单词内部，导致最后一行宽度算少、光标被画到单词中间（审查实测：
+    /// 混排标题 20/60 帧、纯英文 35/60 帧光标压字，见报告"修复轮 1"的
+    /// before/after 对照）。现在改用 `TextRenderer::last_line_metrics`——
+    /// 直接读 `shape()`/`layout_runs()` 产出的断行结果，与真实断行算法同源，
+    /// 逐字符/整词换行都精确，且只需一次 `shape()`（原来是 O(n²) 次）。
+    ///
+    /// 垂直位置公式 `center_y + last_top_rel / 2.0` 的推导见
+    /// `last_line_metrics` 的文档注释。
+    fn intro_last_line_anchor(&mut self, display_text: &str, style: &TextStyle) -> (f32, f32) {
+        let Some((last_w, last_top_rel, _last_h)) =
+            self.renderer.last_line_metrics(display_text, style)
+        else {
+            // 没有任何 layout run（理论上只有空文本才会走到这里）：视为一行
+            // 零宽度，光标落在标题中心正右侧。
+            return (INTRO_TITLE_CENTER_X, INTRO_TITLE_CENTER_Y);
+        };
+        let right_edge_x = INTRO_TITLE_CENTER_X + last_w / 2.0;
+        let last_line_center_y = INTRO_TITLE_CENTER_Y + last_top_rel / 2.0;
         (right_edge_x, last_line_center_y)
     }
 }
@@ -1296,19 +1293,59 @@ mod tests {
         (bx0 != u32::MAX).then_some((bx0, by0, bx1, by1))
     }
 
+    /// **修复轮 1（M2）**：从容器几何动态推导上排 / 主标题各自的 y 窗口，
+    /// 而不是像修复前那样手算死的像素窗口（`0..335`、`top+1..500`）。
+    ///
+    /// 审查记录的问题：那种手算窗口只对"当前这套精确排版数值"成立，字号一变
+    /// （变异 N2：主标题 100→70）或 logo 尺寸一变（变异 N8：36→48）窗口就
+    /// 与实际渲染错位，导致失败信息指向错误的测试——字号变异让上排/主标题
+    /// 两条带"串位"，结果是 `cover_top_row_opacity_…` 报错，而不是真正
+    /// 应该报错的 `cover_title_font_size_matches_100px`（后者反而因为窗口
+    /// 恰好还能凑出一个看似合理的比值而通过）。
+    ///
+    /// 这里改用与 `draw_cover` 完全相同的公式（同一套常量 + `measure()`）
+    /// 重新推导 `container_top`/`row_bottom`/`title_bottom`：任何改动这些
+    /// 常量的变异都会被两条窗口"感知到"，继续对齐到正确的区域，而不是死守
+    /// 一份过时的像素窗口。窗口本身在几何边界外各留 8px 安全余量，容纳抗
+    /// 锯齿边缘。
+    fn cover_dynamic_windows(painter: &mut Painter, title: &str) -> (u32, u32, u32, u32) {
+        let title_style = TextStyle {
+            size_px: COVER_TITLE_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: COVER_TITLE_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+        let (_, title_h) = painter.renderer.measure(title, &title_style);
+        let container_h = COVER_ROW_HEIGHT_PX + title_h;
+        let container_top = COVER_CONTAINER_CENTER_Y - container_h / 2.0;
+        let row_bottom = container_top + COVER_ROW_HEIGHT_PX;
+        let title_bottom = row_bottom + title_h;
+
+        const MARGIN: f32 = 8.0;
+        (
+            (container_top - MARGIN).max(0.0).floor() as u32,
+            (row_bottom + MARGIN).ceil() as u32,
+            (row_bottom + MARGIN).ceil() as u32,
+            (title_bottom + MARGIN).ceil().min(CANVAS_H) as u32,
+        )
+    }
+
     /// Cover 上排「熊猫智研社」的整体不透明度应精确为 0.30
     /// （黑字合成到白底：`darkness ≈ round(255*0.30) = 76`），而不是 255
-    /// （忘了施加整体透明度）。只扫文字所在的 x 范围（≥220，即
-    /// `COVER_ROW_TEXT_LEFT_PX`），避开 logo（颜色未知，会污染这个精确数值）。
+    /// （忘了施加整体透明度）。只扫文字所在的 x 范围（`COVER_ROW_TEXT_LEFT_PX`
+    /// 起，用常量而非字面量——避开 logo 颜色未知会污染这个精确数值，同时
+    /// logo 尺寸变化时这个常量本身也会跟着动，不会读到过时的边界）。
     #[test]
     fn cover_top_row_opacity_is_about_76_not_opaque() {
         let mut painter = Painter::new().unwrap();
         let mut p = Pixmap::new(1280, 720).unwrap();
         painter.draw_cover(&mut p, "标题");
-        // 容器垂直居中于 360，主标题至少一行（100px*1.2=120px），故容器总高
-        // >= 52+120=172，容器顶 <= 360-86=274；上排固定在容器顶部往下 52px，
-        // 取一段肯定覆盖上排、肯定不会碰到主标题的安全窗口。
-        let max_darkness = max_darkness_in_rect(&p, 220, 900, 0, 300);
+        let (row_y0, row_y1, _, _) = cover_dynamic_windows(&mut painter, "标题");
+        let max_darkness =
+            max_darkness_in_rect(&p, COVER_ROW_TEXT_LEFT_PX as u32, 1000, row_y0, row_y1);
         assert!(
             (max_darkness as i32 - 76).abs() <= 8,
             "上排文字 darkness 应约为 76（0.30 组透明度合成到白底），实得 {max_darkness}"
@@ -1328,14 +1365,54 @@ mod tests {
         assert!(has_logo_ink, "logo 所在的 36x36 区域内应有非白像素");
     }
 
+    /// **修复轮 1（I2）**：logo 自身的 0.30 组透明度此前没有任何断言
+    /// （审查变异 N19：logo 改成 `PixmapPaint::default()`，即不施加 0.30，
+    /// 31 条测试一条都不响——`cover_top_row_opacity_…` 的扫描窗口刻意避开了
+    /// logo，`cover_draws_a_logo_in_the_top_row` 只判断"非白"、不判断具体
+    /// 深浅）。这里对 logo 自身的像素区域做同样精确的 darkness 断言。
+    #[test]
+    fn cover_logo_opacity_is_about_76_not_opaque() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "标题");
+        let (row_y0, row_y1, _, _) = cover_dynamic_windows(&mut painter, "标题");
+        let logo_x0 = COVER_ROW_LEFT_PX as u32 + COVER_LOGO_MARGIN_PX as u32;
+        let logo_x1 = logo_x0 + COVER_LOGO_SIZE_PX;
+        let max_darkness = max_darkness_in_rect(&p, logo_x0, logo_x1, row_y0, row_y1);
+        assert!(
+            (max_darkness as i32 - 76).abs() <= 10,
+            "logo darkness 应约为 76（0.30 组透明度合成到白底），实得 {max_darkness}"
+        );
+        assert_ne!(max_darkness, 255, "logo 不应是不透明的纯色（未施加整体透明度）");
+    }
+
+    /// **修复轮 1（I3）**：上排"左对齐、行左边缘 x=176"此前没有任何断言
+    /// （审查变异 N3：去掉 `marginLeft 40`；N9：上排改成水平居中——双双存活）。
+    /// 上排（logo）是这一带最左侧的元素，直接断言该窗口内最左侧墨迹的 x 坐标。
+    #[test]
+    fn cover_top_row_left_edge_is_176() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "标题");
+        let (row_y0, row_y1, _, _) = cover_dynamic_windows(&mut painter, "标题");
+        let (x0, _, _, _) = ink_bbox_in_y_range(&p, row_y0, row_y1).expect("上排应有墨迹");
+        // 故意用字面量 176（而不是 `COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX`）
+        // 做期望值——审查实测就是 176。若改用这两个常量相加，当
+        // `COVER_ROW_MARGIN_LEFT_PX`（marginLeft 40）被错误改掉时，`expected`
+        // 会跟着"一起错"，测试变成永远自证成立、测不出任何东西（这正是
+        // 变异验证时抓到的真实教训：用同一个被改动的常量算期望值，等于没测）。
+        assert!((x0 as i32 - 176).abs() <= 2, "上排（logo）左边缘应≈176，实得 {x0}");
+    }
+
     /// Cover 主标题应是 100px 量级：单行短标题的墨高与上排 38px 文字墨高的比值
     /// 应约为 100/38（±10%）。
     #[test]
     fn cover_title_font_size_matches_100px() {
         let mut painter = Painter::new().unwrap();
         let mut p = Pixmap::new(1280, 720).unwrap();
-        painter.draw_cover(&mut p, "短标题"); // 短标题，单行，不换行
-        let (top_h, title_h) = cover_row_and_title_ink_heights(&p);
+        let title = "短标题"; // 短标题，单行，不换行
+        painter.draw_cover(&mut p, title);
+        let (top_h, title_h) = cover_row_and_title_ink_heights(&mut painter, title, &p);
         let ratio = title_h / top_h;
         let expected = 100.0 / 38.0;
         assert!(
@@ -1351,15 +1428,12 @@ mod tests {
     /// 间隙，例如既有测试 `font_size_threshold_ignores_whitespace_padding`
     /// 文档记录的"三"字——三条横线，行扫描会在笔画间的空白处误判"这一段墨迹
     /// 结束了"），用"从第一行有墨迹到最后一行有墨迹"的整体跨度不受这个陷阱
-    /// 影响（红色阶段实测：用连续段方法时"短标题"三个字被切成 18px 的碎片，
-    /// 换成整体跨度后量出正确的 ~95px 级别高度）。上排与主标题各自在互不重叠
-    /// 的 y 窗口内查找，两个窗口本身不会互相污染。
-    fn cover_row_and_title_ink_heights(p: &Pixmap) -> (f32, f32) {
+    /// 影响。上排与主标题各自在互不重叠的 y 窗口内查找，两个窗口本身不会
+    /// 互相污染——**修复轮 1（M2）**：这两个窗口现在由 `cover_dynamic_windows`
+    /// 动态推导，不再是手算死的像素值。
+    fn cover_row_and_title_ink_heights(painter: &mut Painter, title: &str, p: &Pixmap) -> (f32, f32) {
         let row_has_ink =
             |y: u32| (0..p.width()).any(|x| p.pixel(x, y).map(|c| darkness(c) > 0).unwrap_or(false));
-        // 上排在 y<300（同上一条推导）；主标题在其后，用一个宽泛上界 700
-        // （水印固定在 y>=550 附近；这个函数只用于单行短标题场景，主标题块
-        // 不会延伸到那么低）。
         let ink_extent = |y_start: u32, y_end: u32| -> Option<(u32, u32)> {
             let mut first = None;
             let mut last = None;
@@ -1371,16 +1445,9 @@ mod tests {
             }
             first.zip(last)
         };
-        // 实测（"短标题"，见报告红色阶段记录）：上排墨迹实际跨度是
-        // y∈[282,318]（38px 字号的实际墨高比 em 方框小，末端到 318 而不是
-        // 想当然的 300 以内），窗口给到 335 留出安全余量，同时仍严格早于
-        // 主标题的起始行 339，不会把两者混到一起。主标题窗口上界不能沿用
-        // 700——那会把水印（实测 y∈[560,591]）也吞进"主标题"的墨迹跨度里
-        // （红色阶段实测：title_h 因此被撑到 253，而不是真实的 94），改用
-        // 500，仍远高于"短标题"单行墨迹的实际下边缘 432，同时严格低于水印
-        // 起始行 560。
-        let top_extent = ink_extent(0, 335).expect("上排应有墨迹");
-        let title_extent = ink_extent(top_extent.1 + 1, 500).expect("主标题应有墨迹");
+        let (row_y0, row_y1, title_y0, title_y1) = cover_dynamic_windows(painter, title);
+        let top_extent = ink_extent(row_y0, row_y1).expect("上排应有墨迹");
+        let title_extent = ink_extent(title_y0, title_y1).expect("主标题应有墨迹");
         (
             (top_extent.1 - top_extent.0 + 1) as f32,
             (title_extent.1 - title_extent.0 + 1) as f32,
@@ -1419,8 +1486,19 @@ mod tests {
         }
         assert_eq!(max_alpha, 102, "cover 水印 maxAlpha 应精确等于 102");
 
+        // **修复轮 1（M1）**：把过松的下界 `>450` 换成窄区间——实测 601。
+        // 渲染全程确定性（同一份字体 + 同一套矢量排版，没有任何随机性来源），
+        // 容差只需要覆盖裁剪/取整的量级，给 ±3（而不是审查建议的 ±10——
+        // 实测 ±10 的容差盖不住 N15 那种 8px 量级的偏移，会让变异存活，见
+        // 报告"修复轮 1"变异验证记录）。这一条覆盖三个此前零覆盖的精确参数
+        // （审查变异 N13/N14/N15：水印图标 32→28、字号 28→24、图标间距
+        // 12→4，全部会显著改变这个墨宽，之前 `>450` 的松散下界测不出这些
+        // 变化）。
         let width = canvas_x1 - canvas_x0;
-        assert!(width > 450, "带中文后缀的水印墨宽应显著大于 content 预设的 275px，实得 {width}");
+        assert!(
+            (width - 601).abs() <= 3,
+            "带中文后缀的水印墨宽应精确约为 601±3px，实得 {width}"
+        );
 
         // 确认 draw_cover 真的调用了它，不只是 Painter::new() 里预渲染了但没贴图。
         let mut painter = Painter::new().unwrap();
@@ -1432,7 +1510,127 @@ mod tests {
         );
     }
 
+    /// **修复轮 1（M1）**：`·` 分隔点的 0.75 倍率此前零覆盖（审查变异 N6：
+    /// 倍率 0.75→1.0，存活）。
+    ///
+    /// **第一版实现有缺陷，被自己的变异验证抓到**：最初的写法是"扫全图找
+    /// 有没有 alpha≈77 的像素"——但字形抗锯齿边缘本身就会产生从 0 到
+    /// 102 连续过渡的 alpha 值，边缘上几乎必然会经过 77 附近，导致这条断言
+    /// 无论倍率是不是 0.75 都成立（变异 N6 验证时这条测试纹丝不动地通过）。
+    /// 改成只在分隔点自身的 x 范围内求 **maxAlpha**：分隔点内部（非边缘）的
+    /// 像素在正确实现下应该封顶在 ≈77，被错误改成 1.0 倍率后会封顶在 102——
+    /// 这才是能被变异翻转的判据。分隔点的 x 范围与
+    /// `layout_and_draw_watermark` 内部算法同源重新推导（整行居中、图标+gap+
+    /// 各分段依次左对齐），再换算成 `prepared.pixmap` 的局部坐标。
+    #[test]
+    fn cover_watermark_separator_dot_has_reduced_opacity() {
+        let mut renderer = TextRenderer::new().unwrap();
+        let preset = cover_watermark_preset();
+        let prepared = prepare_watermark(&mut renderer, &preset).unwrap();
+
+        let style = TextStyle {
+            size_px: preset.font_size_px,
+            color: preset.color,
+            stroke: None,
+            letter_spacing_px: preset.letter_spacing_px,
+            max_width_px: WATERMARK_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: false,
+        };
+        let (main_w, _) = renderer.measure(COVER_WATERMARK_TEXT_MAIN, &style);
+        let (sep_w, _) = renderer.measure(COVER_WATERMARK_TEXT_SEP, &style);
+        let (suffix_w, _) = renderer.measure(COVER_WATERMARK_TEXT_SUFFIX, &style);
+        let icon_size = preset.icon_size_px as f32;
+        let total_width = icon_size + preset.icon_gap_px + main_w + sep_w + suffix_w;
+        let row_left = CANVAS_W / 2.0 - total_width / 2.0;
+        let text_start = row_left + icon_size + preset.icon_gap_px;
+        let sep_x0 = text_start + main_w;
+        let sep_x1 = sep_x0 + sep_w;
+        // 只取分隔段 advance 宽度的中间 50%：`" · "` 前后各有一个空格，
+        // 字形本身的墨迹（那个点）不会贴着 advance box 的边界，而相邻分段
+        // 的字形又可能有轻微的字宽外溢（overhang）越过自己的 advance 边界——
+        // 直接用整个 `[sep_x0, sep_x1)` 扫描会把相邻満倍率分段的溢出像素也
+        // 扫进来，把 maxAlpha 误判成 102（实测过：不收窄时基线场景就会出现
+        // 这个假阳性）。中间 50% 足够远离两侧边界，同时仍完整覆盖点号本身
+        // （点号在等宽的 `" · "` 里天然居中）。
+        let sep_margin = sep_w * 0.25;
+        let local_x0 = ((sep_x0 + sep_margin) - prepared.origin_x as f32).max(0.0) as u32;
+        let local_x1 = (((sep_x1 - sep_margin) - prepared.origin_x as f32).max(0.0) as u32)
+            .min(prepared.pixmap.width());
+
+        let mut sep_max_alpha = 0u8;
+        for y in 0..prepared.pixmap.height() {
+            for x in local_x0..local_x1 {
+                if let Some(c) = prepared.pixmap.pixel(x, y) {
+                    sep_max_alpha = sep_max_alpha.max(c.alpha());
+                }
+            }
+        }
+        assert!(
+            (sep_max_alpha as i32 - 77).abs() <= 3,
+            "分隔点「·」自身范围内的 maxAlpha 应≈77（102×0.75），实得 {sep_max_alpha}"
+        );
+    }
+
+    /// **修复轮 1（M1）**：光标间距（advance 口径 4px）此前零覆盖（审查变异
+    /// N5：间距 4→40，存活）。断言"光标墨迹左边缘 − 最后一行墨迹右边缘"落在
+    /// `[4,25]`——4px 加在 advance 口径上，`|` 字形自身还有 side bearing，
+    /// 审查实测视觉间隙约 12px，故给一个覆盖两者的合理区间而不是精确值。
+    #[test]
+    fn cursor_gap_from_last_line_is_within_expected_range() {
+        let mut painter = Painter::new().unwrap();
+        let title = "标题文字"; // 4 字，chars_per_sec=2.0，纯 CJK 不涉及 word-wrap
+        let (cursor_bbox, last_line_bbox) = cursor_and_last_line_bboxes(&mut painter, 15, title);
+        let cursor = cursor_bbox.expect("frame 15 应有光标（f%15=0，最亮）");
+        let last_line = last_line_bbox.expect("frame 15 应有文字墨迹");
+        let gap = cursor.0 as i32 - last_line.2 as i32;
+        assert!(
+            (4..=25).contains(&gap),
+            "光标左边缘与最后一行右边缘的间隙应落在 [4,25]px，实得 {gap}"
+        );
+    }
+
+    /// **修复轮 1（M1）**：Cover 主标题 / Intro 标题的换行宽度上限
+    /// （均为 944px）此前零覆盖（审查变异 N11：Intro `max_width` 944→1280；
+    /// N12：Cover 主标题 `max_width` 944→1280——双双存活）。用一个必然换行
+    /// 的长标题，断言两处的墨宽都不超过 944px（留一点描边/字距的余量）。
+    #[test]
+    fn cover_and_intro_titles_wrap_within_944px() {
+        let mut painter = Painter::new().unwrap();
+        let long_title = "长".repeat(30); // 100px/70px 字号下必然远超 944px，需要换行
+
+        let mut cover_p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut cover_p, &long_title);
+        let (_, _, title_y0, title_y1) = cover_dynamic_windows(&mut painter, &long_title);
+        let (cx0, _, cx1, _) =
+            ink_bbox_in_y_range(&cover_p, title_y0, title_y1).expect("Cover 主标题应有墨迹");
+        let cover_w = cx1 - cx0;
+        assert!(
+            cover_w <= 944 + 8,
+            "Cover 主标题墨宽应 ≤944px（含少量描边/字距余量），实得 {cover_w}"
+        );
+
+        let mut intro_p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut intro_p, 70, &long_title); // 70 帧：打字已完成、尚未开始淡出
+        let (ix0, _, ix1, _) =
+            ink_bbox_in_y_range(&intro_p, 0, 720).expect("Intro 标题应有墨迹");
+        let intro_w = ix1 - ix0;
+        assert!(intro_w <= 944 + 8, "Intro 标题墨宽应 ≤944px，实得 {intro_w}");
+    }
+
     /// Intro 不应有水印：下半部（y>600，覆盖 content 水印所在的位置区域）不应有墨。
+    ///
+    /// **已知盲区（修复轮 1 审查复现并确认，M4）**：`content` 预设水印的
+    /// 颜色是 `rgba(255,255,255,0.27)`——白色、低透明度。如果哪天有人误在
+    /// `draw_intro` 里调用 `draw_watermark(pixmap, &self.content_watermark, ..)`，
+    /// 把这个白色水印合成到 Intro 本就不透明的白底上，**在数学上是恒等运算**
+    /// （白叠白，alpha/颜色判据都测不出任何差异，输出逐字节不变）。这不是
+    /// 这条测试或任何像素判据能堵住的漏洞——同时也正因为如此，这种"回归"
+    /// **没有任何用户可见后果**（输出真的没变）。审查明确建议不要为此引入
+    /// 测试专用的全局状态或作弊式检测（例如给 `draw_watermark` 打桩记录调用
+    /// 次数），这里保留这条测试是为了堵住"画了别的、有颜色差异的东西"这类
+    /// 更常见的回归（下面的完整性断言 `intro_frame_matches_hand_composited_reference_exactly`
+    /// 覆盖了同一类关注点的另一半：正向证明每一帧"不多画任何东西"）。
     #[test]
     fn intro_has_no_watermark() {
         let mut painter = Painter::new().unwrap();
@@ -1537,6 +1735,212 @@ mod tests {
         };
         painter.renderer.draw_centered(&mut full, title2, 640.0, 360.0, &style, 1.0, 1.0);
         assert_eq!(done.data(), full.data(), "打完后应与整串标题渲染结果逐字节一致（无光标残留）");
+    }
+
+    /// **修复轮 1（M4.1）**：把上一条测试里"打完后与整串标题逐字节一致"的
+    /// 正向完全性断言，推广到若干打字中途的帧——手工按 `draw_intro` 同一套
+    /// 公式合成"白底 + 当前 visible 文字 + 光标（若应显示）"参考图，与真实
+    /// 输出逐字节比较。这既钉死"不多画任何东西"（含 M4 指出的"content 水印
+    /// 白叠白测不出来"这个盲区之外的所有其它可能的意外墨迹来源——只要那个
+    /// 来源不是"恰好也是白色"，这条测试都能抓到），也顺带验证了
+    /// `intro_last_line_anchor`/`last_line_metrics` 算出的光标位置与
+    /// `draw_intro` 实际使用的完全一致。
+    #[test]
+    fn intro_frame_matches_hand_composited_reference_exactly() {
+        let mut painter = Painter::new().unwrap();
+        let title = "标题文字标题文字标题"; // 10 字，chars_per_sec=5.0，覆盖多个 visible 台阶
+        for f in [0u32, 5, 10, 15, 29, 45, 59, 60] {
+            let mut actual = Pixmap::new(1280, 720).unwrap();
+            painter.draw_intro(&mut actual, f, title);
+
+            let mut expected = Pixmap::new(1280, 720).unwrap();
+            expected.fill(Color::from_rgba8(255, 255, 255, 255));
+
+            let title_chars: Vec<char> = title.chars().collect();
+            let total = title_chars.len();
+            let chars_per_sec = total as f64 / INTRO_TYPEWRITER_SECONDS;
+            let visible = ((f as f64 * chars_per_sec / FPS).floor() as usize).min(total);
+            let display_text: String = title_chars[..visible].iter().collect();
+            let style = TextStyle {
+                size_px: INTRO_TITLE_FONT_SIZE_PX,
+                color: TITLE_COLOR_BLACK,
+                stroke: None,
+                letter_spacing_px: 0.0,
+                max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+                line_height: DEFAULT_LINE_HEIGHT,
+                bold: true,
+            };
+            let fade_opacity = interpolate(f as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
+            if fade_opacity > 0.0 {
+                painter.renderer.draw_centered(
+                    &mut expected,
+                    &display_text,
+                    INTRO_TITLE_CENTER_X,
+                    INTRO_TITLE_CENTER_Y,
+                    &style,
+                    fade_opacity,
+                    1.0,
+                );
+
+                if f < INTRO_TYPEWRITER_FRAMES {
+                    let period = INTRO_CURSOR_BLINK_PERIOD_FRAMES as f64;
+                    let blink_opacity = interpolate3(
+                        (f % INTRO_CURSOR_BLINK_PERIOD_FRAMES) as f64,
+                        [0.0, period / 2.0, period],
+                        [1.0, 1.0, 0.0],
+                    ) as f32;
+                    let cursor_opacity = fade_opacity * blink_opacity;
+                    if cursor_opacity > 0.0 {
+                        let (right_edge_x, last_line_center_y) = painter
+                            .renderer
+                            .last_line_metrics(&display_text, &style)
+                            .map(|(w, top_rel, _)| {
+                                (INTRO_TITLE_CENTER_X + w / 2.0, INTRO_TITLE_CENTER_Y + top_rel / 2.0)
+                            })
+                            .unwrap_or((INTRO_TITLE_CENTER_X, INTRO_TITLE_CENTER_Y));
+                        let (cursor_w, _) = painter.renderer.measure(INTRO_CURSOR_TEXT, &style);
+                        let cursor_center_x = right_edge_x + INTRO_CURSOR_GAP_PX + cursor_w / 2.0;
+                        painter.renderer.draw_centered(
+                            &mut expected,
+                            INTRO_CURSOR_TEXT,
+                            cursor_center_x,
+                            last_line_center_y,
+                            &style,
+                            cursor_opacity,
+                            1.0,
+                        );
+                    }
+                }
+            }
+
+            assert_eq!(
+                actual.data(),
+                expected.data(),
+                "frame {f}: draw_intro 的输出应与手工合成的参考图逐字节一致"
+            );
+        }
+    }
+
+    /// 像素包围盒 `(x0, y0, x1, y1)`（含边界）。
+    type Bbox = (u32, u32, u32, u32);
+
+    /// 求两帧差异像素的包围盒（`None` 表示完全一致）。
+    fn diff_bbox(a: &Pixmap, b: &Pixmap) -> Option<Bbox> {
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for y in 0..a.height().min(b.height()) {
+            for x in 0..a.width().min(b.width()) {
+                if a.pixel(x, y) != b.pixel(x, y) {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        (x0 != u32::MAX).then_some((x0, y0, x1, y1))
+    }
+
+    fn bboxes_overlap_on_x(a: Bbox, b: Bbox) -> bool {
+        a.0 <= b.2 && a.2 >= b.0
+    }
+
+    /// 在给定帧里分别求出「光标自身的像素 bbox」与「最后一行文字墨迹的
+    /// bbox」，用于 I1（word-wrap 场景下光标是否压字）与光标间距（M1）的
+    /// 断言。光标 bbox 通过「有光标」与「无光标」两次渲染的像素 diff 求出
+    /// （两者除光标外应逐字节相同——这本身就是
+    /// `intro_frame_matches_hand_composited_reference_exactly` 验证过的
+    /// 不变量）；最后一行墨迹 bbox 通过 `last_line_metrics` 换算出的 y 带在
+    /// "无光标"那张图里扫描得到。若该帧压根没有光标（打字已完成、或淡出/
+    /// 闪烁相位使 opacity 恰好为 0），光标 bbox 返回 `None`。
+    fn cursor_and_last_line_bboxes(
+        painter: &mut Painter,
+        local_frame: u32,
+        title: &str,
+    ) -> (Option<Bbox>, Option<Bbox>) {
+        let mut with_cursor = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut with_cursor, local_frame, title);
+
+        let title_chars: Vec<char> = title.chars().collect();
+        let total = title_chars.len();
+        let chars_per_sec = total as f64 / INTRO_TYPEWRITER_SECONDS;
+        let visible = ((local_frame as f64 * chars_per_sec / FPS).floor() as usize).min(total);
+        let display_text: String = title_chars[..visible].iter().collect();
+        let style = TextStyle {
+            size_px: INTRO_TITLE_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+        let fade_opacity = interpolate(local_frame as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
+
+        let mut text_only = Pixmap::new(1280, 720).unwrap();
+        text_only.fill(Color::from_rgba8(255, 255, 255, 255));
+        if fade_opacity > 0.0 {
+            painter.renderer.draw_centered(
+                &mut text_only,
+                &display_text,
+                INTRO_TITLE_CENTER_X,
+                INTRO_TITLE_CENTER_Y,
+                &style,
+                fade_opacity,
+                1.0,
+            );
+        }
+
+        let cursor_bbox = diff_bbox(&with_cursor, &text_only);
+        let last_line_bbox = painter
+            .renderer
+            .last_line_metrics(&display_text, &style)
+            .and_then(|(_, top_rel, h)| {
+                let center_y = INTRO_TITLE_CENTER_Y + top_rel / 2.0;
+                let y0 = (center_y - h / 2.0).max(0.0) as u32;
+                let y1 = ((center_y + h / 2.0).min(719.0) as u32) + 1;
+                ink_bbox_in_y_range(&text_only, y0, y1)
+            });
+
+        (cursor_bbox, last_line_bbox)
+    }
+
+    /// **修复轮 1（I1，核心修复的验收测试）**：word-wrap 换行时光标不应被
+    /// 画到最后一行中间、压在字形上。
+    ///
+    /// 审查用「逐帧枚举 0..60、判据『光标 bbox 是否落在最后一行墨迹 bbox
+    /// 之内』」实测出修复前的破相帧数：
+    ///
+    /// | 标题 | 修复前 | 修复后（本测试） |
+    /// |---|---|---|
+    /// | 英文长标题（`Panda Video Generator automated engine for long titles wrapping`） | 35/60 | 0/60 |
+    /// | 中英混排（`熊猫视频自动化引擎 Panda Video Generator 全流程演示标题`） | 20/60 | 0/60 |
+    ///
+    /// 这里只按 x 轴判断重叠（`bboxes_overlap_on_x`）：光标与文字的 y 位置
+    /// 由同一个 `last_line_center_y` 公式给出，天然对齐在同一行，真正会
+    /// "压字"的失败模式是水平方向上光标落进了文字的包围盒内。
+    #[test]
+    fn cursor_never_overlaps_word_wrapped_last_line_ink() {
+        let mut painter = Painter::new().unwrap();
+        let titles = [
+            "Panda Video Generator automated engine for long titles wrapping",
+            "熊猫视频自动化引擎 Panda Video Generator 全流程演示标题",
+        ];
+        for title in titles {
+            let mut overlap_frames = 0u32;
+            for f in 0..60u32 {
+                let (cursor_bbox, last_line_bbox) =
+                    cursor_and_last_line_bboxes(&mut painter, f, title);
+                if let (Some(c), Some(t)) = (cursor_bbox, last_line_bbox)
+                    && bboxes_overlap_on_x(c, t)
+                {
+                    overlap_frames += 1;
+                }
+            }
+            assert_eq!(
+                overlap_frames, 0,
+                "标题 {title:?} 不应有任何帧光标压在最后一行文字上，实际 {overlap_frames}/60 帧"
+            );
+        }
     }
 
     /// 光标闪烁不导致文字抖动：取同一 `visible`（=1）下光标不同透明度的两帧
