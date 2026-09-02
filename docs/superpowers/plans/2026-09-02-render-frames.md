@@ -706,7 +706,7 @@ git commit -m "feat(render): 段落时间轴布局与 WebVTT 解析"
 **Interfaces:**
 - Consumes: `crate::assets::FONT`
 - Produces:
-  - `pub struct TextStyle { pub size_px: f32, pub color: [u8; 4], pub stroke: Option<([u8; 4], f32)>, pub letter_spacing_px: f32, pub max_width_px: f32, pub line_height: f32 }`
+  - `pub struct TextStyle { pub size_px: f32, pub color: [u8; 4], pub stroke: Option<([u8; 4], f32)>, pub letter_spacing_px: f32, pub max_width_px: f32, pub line_height: f32, pub bold: bool }`
   - `pub struct TextRenderer`（持有字体系统，构造一次复用）
   - `pub fn TextRenderer::new() -> anyhow::Result<Self>`
   - `pub fn TextRenderer::measure(&mut self, text: &str, style: &TextStyle) -> (f32, f32)`（返回宽、高）
@@ -747,6 +747,7 @@ mod tests {
             letter_spacing_px: 0.0,
             max_width_px: 1024.0,
             line_height: 1.2,
+            bold: true,
         }
     }
 
@@ -826,6 +827,36 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_bold_produces_more_ink_than_regular() {
+        // 内嵌字体只有 Regular 一个字重，粗体必须靠合成。
+        // 断言：bold=true 的墨迹量显著多于 bold=false。
+        let mut r = TextRenderer::new().unwrap();
+        let ink = |bold: bool| {
+            let mut s = style(80.0);
+            s.bold = bold;
+            s.stroke = None; // 去掉描边，只比字形本身的粗细
+            let mut p = blank(1280, 400);
+            r_draw(&mut r, &mut p, "粗体测试", &s);
+            (0..p.height())
+                .flat_map(|y| (0..p.width()).map(move |x| (x, y)))
+                .filter(|&(x, y)| p.pixel(x, y).map(|c| c.alpha() > 128).unwrap_or(false))
+                .count()
+        };
+        let regular = ink(false);
+        let bold = ink(true);
+        assert!(bold > regular, "合成粗体应比常规更粗：{bold} vs {regular}");
+        assert!(
+            (bold as f64) < (regular as f64) * 2.5,
+            "合成粗体过粗，可能宽度参数写错：{bold} vs {regular}"
+        );
+    }
+
+    /// 测试辅助：避免闭包重复借用 renderer。
+    fn r_draw(r: &mut TextRenderer, p: &mut Pixmap, text: &str, s: &TextStyle) {
+        r.draw_centered(p, text, 640.0, 200.0, s, 1.0, 1.0);
+    }
+
+    #[test]
     fn scale_enlarges_around_the_center_point() {
         let mut r = TextRenderer::new().unwrap();
         let mut a = blank(1280, 720);
@@ -857,6 +888,20 @@ Expected: FAIL，模块不存在
 - `stroke` 为 `Some((颜色, 宽度))` 时**先描边再填充**（描边在下、填充在上），`None` 时只填充
 - `letter_spacing_px` 逐字形追加水平偏移
 - 超过 `max_width_px` 时换行；`\n` 强制换行；行距为 `size_px * line_height`
+
+**两条必做项（来自 Task 0 的实测发现，不做会有实质缺陷）**：
+
+1. **必须禁用系统字体回退。** `cosmic_text::FontSystem::new()` 内部会调 `fontdb::Database::load_system_fonts()`，把运行机器上装的所有字体注册进同一个库；`Shaping::Advanced` 遇到内嵌字体未覆盖的字符时会**静默回退到系统字体**（Task 0 的审查实测：阿拉伯字母被 DejaVu Sans 接管）。这会让成片长什么样取决于运行机器装了什么字体，违背「所有文字统一用内嵌字体」这条全局约束。**改用 `FontSystem::new_with_locale_and_db(locale, db)`，自己构造一个从未调用 `load_system_fonts()` 的 `fontdb::Database`，只 `load_font_data` 内嵌字体。** 具体写法见 `docs/text-rendering.md`。
+
+2. **必须实现合成粗体。** 内嵌字体只有 Regular 一个静态字重（Task 0 的审查用 `ttf-parser` 读 `OS/2` 表确认：`weight: Normal`、`is_variable: false`、face 数量 1），`Weight::BOLD` 对它是空操作。而规格 §8.4 四个段落的文字**全部要求粗体**。TS 原版在 Chrome 下由浏览器合成粗体，Rust 侧没有那一层，不做的话四段文字会全部偏细。
+
+   在本渲染路线（取矢量轮廓 → 描边/填充）下的做法是**按下面的顺序画三遍**，`bold_w = size_px * 0.03`：
+
+   1. 若 `stroke` 为 `Some((stroke_color, stroke_w))`：用 `stroke_color` 描边，宽度 `stroke_w + bold_w`
+   2. 用 `color`（填充色）描边，宽度 `bold_w`  ← 这一步产生加粗效果
+   3. 用 `color` 填充
+
+   这样黑色描边仍然完整包在**加粗后**的字形外侧。`bold: false` 时跳过第 2 步、第 1 步宽度用 `stroke_w`。
 
 > **API 以实际 crate 版本为准。** Task 0 已经趟过一遍，以那份记录为准；若实现中发现记录有误，**改代码同时改记录**，并在报告里说明。
 
