@@ -1032,6 +1032,40 @@ mod tests {
         ]
     }
 
+    /// **终审修复波次（第 2 项的固化断言，复审裁定必须加）**：`CAPTION_MAX_WIDTH_PX`
+    /// 是 `1024 - 2*40 = 944`，不是 `CANVAS_W * 0.8 = 1024`——TS 的 `Content.tsx`
+    /// 在同一个 div 上同时写了 `width:'80%'` 与 `padding:'20px 40px'`，
+    /// tailwindcss v4 preflight 的 `box-sizing: border-box` 下内容宽度是 944。
+    ///
+    /// 加这条断言的理由不是"怕值算错"，而是**没有测试守着的正确值会被改回错值**：
+    /// `CANVAS_W * 0.8` 这个看起来更"自然"的写法就在 `INTRO_TITLE_MAX_WIDTH_PX`
+    /// 旁边，回退成本极低；实测把常量改回 1024 跑全量套件是 134 passed / 0 failed，
+    /// 944 与 1024 对改动前的套件**完全等价**。
+    ///
+    /// 上下限是**推导**出来的、不是把当前输出抄成期望值（所以不是变更探测器）：
+    /// 墨迹宽 = 排版宽度上限 + 描边外扩。上限 `950 = 944 + 6`（`CAPTION_STROKE_WIDTH_PX`
+    /// 是 6px，左右各外扩半个描边宽）；下限 `920` 只是要求这段文本确实把 944 用满，
+    /// 否则"墨迹 <= 950"这个约束会因为文本太短而自动成立、失去鉴别力。
+    #[test]
+    fn long_caption_wraps_inside_the_944px_content_box_not_the_1024px_container() {
+        let mut painter = Painter::new().unwrap();
+        let text = "这是一段专门用来触发换行的长字幕文本总共超过五十个字符会走五十二像素的小字号分支并且必然需要折成好几行来显示效果";
+        let caps = vec![Caption { text: text.into(), start_ms: 0, end_ms: 5000 }];
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_content(&mut p, 90, &caps);
+        let (x0, _, x1, _) =
+            bbox_excluding_watermark(&p, CAPTION_SCAN_Y_MAX).expect("长字幕应有墨迹");
+        let ink_w = x1 - x0 + 1;
+        assert!(
+            ink_w <= 950,
+            "字幕换行宽度受 944px 内容盒约束（1024 容器 - 2x40 padding），墨迹再加 6px 描边外扩，上限 950；实得 {ink_w}"
+        );
+        assert!(
+            ink_w >= 920,
+            "这段文本必须把 944px 用满，否则本测试对上限的约束失去意义；实得 {ink_w}"
+        );
+    }
+
     #[test]
     fn translate_x_shifts_caption_center_by_about_70px_from_frame_1_to_15() {
         let mut painter = Painter::new().unwrap();
