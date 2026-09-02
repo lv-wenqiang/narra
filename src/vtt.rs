@@ -180,6 +180,11 @@ fn parse_ts_ms(s: &str) -> Option<u64> {
     let h: u64 = parts[0].parse().ok()?;
     let m: u64 = parts[1].parse().ok()?;
     let sec: u64 = sec.parse().ok()?;
+    // 右补零后按字节切片，因此必须先确认毫秒位全是 ASCII 数字：
+    // 多字节字符（如「éé」补成「éé0」）会让 [..3] 落在字符中间而 panic。
+    if !ms.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let ms: u64 = format!("{ms:0<3}")[..3].parse().ok()?;
     Some(h * 3_600_000 + m * 60_000 + sec * 1000 + ms)
 }
@@ -340,5 +345,29 @@ mod tests {
     fn parse_vtt_ignores_header_and_blank_lines() {
         assert!(parse_vtt("WEBVTT\n\n").is_empty());
         assert!(parse_vtt("").is_empty());
+    }
+
+    #[test]
+    fn parse_ts_ms_rejects_non_ascii_milliseconds_without_panicking() {
+        // 毫秒位是多字节字符时，右补零后按字节切片会落在字符中间。
+        // 「éé」补成「éé0」共 5 字节，[..3] 恰好切进第二个 é（字节 2..4）。
+        // 函数文档承诺「失败返回 None」，这里必须返回 None 而不是 panic。
+        assert_eq!(parse_ts_ms("00:00:01.éé"), None);
+        assert_eq!(parse_ts_ms("00:00:01.é"), None);
+        assert_eq!(parse_ts_ms("00:00:01.１２３"), None, "全角数字不是 ASCII 数字");
+        // 合法输入不受影响
+        assert_eq!(parse_ts_ms("00:00:01.500"), Some(1500));
+        assert_eq!(parse_ts_ms("00:00:01.5"), Some(1500));
+    }
+
+    #[test]
+    fn parse_vtt_skips_cue_with_non_ascii_timestamp_instead_of_panicking() {
+        // debug-frames 读的是用户给的任意文件，这条路径必须扛得住脏数据。
+        let s = "WEBVTT\n\n1\n00:00:01.éé --> 00:00:02.000\n坏的一条。\n\n\
+                 2\n00:00:03.000 --> 00:00:04.000\n好的一条。\n";
+        let caps = parse_vtt(s);
+        assert_eq!(caps.len(), 1, "坏 cue 应被跳过，好 cue 应保留：{caps:?}");
+        assert_eq!(caps[0].text, "好的一条。");
+        assert_eq!(caps[0].start_ms, 3000);
     }
 }

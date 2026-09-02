@@ -49,7 +49,9 @@ enum Commands {
 /// 默认标题：VTT 上游没有专门的标题字段，`--title` 缺省时用品牌名占位。
 const DEFAULT_DEBUG_TITLE: &str = "熊猫智研社";
 
-/// 解析 `--frames`：逗号分隔的帧号列表；缺省时按每 30 帧取一张覆盖整条时间轴。
+/// 解析 `--frames`：逗号分隔的帧号列表；缺省时按每 30 帧取一张覆盖整条时间轴，
+/// 并补上末帧——末帧是 Outro 淡出的终点，正是最该人工核对的一帧，而
+/// `step_by(30)` 只在总帧数恰好是 30 的倍数加一时才会命中它。
 fn parse_frame_list(frames: Option<&str>, total_frames: u32) -> Result<Vec<u32>> {
     match frames {
         Some(s) => s
@@ -60,7 +62,15 @@ fn parse_frame_list(frames: Option<&str>, total_frames: u32) -> Result<Vec<u32>>
                     .with_context(|| format!("--frames 里的 “{part}” 不是合法帧号"))
             })
             .collect(),
-        None => Ok((0..total_frames).step_by(30).collect()),
+        None => {
+            let mut ids: Vec<u32> = (0..total_frames).step_by(30).collect();
+            if let Some(last) = total_frames.checked_sub(1)
+                && ids.last() != Some(&last)
+            {
+                ids.push(last);
+            }
+            Ok(ids)
+        }
     }
 }
 
@@ -83,9 +93,9 @@ fn run_debug_frames(
 
     let mut exported = Vec::with_capacity(frame_ids.len());
     for f in frame_ids {
-        let pixmap = source
-            .render(f)
-            .with_context(|| format!("渲染帧 {f} 失败（总帧数 {total_frames}）"))?;
+        // 不套外层 with_context：`FrameSource::render` 的 bail! 已经写明了
+        // 「帧号 N 超出总时长 M」，再包一层只会把同样的两个数字说第二遍。
+        let pixmap = source.render(f)?;
         let path = out.join(format!("frame_{f:05}.png"));
         pixmap
             .save_png(&path)

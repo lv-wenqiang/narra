@@ -29,8 +29,13 @@ const FPS: f64 = 30.0;
 /// 字幕居中于画面正中。
 const CAPTION_CENTER_X: f32 = CANVAS_W / 2.0;
 const CAPTION_CENTER_Y: f32 = CANVAS_H / 2.0;
-/// 字幕最大宽度：画面 80%。
-const CAPTION_MAX_WIDTH_PX: f32 = CANVAS_W * 0.8;
+/// 字幕最大宽度：画面 80% 的容器再减去左右各 40px 的 padding = 944px。
+/// TS 的 `Content.tsx` 在**同一个** div 上同时写了 `width:'80%'` 与
+/// `padding:'20px 40px'`，而 tailwindcss v4 的 preflight 给所有元素设了
+/// `box-sizing: border-box`，所以内容宽度是 `1024 - 80 = 944`，不是 1024。
+/// 与 `COVER_TITLE_MAX_WIDTH_PX` / `INTRO_TITLE_MAX_WIDTH_PX` 是同一套换算。
+const CAPTION_PADDING_X_PX: f32 = 40.0;
+const CAPTION_MAX_WIDTH_PX: f32 = CANVAS_W * 0.8 - CAPTION_PADDING_X_PX * 2.0;
 /// 长字幕判定阈值：去除空白后的字符数超过此值即用小字号。
 const CAPTION_LONG_CHAR_THRESHOLD: usize = 50;
 const CAPTION_FONT_SIZE_LONG: f32 = 52.0;
@@ -2504,7 +2509,9 @@ mod tests {
         if let Some(s) = cur {
             runs.push((s, 499));
         }
-        assert!(runs.len() >= 2, "上半屏应恰好扫到 logo + 标题两段独立墨迹游程，实得 {runs:?}");
+        // 必须是**恰好** 2 段：若 logo 墨迹将来裂成两段游程，`runs[1]` 就变成
+        // logo 自己的下半截，量出的「间隙」是 logo 内部空隙而测试照样通过。
+        assert_eq!(runs.len(), 2, "上半屏应恰好扫到 logo + 标题两段独立墨迹游程，实得 {runs:?}");
         let logo_run = runs[0];
         let title_run = runs[1];
         let gap = title_run.0 as i32 - logo_run.1 as i32;
@@ -2529,11 +2536,16 @@ mod tests {
         let mut f104 = Pixmap::new(1280, 720).unwrap();
         painter.draw_outro(&mut f40, 40);
         painter.draw_outro(&mut f104, 104);
-        assert_eq!(
-            f40.data(),
-            f104.data(),
-            "frame 40 与 frame 104 都应处于「已稳定、未开始淡出」窗口，逐字节相同"
-        );
+        // 不用 `assert_eq!` 直接比 921600 字节：失败时会把两个完整数组打进
+        // 输出，人根本读不了。先做一次相等判断，不等时用现成的 `diff_bbox`
+        // 报出差异区域，一眼就能看出是 logo、标题还是水印在动。
+        if f40.data() != f104.data() {
+            let bbox = diff_bbox(&f40, &f104);
+            panic!(
+                "frame 40 与 frame 104 都应处于「已稳定、未开始淡出」窗口，逐字节相同；\
+                 实测存在差异，差异像素包围盒 (x0,y0,x1,y1)={bbox:?}"
+            );
+        }
     }
 
     /// **修复轮 1（I1，协调者裁定，豁免 brief 的「原样照抄」要求）**：这条测试
