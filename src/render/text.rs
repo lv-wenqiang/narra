@@ -888,4 +888,47 @@ mod tests {
             }
         }
     }
+
+    /// **修复轮 2（复审建议的可选补充，纯几何、零像素扫描）**：直接用
+    /// `last_line_metrics` 的返回值验证一个人工构造、断行点可预知的
+    /// word-wrap 场景——最后一行宽度应精确等于末尾那个完整单词自身的宽度，
+    /// 而不是旧的"前缀高度跳变"启发式会给出的偏小值（那种启发式会把断在
+    /// 单词中间的前半截也算进"上一行"，导致最后一行宽度算少）。
+    ///
+    /// 这**不能替代** `src/render/draw.rs` 里
+    /// `cursor_never_overlaps_word_wrapped_last_line_ink` 那条端到端像素
+    /// 校验——真正证明"光标不会画到字形上"的是那条测试，这里只是一道几乎
+    /// 零成本的几何哨兵：不需要渲染完整帧、不需要扫描任何像素，一次
+    /// `last_line_metrics` 调用就能立刻发现"有人把旧启发式换回来了"这类
+    /// 回归，不用等到跑完那条较慢的像素校验才发现。
+    ///
+    /// 构造方法：把 `max_width_px` 卡在"刚好放得下单独一个 AAAA，放不下
+    /// AAAA BBBB"，逼着 cosmic-text 精确地在两个单词之间断行（不会有任何
+    /// 歧义空间）。
+    #[test]
+    fn last_line_metrics_word_wrap_gives_exact_width_not_a_shorter_heuristic_guess() {
+        let mut r = TextRenderer::new().unwrap();
+        let base_style = |max_width_px: f32| TextStyle {
+            size_px: 40.0,
+            color: [0, 0, 0, 255],
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px,
+            line_height: 1.2,
+            bold: true,
+        };
+        let (first_word_w, _) = r.measure("AAAA", &base_style(4000.0));
+        // 宽度刚好够放下单独的 "AAAA"，放不下 "AAAA BBBB" 整体：强制断成
+        // "AAAA" / "BBBB" 两行，断行点唯一、可预知。
+        let style = base_style(first_word_w + 8.0);
+        let (last_w, top_rel, _) = r.last_line_metrics("AAAA BBBB", &style).unwrap();
+        assert!(top_rel > 0.0, "本用例的构造前提是必须发生换行，实测未换行（top_rel={top_rel}）");
+
+        let (expected_w, _) = r.measure("BBBB", &style);
+        assert!(
+            (last_w - expected_w).abs() < 1.0,
+            "word-wrap 后最后一行宽度应精确等于末尾单词「BBBB」自身的宽度：\
+             last_w={last_w} expected={expected_w}（旧的\"前缀高度跳变\"启发式会得到一个明显偏小的值）"
+        );
+    }
 }

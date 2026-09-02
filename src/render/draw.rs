@@ -1904,16 +1904,129 @@ mod tests {
         (cursor_bbox, last_line_bbox)
     }
 
-    /// **修复轮 1（I1，核心修复的验收测试）**：word-wrap 换行时光标不应被
-    /// 画到最后一行中间、压在字形上。
+    /// 求两帧在给定 y 范围内差异像素的包围盒（`None` 表示该范围内完全一致）。
+    /// **修复轮 2（性能收窄专用）**：与 `diff_bbox` 是同一件事，只是多一个
+    /// y 范围裁剪——不改 `diff_bbox` 本身（它被 `cursor_gap_from_last_line_is_within_expected_range`
+    /// 复用，改动会波及那条测试，本轮范围只限定在
+    /// `cursor_never_overlaps_word_wrapped_last_line_ink` 这一条）。
+    fn diff_bbox_in_y_range(a: &Pixmap, b: &Pixmap, y0: u32, y1: u32) -> Option<Bbox> {
+        let (mut x0, mut by0, mut x1, mut by1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        let y_end = y1.min(a.height()).min(b.height());
+        for y in y0..y_end {
+            for x in 0..a.width().min(b.width()) {
+                if a.pixel(x, y) != b.pixel(x, y) {
+                    x0 = x0.min(x);
+                    by0 = by0.min(y);
+                    x1 = x1.max(x);
+                    by1 = by1.max(y);
+                }
+            }
+        }
+        (x0 != u32::MAX).then_some((x0, by0, x1, by1))
+    }
+
+    /// 与 `cursor_and_last_line_bboxes` 逻辑相同，唯一区别是像素扫描（diff
+    /// 与最后一行墨迹的查找）被限定在一个窄 y 带内，专供
+    /// `cursor_never_overlaps_word_wrapped_last_line_ink` 使用（性能收窄，
+    /// 修复轮 2）。**不修改 `cursor_and_last_line_bboxes` 本身**——那个函数
+    /// 被另一条测试（`cursor_gap_from_last_line_is_within_expected_range`）
+    /// 复用，本轮的收窄范围明确限定在这一条测试。
+    ///
+    /// y 带的推导**故意只用 `measure()`，不用 `last_line_metrics`**：
+    /// `last_line_metrics` 正是 `cursor_never_overlaps_word_wrapped_last_line_ink`
+    /// 要验证的对象，如果拿它自己的返回值来定义"该往哪扫"，一旦它本身出现
+    /// 回归（比如又变回旧的"前缀高度跳变"启发式、算出一个偏小的行位置），
+    /// 窗口会跟着算错并可能收窄到看不见问题的地方——这是循环论证，会让
+    /// 性能收窄反而削弱了测试的有效性。`measure()` 给出的是文本块的整体
+    /// 排版高度，与"最后一行具体在哪"这个问题相互独立，据此确定的窗口
+    /// 不依赖被测方法本身是否正确。
+    fn cursor_and_last_line_bboxes_narrow(
+        painter: &mut Painter,
+        local_frame: u32,
+        title: &str,
+    ) -> (Option<Bbox>, Option<Bbox>) {
+        let mut with_cursor = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut with_cursor, local_frame, title);
+
+        let title_chars: Vec<char> = title.chars().collect();
+        let total = title_chars.len();
+        let chars_per_sec = total as f64 / INTRO_TYPEWRITER_SECONDS;
+        let visible = ((local_frame as f64 * chars_per_sec / FPS).floor() as usize).min(total);
+        let display_text: String = title_chars[..visible].iter().collect();
+        let style = TextStyle {
+            size_px: INTRO_TITLE_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+        let fade_opacity = interpolate(local_frame as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
+
+        // 扫描窗口：`measure()` 给出的文本块整体高度，上下各留 40px 安全
+        // 边距（光标即便因为某种 bug 跑到相邻行，40px 也足够覆盖一整行
+        // 70px 字号 * 1.2 行高 = 84px 的量级）。
+        let (_, total_h) = painter.renderer.measure(&display_text, &style);
+        const BAND_MARGIN_PX: f32 = 40.0;
+        let band_y0 = (INTRO_TITLE_CENTER_Y - total_h / 2.0 - BAND_MARGIN_PX)
+            .max(0.0)
+            .floor() as u32;
+        let band_y1 = ((INTRO_TITLE_CENTER_Y + total_h / 2.0 + BAND_MARGIN_PX)
+            .min(CANVAS_H)
+            .ceil() as u32)
+            .max(band_y0 + 1);
+
+        let mut text_only = Pixmap::new(1280, 720).unwrap();
+        text_only.fill(Color::from_rgba8(255, 255, 255, 255));
+        if fade_opacity > 0.0 {
+            painter.renderer.draw_centered(
+                &mut text_only,
+                &display_text,
+                INTRO_TITLE_CENTER_X,
+                INTRO_TITLE_CENTER_Y,
+                &style,
+                fade_opacity,
+                1.0,
+            );
+        }
+
+        let cursor_bbox = diff_bbox_in_y_range(&with_cursor, &text_only, band_y0, band_y1);
+        let last_line_bbox = painter
+            .renderer
+            .last_line_metrics(&display_text, &style)
+            .and_then(|(_, top_rel, h)| {
+                let center_y = INTRO_TITLE_CENTER_Y + top_rel / 2.0;
+                let y0 = (center_y - h / 2.0).max(0.0) as u32;
+                let y1 = ((center_y + h / 2.0).min(719.0) as u32) + 1;
+                ink_bbox_in_y_range(&text_only, y0, y1)
+            });
+
+        (cursor_bbox, last_line_bbox)
+    }
+
+    /// **修复轮 1（I1，核心修复的验收测试）；修复轮 2（性能收窄）**：
+    /// word-wrap 换行时光标不应被画到最后一行中间、压在字形上。
     ///
     /// 审查用「逐帧枚举 0..60、判据『光标 bbox 是否落在最后一行墨迹 bbox
     /// 之内』」实测出修复前的破相帧数：
     ///
-    /// | 标题 | 修复前 | 修复后（本测试） |
+    /// | 标题 | 修复前 | 修复后 |
     /// |---|---|---|
     /// | 英文长标题（`Panda Video Generator automated engine for long titles wrapping`） | 35/60 | 0/60 |
     /// | 中英混排（`熊猫视频自动化引擎 Panda Video Generator 全流程演示标题`） | 20/60 | 0/60 |
+    ///
+    /// **修复轮 2**：原来逐帧枚举 `0..60` 单条耗时约 90s（每帧两次
+    /// 1280×720 全画布渲染 + diff），改成 10 个代表帧、扫描窗口收窄到文本块
+    /// 高度±40px 的窄带后降到约 17s（改前/改后的具体帧数与耗时对照见报告
+    /// "修复轮 2"）。这 10 帧是**代表性抽样，不是全枚举**：
+    ///
+    /// - `33`、`45` 是原始缺陷报告截图里点名的破相帧（光标穿过 "Video" 的
+    ///   "o"、演示过修复前后对比），必须保留；
+    /// - `10/15/20/25/30/38/40/50` 分布在打字机推进的不同阶段——随着
+    ///   `visible` 增长，word-wrap 的换行点会跟着移动，因此不同帧下"最后
+    ///   一行从哪个单词开始"并不相同，这组帧覆盖了"刚越过一次换行边界"
+    ///   "下一次换行前夕""中间稳定期"等几种典型状态，不是等间隔地随便抽样。
     ///
     /// 这里只按 x 轴判断重叠（`bboxes_overlap_on_x`）：光标与文字的 y 位置
     /// 由同一个 `last_line_center_y` 公式给出，天然对齐在同一行，真正会
@@ -1925,11 +2038,12 @@ mod tests {
             "Panda Video Generator automated engine for long titles wrapping",
             "熊猫视频自动化引擎 Panda Video Generator 全流程演示标题",
         ];
+        const SAMPLE_FRAMES: [u32; 10] = [10, 15, 20, 25, 30, 33, 38, 40, 45, 50];
         for title in titles {
             let mut overlap_frames = 0u32;
-            for f in 0..60u32 {
+            for f in SAMPLE_FRAMES {
                 let (cursor_bbox, last_line_bbox) =
-                    cursor_and_last_line_bboxes(&mut painter, f, title);
+                    cursor_and_last_line_bboxes_narrow(&mut painter, f, title);
                 if let (Some(c), Some(t)) = (cursor_bbox, last_line_bbox)
                     && bboxes_overlap_on_x(c, t)
                 {
@@ -1937,8 +2051,10 @@ mod tests {
                 }
             }
             assert_eq!(
-                overlap_frames, 0,
-                "标题 {title:?} 不应有任何帧光标压在最后一行文字上，实际 {overlap_frames}/60 帧"
+                overlap_frames,
+                0,
+                "标题 {title:?} 不应有任何代表帧光标压在最后一行文字上，实际 {overlap_frames}/{} 帧",
+                SAMPLE_FRAMES.len()
             );
         }
     }
