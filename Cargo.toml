@@ -25,3 +25,10 @@ uuid = { version = "1.26.0", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }
+
+# 渲染测试（尤其 render::frame 的全时间轴测试）耗时几乎全在 cosmic-text/
+# tiny-skia 这些依赖里，debug 构建下它们不做任何优化，单帧渲染比 release
+# 慢一个数量级。只优化依赖、不动我们自己的 crate（保留完整 debug 信息与
+# backtrace），实测能把 render::frame 全量测试从约 169s 降到约 6.6s。
+[profile.dev.package."*"]
+opt-level = 3
