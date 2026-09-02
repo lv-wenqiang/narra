@@ -118,6 +118,72 @@ pub fn generate_vtt(lines: &[String], durations: &[f64], vtt_max_length: usize) 
     out.join("\n")
 }
 
+/// 一条字幕。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Caption {
+    pub text: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+/// 解析 WebVTT。只认时间行与其后的文本行，忽略 WEBVTT 头、序号行与空行。
+/// 多行文本用 `\n` 连接。无法解析的时间行整条跳过。
+pub fn parse_vtt(text: &str) -> Vec<Caption> {
+    let mut out = Vec::new();
+    let mut pending: Option<(u64, u64)> = None;
+    let mut buf: Vec<String> = Vec::new();
+
+    let flush = |out: &mut Vec<Caption>, pending: &mut Option<(u64, u64)>, buf: &mut Vec<String>| {
+        if let Some((start_ms, end_ms)) = pending.take() {
+            if !buf.is_empty() {
+                out.push(Caption { text: buf.join("\n"), start_ms, end_ms });
+            }
+        }
+        buf.clear();
+    };
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line == "WEBVTT" || line.starts_with("NOTE") {
+            continue;
+        }
+        if line.is_empty() {
+            flush(&mut out, &mut pending, &mut buf);
+            continue;
+        }
+        if let Some((a, b)) = line.split_once("-->") {
+            flush(&mut out, &mut pending, &mut buf);
+            if let (Some(s), Some(e)) = (parse_ts_ms(a.trim()), parse_ts_ms(b.trim())) {
+                pending = Some((s, e));
+            }
+            continue;
+        }
+        // 纯数字的序号行：只有在还没开始收文本时才跳过
+        if pending.is_some() && buf.is_empty() && line.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if pending.is_some() {
+            buf.push(line.to_string());
+        }
+    }
+    flush(&mut out, &mut pending, &mut buf);
+    out
+}
+
+/// 解析 `HH:MM:SS.mmm`，失败返回 None。
+fn parse_ts_ms(s: &str) -> Option<u64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let (sec, ms) = parts[2].split_once('.')?;
+    let h: u64 = parts[0].parse().ok()?;
+    let m: u64 = parts[1].parse().ok()?;
+    let sec: u64 = sec.parse().ok()?;
+    let ms: u64 = format!("{ms:0<3}")[..3].parse().ok()?;
+    Some(h * 3_600_000 + m * 60_000 + sec * 1000 + ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +312,33 @@ mod tests {
             + p[1].parse::<f64>().unwrap() * 60.0
             + sec[0].parse::<f64>().unwrap()
             + sec[1].parse::<f64>().unwrap() / 1000.0
+    }
+
+    #[test]
+    fn parse_vtt_reads_cues_with_text() {
+        let s = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.500\n第一句。\n\n2\n00:00:02.500 --> 00:00:06.000\n第二句。\n";
+        let caps = parse_vtt(s);
+        assert_eq!(caps.len(), 2);
+        assert_eq!(caps[0].start_ms, 0);
+        assert_eq!(caps[0].end_ms, 2500);
+        assert_eq!(caps[0].text, "第一句。");
+        assert_eq!(caps[1].start_ms, 2500);
+        assert_eq!(caps[1].end_ms, 6000);
+    }
+
+    #[test]
+    fn parse_vtt_roundtrips_generated_output() {
+        let lines = vec!["第一段。".to_string(), "第二段。".to_string()];
+        let out = generate_vtt(&lines, &[2.0, 3.0], 30);
+        let caps = parse_vtt(&out);
+        assert_eq!(caps.len(), 2);
+        assert_eq!(caps[0].text, "第一段。");
+        assert_eq!(caps[1].end_ms, 5000);
+    }
+
+    #[test]
+    fn parse_vtt_ignores_header_and_blank_lines() {
+        assert!(parse_vtt("WEBVTT\n\n").is_empty());
+        assert!(parse_vtt("").is_empty());
     }
 }

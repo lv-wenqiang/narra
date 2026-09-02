@@ -1,0 +1,99 @@
+pub const FPS: u32 = 30;
+pub const WIDTH: u32 = 1280;
+pub const HEIGHT: u32 = 720;
+
+const COVER_FRAMES: u32 = 15;
+const INTRO_FRAMES: u32 = 105;
+const OUTRO_FRAMES: u32 = 120;
+const CONTENT_TAIL_SECS: f64 = 2.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Segment {
+    Cover = 0,
+    Intro = 1,
+    Content = 2,
+    Outro = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    pub content_frames: u32,
+    pub total_frames: u32,
+}
+
+/// 由音频时长（秒）算出各段帧数。对应规格 §8.2。
+pub fn layout(audio_secs: f64) -> Layout {
+    let content_frames = ((audio_secs + CONTENT_TAIL_SECS) * FPS as f64).ceil().max(0.0) as u32;
+    Layout {
+        content_frames,
+        total_frames: COVER_FRAMES + INTRO_FRAMES + content_frames + OUTRO_FRAMES,
+    }
+}
+
+/// 全局帧号 → (段落, 段内帧号)。超出总时长返回 None。
+pub fn segment_at(layout: &Layout, global_frame: u32) -> Option<(Segment, u32)> {
+    let intro_start = COVER_FRAMES;
+    let content_start = intro_start + INTRO_FRAMES;
+    let outro_start = content_start + layout.content_frames;
+
+    if global_frame < intro_start {
+        Some((Segment::Cover, global_frame))
+    } else if global_frame < content_start {
+        Some((Segment::Intro, global_frame - intro_start))
+    } else if global_frame < outro_start {
+        Some((Segment::Content, global_frame - content_start))
+    } else if global_frame < layout.total_frames {
+        Some((Segment::Outro, global_frame - outro_start))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_matches_spec_numbers() {
+        // A = 10 秒 → content = ceil(12 * 30) = 360，总帧 = 240 + 360 = 600
+        let l = layout(10.0);
+        assert_eq!(l.content_frames, 360);
+        assert_eq!(l.total_frames, 600);
+    }
+
+    #[test]
+    fn layout_rounds_content_frames_up() {
+        // A = 10.01 → ceil(12.01 * 30) = ceil(360.3) = 361
+        assert_eq!(layout(10.01).content_frames, 361);
+    }
+
+    #[test]
+    fn segments_tile_the_timeline_without_gaps() {
+        let l = layout(10.0);
+        let mut counts = [0u32; 4];
+        for f in 0..l.total_frames {
+            let (seg, _) = segment_at(&l, f).expect("每一帧都应属于某个段落");
+            counts[seg as usize] += 1;
+        }
+        assert_eq!(counts, [15, 105, 360, 120]);
+    }
+
+    #[test]
+    fn segment_local_frames_restart_at_zero() {
+        let l = layout(10.0);
+        assert_eq!(segment_at(&l, 0), Some((Segment::Cover, 0)));
+        assert_eq!(segment_at(&l, 14), Some((Segment::Cover, 14)));
+        assert_eq!(segment_at(&l, 15), Some((Segment::Intro, 0)));
+        assert_eq!(segment_at(&l, 119), Some((Segment::Intro, 104)));
+        assert_eq!(segment_at(&l, 120), Some((Segment::Content, 0)));
+        assert_eq!(segment_at(&l, 479), Some((Segment::Content, 359)));
+        assert_eq!(segment_at(&l, 480), Some((Segment::Outro, 0)));
+        assert_eq!(segment_at(&l, 599), Some((Segment::Outro, 119)));
+    }
+
+    #[test]
+    fn segment_at_returns_none_past_the_end() {
+        let l = layout(10.0);
+        assert_eq!(segment_at(&l, 600), None);
+    }
+}
