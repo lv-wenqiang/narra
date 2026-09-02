@@ -795,12 +795,51 @@ mod tests {
         );
     }
 
+    /// I3 修复轮 2（开放项 1）：`caps()`/`caps_varied_length()` 里的区间都不重叠，
+    /// first-match（`.iter().find(...)`）与 last-match（`.iter().rev().find(...)`）
+    /// 在这些既有 fixture 上无法区分——变异验证证实：把 `draw_content` 的选取
+    /// 逻辑改成 `.iter().rev().find(...)` 后，round 1 的全部 16 条测试仍然全绿。
+    /// 规格 §8.4 明确要求"满足条件的第一条"，这是选取逻辑本身的正确性；VTT 解析
+    /// 一旦在边界产生哪怕一帧的重叠，first/last 的选择就会显示错的字幕。
+    /// 这里构造一组真正重叠的区间（`[0,3000)` 与 `[1000,2000)`，文本长度不同），
+    /// 取 t 落在重叠区（frame=45 → 1500ms）的一帧，断言"两条都在列表里"时的渲染
+    /// 结果与"列表里只有第一条"时逐字节相同——这只在选取逻辑真的取第一条匹配时成立。
+    fn overlapping_caps() -> Vec<Caption> {
+        vec![
+            Caption { text: "短句。".into(), start_ms: 0, end_ms: 3000 },
+            Caption {
+                text: "这是第二条更长一些的重叠字幕文本。".into(),
+                start_ms: 1000,
+                end_ms: 2000,
+            },
+        ]
+    }
+
+    #[test]
+    fn overlapping_captions_pick_the_first_match_in_the_list() {
+        let mut painter = Painter::new().unwrap();
+        let caps = overlapping_caps();
+        let only_first = vec![caps[0].clone()];
+
+        // frame 45 -> 1500ms：同时落在两条区间 [0,3000) 与 [1000,2000) 内。
+        let mut with_both = Pixmap::new(1280, 720).unwrap();
+        let mut with_first_only = Pixmap::new(1280, 720).unwrap();
+        painter.draw_content(&mut with_both, 45, &caps);
+        painter.draw_content(&mut with_first_only, 45, &only_first);
+
+        assert_eq!(
+            with_both.data(),
+            with_first_only.data(),
+            "重叠区间内应选取列表中第一条匹配的字幕（规格 §8.4：满足 start<=t<end 的第一条），             渲染结果应与「列表里只有第一条」时逐字节相同"
+        );
+    }
+
     #[test]
     fn watermark_ink_geometry_and_alpha_are_exact() {
         let mut painter = Painter::new().unwrap();
         let mut p = Pixmap::new(1280, 720).unwrap();
         painter.draw_content(&mut p, 300, &caps()); // 无字幕，只剩水印
-        let (x0, _y0, _x1, y1) = non_transparent_bbox(&p).expect("水印应有墨迹");
+        let (x0, _y0, x1, y1) = non_transparent_bbox(&p).expect("水印应有墨迹");
         assert_eq!(x0, 40, "水印左边缘应精确贴 x=40");
         assert!((678..=680).contains(&y1), "水印底边缘应在 y∈[678,680]，实得 {y1}");
 
@@ -813,6 +852,8 @@ mod tests {
             }
         }
         assert_eq!(max_alpha, 69, "水印 maxAlpha 应精确等于 69（未被叠厚）");
+
+        assert!((305..=325).contains(&x1), "水印右边缘应在 x∈[305,325]，实得 {x1}");
 
         let icon_has_ink = (40..67)
             .any(|x| (652..679).any(|y| p.pixel(x, y).map(|c| c.alpha() > 0).unwrap_or(false)));
