@@ -1,11 +1,24 @@
 # 待办与已知限制
 
-TTS 子系统（`docs/superpowers/plans/2026-09-01-tts-subsystem.md`）完成时留下的账。
-每条都经过审查确认，按「是否值得做」而非「是否是问题」排序。
+本项目的欠账本，按**子系统**分节，每节内部再按「值得做 / 可以不做 / 记一笔」
+三段排列——排序依据是「是否值得做」而非「是否是问题」。每条都经过审查确认，
+带得出实测数字的一律附上数字。
 
-## 值得做
+已记账的子系统：
 
-### 1. `merge_mp3_with_speed` 用 `-y` 直写目标路径，非原子
+- [TTS 子系统](#tts-子系统)（`docs/superpowers/plans/2026-09-01-tts-subsystem.md`）
+- [帧渲染子系统](#帧渲染子系统)（`docs/superpowers/plans/2026-09-02-render-frames.md`）
+
+跨子系统的条目记在**最早提出它的**那一节里，后来的子系统只往上追加，不另开新条
+（例如帧渲染补充的画布常量、CLI 单测，分别并进了 TTS 节的第 3、第 2 条）。
+
+---
+
+## TTS 子系统
+
+### 值得做
+
+#### 1. `merge_mp3_with_speed` 用 `-y` 直写目标路径，非原子
 
 `src/ffmpeg.rs` 调 ffmpeg 时用 `-y` 直接覆写 `audio.mp3`。若**合并过程本身**被外部中断（`kill -9`、OOM killer、断电、磁盘满），旧的 `audio.mp3` 会被替换成一份**可正常解码但内容被腰斩**的音频——不是字节乱码，所以不容易发现。
 
@@ -14,25 +27,37 @@ TTS 子系统（`docs/superpowers/plans/2026-09-01-tts-subsystem.md`）完成时
 触发需外部进程级中断，窗口通常亚秒级（60 秒音频转码仅需 0.13 秒），故未阻塞合入。
 **修法**：先写临时文件，成功后原子 `rename`。
 
-### 2. `config.rs` 的环境变量层没有自动化测试
+#### 2. `config.rs` 的环境变量层没有自动化测试
 
 `resolve_batch_size` / `resolve_timeout_ms` 两个纯函数有测试，但真正读 `std::env` 的三个函数（`spider_output_dir` / `tts_output_dir` / `tts_input_file`）和 `main.rs` 里「命令行参数 > 环境变量 > 默认值」的优先级链**一条测试都没有**，只有人工验证过。
 
 渲染子系统要加 `render` / `make` 两个子命令，会直接改这块代码——补测试的时机就是那时候。
 
-### 3. 常量散落在三个文件、三种可见性
+**帧渲染子系统补充**：`main.rs` 的 CLI 层至今**一条单测都没有**——`parse_frame_list`
+（逗号切分、`trim`、缺省帧集 + 补末帧）全靠人工跑 `debug-frames` 验证，`main.rs` 里
+没有 `#[cfg(test)] mod tests`。和上面同一个时机、同一次改动一起补。
+
+#### 3. 常量散落在三个文件、三种可见性
 
 `DEFAULT_VOICE` / `SPEED_FACTOR` 在 `config.rs`（pub），`DEFAULT_BATCH_SIZE` / `BATCH_SIZE_CAP` / 超时常量也在 `config.rs`（private），`DEFAULT_MAX_RETRIES` 在 `pipeline.rs`，切句上限 `30` 是 `pipeline.rs` 里的字面量，`OUTPUT_FORMAT` 在 `edge.rs`。
 
 它们在实施计划的 Global Constraints 里本是并列的一批可调参数。渲染子系统会再加一批（画布尺寸、帧率、各段时长、字号…），现在定个统一位置成本最低。
 
-### 4. `ffmpeg.rs` 的两处同步 `Command::output()`
+**帧渲染子系统补充（这一批已经落地，而且落成了两份真相源）**：画布尺寸与帧率
+**同时存在于两个文件**且互不引用——`src/render/timeline.rs` 有 `WIDTH` / `HEIGHT` /
+`FPS`（`u32`，用于分段计算），`src/render/draw.rs` 另有 `CANVAS_W` / `CANVAS_H` /
+`FPS`（`f32`/`f64`，用于排版）。`frame.rs` 按 timeline 的尺寸建 `Pixmap`，四个
+`draw_*` 却按 draw.rs 的常量排版：**两边一旦不一致，结果是画面静默错位，而不是
+编译失败**。修法是让一边从另一边推导，例如
+`const CANVAS_W: f32 = crate::render::timeline::WIDTH as f32;`。
+
+#### 4. `ffmpeg.rs` 的两处同步 `Command::output()`
 
 `assert_available()` 和 `merge_mp3_with_speed()` 都是同步阻塞调用，合计约 150ms。当前流水线里占比 <1% 且此刻没有并发任务在等这个线程，无影响。
 
 **渲染子系统会长时间跑 ffmpeg（逐帧管道 + H.264 编码），届时这里是第一个该换成 `tokio::process` 的地方。**
 
-## 可以不做
+### 可以不做
 
 - **测试临时文件卫生**：`tests/ffmpeg_test.rs` 和 `tests/duration_test.rs` 用硬编码的 `/tmp/m1.mp3`、`/tmp/merged.mp3`、`/tmp/not_audio.mp3` 且不清理；`tests/edge_smoke.rs` 往 `temp_dir()` 落盘也不清理。`pipeline.rs` 的测试用 `unique_tmp_dir(pid+uuid)` 并清理，是好的范式。个人自用，只是留垃圾文件。
 - **错误信息中英文混用**：`pipeline.rs` 的 "Narration file is empty (no non-empty lines)" 和 `ffmpeg.rs` 的 "merge_mp3_with_speed: no input files" 是英文，其余约 13 条都是中文。后者还泄漏了内部函数名。`tests/ffmpeg_test.rs` 有断言匹配 `"no input files"`，改文案要连带改测试。纯观感。
@@ -41,8 +66,125 @@ TTS 子系统（`docs/superpowers/plans/2026-09-01-tts-subsystem.md`）完成时
 - **emoji 计数差异**：`vtt.rs` 的切句用 Unicode 标量计数，TS 原版用 UTF-16 code unit，星光平面字符下长度判定不同。已在代码注释文档化，实测未产生可观察的切分差异。
 - **`generate_vtt` 的 `durations[i]` 越界 panic**：唯一调用点在成功路径上必然等长，当前不可达。它是 `pub`，将来若被别处调用才有风险，加一行 `debug_assert_eq!` 是零成本保险。
 
-## 记一笔：长字幕
+### 记一笔：长字幕
 
 实跑发现，**逗号密集、句号稀疏的中文文稿会产出很长的单条字幕**（实测一段 54 字、中间只有逗号顿号的段落未被切分，输出为一条 54 字的 cue）。这是切句算法的正确行为——设计规格 §8.4 对 >50 字的字幕专门有 52px 字号规则，正是为此准备的。
 
 **渲染子系统开工时，应该拿这类真实输出做排版验证的输入**，而不是只用短句测试。
+
+
+---
+
+## 帧渲染子系统
+
+帧渲染子系统（`docs/superpowers/plans/2026-09-02-render-frames.md`，Task 0–8）
+完成、经四轮逐任务审查与一轮全分支终审后留下的账。
+
+### 值得做
+
+#### 1. `draw.rs` 已 2581 行，`mod tests` 该拆出去
+
+`src/render/draw.rs` 目前共 2581 行：实现约 880 行，`mod tests` 约 1700 行。**实现部分的内聚度是够的**——
+四个 `draw_*` 共享同一套 `WatermarkPreset` / `TextStyle` 与常量表，拆开反而要把这些
+共享物导出成 `pub(crate)`。真正的痛点只有一个：那 1700 行的 `mod tests`。
+
+**修法是纯机械的、零风险的**：
+
+```rust
+#[cfg(test)]
+#[path = "draw_tests.rs"]
+mod tests;
+```
+
+`#[path]` 让测试模块仍然是 `draw` 的子模块，私有项可见性完全不变，一行都不用改。
+
+**执行时机比修法本身重要**：下一份计划（ffmpeg 合成与 CLI）**完全不碰 `draw.rs`**。
+此刻拆等于凭空造一个纯位移的大 diff，把代码与四轮审查记录的行号对应关系全部切断，
+收益为零。**应该在下一次真要改 `draw.rs` 的计划里，作为开工第一步做掉。**
+
+#### 2. `parse_vtt` 对外部文件不够宽容（三处）
+
+自产自销路径（`generate_vtt` → `parse_vtt`）不会触发，但 `panda debug-frames --vtt`
+读的是**用户给的任意文件**，这三处都会被踩到：
+
+- **把正文当序号行丢掉**：正文首行若全是数字（`"2024"`、`"1998"` 这类年份独占一行），
+  会被当成 cue 序号跳过，字幕内容凭空少一行。
+- **时间戳解析失败时整条 cue 连正文一起静默跳过**：既不报错也不警告，用户只会看到
+  某段字幕莫名其妙不见了。
+- **只认 `HH:MM:SS.mmm`**：WebVTT 规范同样允许 `MM:SS.mmm`，别家工具产出的 VTT 会被
+  整份判为空。
+
+（终审波次已经修掉了同一函数里那个真会 panic 的 char-boundary bug——毫秒位是多字节
+字符时按字节切片会炸；上面三条是剩下的**静默**行为，不炸但会丢内容。）
+
+#### 3. `draw_centered` 每次调用都做全画布 scratch clear + composite
+
+热路径上一个约 **3×** 的乘数。实测（1280×720）：
+
+| 操作 | 耗时 |
+|---|---|
+| 全画布 `draw_pixmap` | 3.07–3.25ms |
+| 文本块大小（1024×130）`draw_pixmap` | 0.557ms |
+| `Pixmap::fill` | 0.093ms |
+
+两个互不冲突的局部修法：
+
+- **(a) scratch 只覆盖文本块包围盒**：包围盒可以从 `layout_runs` 直接算出，外扩
+  `(stroke_w + bold_w) / 2 * scale` 即可容纳描边与合成粗体。
+- **(b) `opacity >= 1.0` 时跳过 scratch，直接画进目标 pixmap**：Porter-Duff `over`
+  满足结合律，组透明度为 1 时两条路径等价（可能有 1 LSB 的量化差）。
+
+两条合起来预计 8.79ms → 约 3ms/帧。
+
+**但现在不是瓶颈**：全时间轴 2100 帧 18.5s = 3.8× 实时，这点开销会被 libx264 编码
+整个遮住。**等 ffmpeg 链路真的测出渲染是瓶颈时再做**——它会改动所有像素测试的地基，
+不该在没有收益的时候动。
+
+#### 4. `Painter::new()` 把 2048² 的 logo 解码了两遍
+
+`scaled_logo` 每次调用都重新调 `logo_rgba()`，而 `new()` 要缩两个尺寸（216px 与
+36px）。实测单次解码 **18ms**，两次 36ms，占 `new()` 总耗时 132ms 的四分之一还多。
+解一次、缩两次即可。
+
+顺带：`assets/logo.png` 是 **1.4MB 的 2048²** 原图，全项目只用在 216px 和 36px 两处。
+换成 256px 预缩版能省约 **1.3MB 二进制体积 + 90ms 启动时间**。
+
+### 可以不做
+
+- **Outro 圆环在当前实现下完全不可观测**：5 个纯白实心圆画在纯白底上，像素路径**根本
+  测不出来**——`outro_ring_radius_step_is_216px` 因此只能断言常量字面值，是变更探测器
+  而非行为测试。这是物理限制，不是测试偷懒。**但若下一份计划加了 `box-shadow`、或把
+  圆环改成非纯白，就必须补上真正的像素断言**，那时它才第一次变得可观测。
+- **`cursor_and_last_line_bboxes` 与 `..._narrow` 是 90 行重复**（`draw.rs`），唯一
+  差别是扫描的 y 带；把 y 带做成 `Option<(u32, u32)>` 参数即可消掉。是测试重构，收益
+  纯粹是行数，终审判定放在合入前的最后一道闸门上风险收益不匹配。
+- **`spring` 的 `fps` 是死参数**：`src/render/anim.rs` 里明写着 `let _ = fps;`。本实现
+  按归一化时间映射曲线，fps 确实不影响结果——但一个**公开函数**留着不起作用的参数，
+  等于邀请下一个人以为改 fps 会改动画节奏。要么删掉，要么改名 `_fps` 并在签名文档上
+  写清"本实现按归一化时间映射，fps 不参与计算"。
+- **Outro logo 的双线性采样在 0.2× 下仍然欠采样**：bilinear 只取 2×2 个源像素，216px
+  降到 43px 时中间跳过了大量像素。Outro logo 全程在缩放运动中，运动模糊会掩盖大半。
+  若要彻底解决，`Painter` 里多缓存一张小尺寸 logo、按帧的缩放比例选用即可。
+
+### 记一笔：Cover 主标题的行数上限
+
+Cover 的主标题容器**垂直居中**，而 `cover` 水印是**绝对定位**在 y=576——两者互不感知。
+标题一长，行数一多，就会向下压穿水印。逐像素扫描实测（100px 粗体，`max_width` 944px）：
+
+| 标题行数 | 标题墨迹底部 | 水印墨迹顶部 | 净空 |
+|---|---|---|---|
+| 1 行 | 433 | 560 | 127px |
+| 3 行 | 553 | 560 | **7px** |
+| 5 行（38 字） | — | — | **两条墨带已合并，直接重叠** |
+
+同一次扫描测得约 **8~9 字/行**。因此：
+
+- **舒适上限约 2 行 / 16~18 字**
+- **3 行是灰区**（还没压上，但 7px 净空在视觉上已经贴住了）
+- **≥4 行必压穿** y=576 的水印
+
+**TS 原版同样如此**（标题容器垂直居中、水印绝对定位，互不感知），所以这是**忠实移植
+而非移植缺陷**——但 TS 版一样会在长标题下出问题，不是"照抄就没事"。
+
+**接真实标题时必须二选一：限制标题长度，或让水印在标题超长时下沉。**
+**这是下一份计划（ffmpeg 合成与 CLI）的直接输入。**
