@@ -914,7 +914,12 @@ Expected: FAIL，模块不存在
 **照抄 `docs/text-rendering.md` 里 Task 0 实测通过的写法。** 要点：
 
 - `TextRenderer::new()` 加载内嵌字体，构造并持有字体系统（构造一次、多次复用，不要每帧重建——那会很慢）
-- `draw_centered` 的语义：以 `(center_x, center_y)` 为**文本块的中心**绘制；`scale` 以该点为原点缩放；`opacity` 乘到最终颜色的 alpha 上
+- `draw_centered` 的语义：以 `(center_x, center_y)` 为**文本块的中心**绘制；`scale` 以该点为原点缩放；
+  `opacity` 是**整块文字的组透明度**（等同 CSS `opacity`），**不是**乘进每一遍绘制的颜色 alpha。
+  合成粗体使得同一个字形要画三遍（描边 / 加粗描边 / 填充），三遍在同一像素上叠加时 alpha 按 `1-(1-a)^n` 累积，
+  下层黑描边还会透过上层半透明白填充——`opacity=0.5` 实测近纯白像素直接归零、整个字变灰。
+  正确做法：**用完全不透明的 per-pass 颜色画进一张暂存 `Pixmap`，再用 `PixmapPaint { opacity, .. }` 一次性合成回目标 pixmap**。
+  `TextStyle.color` 自身的 alpha 仍按原样参与每一遍绘制（与 CSS 中 `rgba()` 颜色的语义一致），不并入组透明度。
 - `stroke` 为 `Some((颜色, 宽度))` 时**先描边再填充**（描边在下、填充在上），`None` 时只填充
 - `letter_spacing_px` 逐字形追加水平偏移
 - 超过 `max_width_px` 时换行；`\n` 强制换行；行距为 `size_px * line_height`
