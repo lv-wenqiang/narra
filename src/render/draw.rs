@@ -12,10 +12,10 @@
 //! `PreparedWatermark` 的文档注释）。
 
 use anyhow::Context;
-use tiny_skia::{IntSize, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{Color, IntSize, Pixmap, PixmapPaint, Transform};
 
-use crate::assets::github_mark_rgba;
-use crate::render::anim::{interpolate, spring};
+use crate::assets::{github_mark_rgba, logo_rgba};
+use crate::render::anim::{interpolate, interpolate3, spring};
 use crate::render::text::{TextRenderer, TextStyle};
 use crate::vtt::Caption;
 
@@ -63,6 +63,69 @@ const WATERMARK_ICON_GAP_PX: f32 = 10.0;
 /// 水印只有一行，换行宽度给一个远大于画布宽度的值以避免意外换行。
 const WATERMARK_MAX_WIDTH_PX: f32 = 2000.0;
 
+/// `cover` 段水印（规格 §8.6，Task 6）：`rgba(23,23,23,0.4)`，垂直中心见
+/// `cover_watermark_preset` 文档注释（`576`，不是规格字面的 `432`）。
+const COVER_WATERMARK_CENTER_Y_PX: f32 = 576.0;
+const COVER_WATERMARK_FONT_SIZE_PX: f32 = 28.0;
+const COVER_WATERMARK_COLOR: [u8; 4] = [23, 23, 23, 102];
+const COVER_WATERMARK_ICON_SIZE_PX: u32 = 32;
+const COVER_WATERMARK_ICON_GAP_PX: f32 = 12.0;
+const COVER_WATERMARK_TEXT_MAIN: &str = "Panda Video Generator";
+const COVER_WATERMARK_TEXT_SEP: &str = " · ";
+const COVER_WATERMARK_TEXT_SUFFIX: &str = "熊猫视频自动化引擎";
+const COVER_WATERMARK_SEP_OPACITY_MUL: f32 = 0.75;
+
+/// Cover 居中容器（规格 §8.4「Cover」小节 + 协调者交接的精确排版）：
+/// 宽度 80% = 1024px，水平居中，整个容器（上排 + 主标题）垂直居中于 y=360。
+const COVER_CONTAINER_WIDTH_PX: f32 = CANVAS_W * 0.8;
+const COVER_CONTAINER_LEFT_PX: f32 = (CANVAS_W - COVER_CONTAINER_WIDTH_PX) / 2.0;
+const COVER_CONTAINER_CENTER_Y: f32 = 360.0;
+
+/// 上排（logo + 「熊猫智研社」）：左对齐（不是居中），左偏移 40px，
+/// 整体不透明度 0.30。
+const COVER_ROW_MARGIN_LEFT_PX: f32 = 40.0;
+const COVER_ROW_LEFT_PX: f32 = COVER_CONTAINER_LEFT_PX + COVER_ROW_MARGIN_LEFT_PX;
+const COVER_LOGO_SIZE_PX: u32 = 36;
+const COVER_LOGO_MARGIN_PX: f32 = 8.0;
+/// 上排行高：logo 尺寸 + 四周 margin（`36 + 8*2 = 52`）。
+const COVER_ROW_HEIGHT_PX: f32 = COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX * 2.0;
+/// 「熊猫智研社」左边缘：`row_left + logo_margin + logo_size + logo_margin`。
+const COVER_ROW_TEXT_LEFT_PX: f32 =
+    COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX + COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX;
+const COVER_ROW_TEXT_FONT_SIZE_PX: f32 = 38.0;
+const COVER_ROW_TEXT: &str = "熊猫智研社";
+const COVER_ROW_OPACITY: f32 = 0.30;
+/// 上排文字不会换行，给一个远大于画布宽度的值以避免意外换行。
+const COVER_ROW_TEXT_MAX_WIDTH_PX: f32 = 2000.0;
+
+/// 主标题：100px 粗体，左右 padding 40px（`max_width = 1024 - 80 = 944`），
+/// 水平居中于 x=640。
+const COVER_TITLE_FONT_SIZE_PX: f32 = 100.0;
+const COVER_TITLE_PADDING_PX: f32 = 40.0;
+const COVER_TITLE_MAX_WIDTH_PX: f32 = COVER_CONTAINER_WIDTH_PX - COVER_TITLE_PADDING_PX * 2.0;
+const COVER_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
+
+/// Cover 主标题、Cover 上排「熊猫智研社」、Intro 标题一律用黑色、无描边
+/// （协调者裁定：TS 原版这三处都没指定 `color`，浏览器在白底上按默认色渲染
+/// 即黑色）。
+const TITLE_COLOR_BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// Intro（打字机片头，规格 §8.4「Intro」小节）：标题 70px 粗体，居中，
+/// 宽度 80%、左右 padding 40px（与 Cover 主标题同一套换算，`max_width=944`），
+/// 垂直居中于画布中心。
+const INTRO_TITLE_FONT_SIZE_PX: f32 = 70.0;
+const INTRO_TITLE_MAX_WIDTH_PX: f32 = CANVAS_W * 0.8 - 80.0;
+const INTRO_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
+const INTRO_TITLE_CENTER_Y: f32 = CANVAS_H / 2.0;
+/// 打字机 2 秒内打完（brief 数值，逐字照用）。
+const INTRO_TYPEWRITER_SECONDS: f64 = 2.0;
+/// 光标只在打字未完成时显示：`local_frame < 60`。
+const INTRO_TYPEWRITER_FRAMES: u32 = 60;
+const INTRO_CURSOR_TEXT: &str = "|";
+const INTRO_CURSOR_GAP_PX: f32 = 4.0;
+/// 3.0s -> 3.5s 线性淡出（brief 数值，逐字照用）。
+const INTRO_FADE_OUT_RANGE: [f64; 2] = [90.0, 104.0];
+
 /// 把 GitHub 图标的原始光栅化位图（`assets::github_mark_rgba` 返回的单色形状、
 /// 填充色不重要）按给定纯色重新着色，返回预乘 alpha 的 `Pixmap`，可直接用
 /// `Pixmap::draw_pixmap` 合成到目标画布上。已按尺寸/颜色两个维度参数化——
@@ -80,6 +143,44 @@ fn tint_icon(raw_rgba: &[u8], width: u32, height: u32, color: [u8; 4]) -> Pixmap
     }
     Pixmap::from_vec(out, IntSize::from_wh(width, height).expect("图标尺寸非零"))
         .expect("图标像素数据长度应与 width*height*4 一致")
+}
+
+/// 把一段 straight-alpha RGBA8 像素原地转换为 `tiny_skia::Pixmap` 要求的
+/// 预乘 alpha（`Pixmap::from_vec`/`decode_png` 内部都是这么做的，见
+/// `tiny_skia::Pixmap::decode_png` 源码）。
+///
+/// **必须在缩放之前调用，不能在之后**：`image::imageops::resize` 对
+/// straight alpha 做线性插值，在半透明边缘会把「透明像素本身携带的（通常
+/// 无意义的）RGB 值」按插值权重混进结果颜色里，产生色边；缩放之前先转成
+/// 预乘 alpha，插值就是对预乘值做的，等价于合成语义下正确的边缘混合——
+/// 转换后的结果可以直接喂给 `Pixmap::from_vec`，不需要再反预乘。
+fn premultiply_in_place(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let a = u32::from(px[3]);
+        px[0] = (u32::from(px[0]) * a / 255) as u8;
+        px[1] = (u32::from(px[1]) * a / 255) as u8;
+        px[2] = (u32::from(px[2]) * a / 255) as u8;
+    }
+}
+
+/// 把 `assets::logo_rgba()`（实际 2048×2048）用高质量重采样（Lanczos3）缩到
+/// `size_px` 正方形，返回可直接 `Pixmap::draw_pixmap` 的预乘 `Pixmap`。
+///
+/// **只应在 `Painter::new()` 里调用**：对 2048×2048 做 Lanczos3 降采样有
+/// 实打实的开销，每帧重做不划算。Task 7 需要 216px 的 outro 版本时，对同一份
+/// `logo_rgba()` 结果再调一次本函数、存进 `Painter` 的新字段即可，不需要改
+/// 这个函数本身（`size_px` 已经是参数）。
+fn scaled_logo(size_px: u32) -> anyhow::Result<Pixmap> {
+    let (mut raw, w, h) = logo_rgba()?;
+    premultiply_in_place(&mut raw);
+    let img = image::RgbaImage::from_raw(w, h, raw)
+        .context("logo 像素数据长度与声明的宽高不匹配")?;
+    let resized =
+        image::imageops::resize(&img, size_px, size_px, image::imageops::FilterType::Lanczos3);
+    let size =
+        IntSize::from_wh(size_px, size_px).context("logo 目标尺寸非零")?;
+    Pixmap::from_vec(resized.into_raw(), size)
+        .context("logo 缩放后 Pixmap 构造失败：像素数据长度与声明尺寸不匹配")
 }
 
 /// 扫描整幅画布，返回非透明像素的包围盒 `(x0,y0,x1,y1)`（`alpha>0` 才算数，
@@ -107,20 +208,13 @@ fn trim_caption_text(text: &str) -> String {
     text.trim().lines().map(str::trim_end).collect::<Vec<_>>().join("\n")
 }
 
-/// 水印锚点：目前只有 `content` 用到的「左下角，给定左/下边距」。
-///
-/// **I1 修复的扩展点**：Task 6 的 `cover` 预设需要「水平居中 + 指定垂直中心
-/// （y=576，见协调者裁定）」——届时只需在这个枚举上加一个
-/// `Centered { center_y_px: f32 }` 变体、在 `layout_and_draw_watermark` 的
-/// `match` 里加一条对应分支（用 `CANVAS_W / 2.0 - total_width / 2.0` 算
-/// `row_left`，`total_width = icon_size + gap + text_w` 已经是函数里现成的量），
-/// 不需要改 `draw_content`、不需要复制这份布局/绘制逻辑本身。现在不预先添加
-/// 这个变体，是因为一个从未被构造过的枚举变体会被 `cargo clippy` 标为
-/// `dead_code`——与"零警告"的验收口径冲突；扩展成本仍然只是"加一个变体 + 一条
-/// 匹配分支"，不是重写。
+/// 水印锚点：`content` 用「左下角，给定左/下边距」；`cover`（Task 6）用
+/// 「水平居中 + 指定垂直中心」——`center_y_px` 语义见 `cover_watermark_preset`
+/// 文档注释（不是 TS `marginTop` 那个字面值，是协调者换算过的居中点）。
 #[derive(Clone, Copy)]
 enum WatermarkAnchor {
     BottomLeft { margin_left_px: f32, margin_bottom_px: f32 },
+    Centered { center_y_px: f32 },
 }
 
 /// 一份水印预设（规格 §8.6）：完全描述「画什么、多大、什么颜色、放哪」，
@@ -160,6 +254,29 @@ fn content_watermark_preset() -> WatermarkPreset {
     }
 }
 
+/// `cover` 预设（规格 §8.4/§8.6，Task 6）：水平居中、垂直中心 `y=576`。
+///
+/// **`576` 的由来**（协调者交接，不是规格字面值）：规格写「自顶部偏移
+/// 432px」，那是从 TS 版 `marginTop:'432px'`（配合 `inset:0` 的居中 flex
+/// 容器）原样搬来的，语义是「在 y=432 以下的剩余区域里垂直居中」，即
+/// `432 + (720-432)/2 = 576`，不是把水印中心直接放在 y=432（那样会压进
+/// Cover 主标题）。
+fn cover_watermark_preset() -> WatermarkPreset {
+    WatermarkPreset {
+        icon_size_px: COVER_WATERMARK_ICON_SIZE_PX,
+        icon_gap_px: COVER_WATERMARK_ICON_GAP_PX,
+        font_size_px: COVER_WATERMARK_FONT_SIZE_PX,
+        color: COVER_WATERMARK_COLOR,
+        letter_spacing_px: 0.0,
+        segments: vec![
+            (COVER_WATERMARK_TEXT_MAIN.to_string(), 1.0),
+            (COVER_WATERMARK_TEXT_SEP.to_string(), COVER_WATERMARK_SEP_OPACITY_MUL),
+            (COVER_WATERMARK_TEXT_SUFFIX.to_string(), 1.0),
+        ],
+        anchor: WatermarkAnchor::Centered { center_y_px: COVER_WATERMARK_CENTER_Y_PX },
+    }
+}
+
 /// 按预设把水印（图标 + 分段文字）画到 `pixmap` 上。**唯一一份水印绘制逻辑**：
 /// `content`/`cover`/`outro` 的区别只在传入的 `WatermarkPreset` 与 `icon`
 /// （尺寸、颜色都由调用方按预设准备好），本函数不认得任何具体预设的名字。
@@ -196,6 +313,10 @@ fn layout_and_draw_watermark(
         WatermarkAnchor::BottomLeft { margin_left_px, margin_bottom_px } => {
             let row_bottom = CANVAS_H - margin_bottom_px;
             (margin_left_px, row_bottom - row_height / 2.0)
+        }
+        WatermarkAnchor::Centered { center_y_px } => {
+            let total_width = icon_size + preset.icon_gap_px + seg_widths.iter().sum::<f32>();
+            (CANVAS_W / 2.0 - total_width / 2.0, center_y_px)
         }
     };
 
@@ -311,13 +432,20 @@ pub struct Painter {
     renderer: TextRenderer,
     /// `content` 预设的水印，`new()` 里预渲染一次（I1/I2 修复）。
     content_watermark: PreparedWatermark,
+    /// `cover` 预设的水印，`new()` 里预渲染一次（Task 6）。
+    cover_watermark: PreparedWatermark,
+    /// Cover 上排用的 36px logo，`new()` 里用 Lanczos3 缩好一次缓存起来
+    /// （Task 6；Task 7 的 outro 216px 版本会是并列的另一个字段）。
+    logo_36: Pixmap,
 }
 
 impl Painter {
     pub fn new() -> anyhow::Result<Self> {
         let mut renderer = TextRenderer::new()?;
         let content_watermark = prepare_watermark(&mut renderer, &content_watermark_preset())?;
-        Ok(Self { renderer, content_watermark })
+        let cover_watermark = prepare_watermark(&mut renderer, &cover_watermark_preset())?;
+        let logo_36 = scaled_logo(COVER_LOGO_SIZE_PX)?;
+        Ok(Self { renderer, content_watermark, cover_watermark, logo_36 })
     }
 
     /// 绘制 Content 段一帧：完全透明底 + 当前字幕（若有）+ 左下角水印。
@@ -378,6 +506,189 @@ impl Painter {
             opacity,
             scale,
         );
+    }
+
+    /// 绘制 Cover 段一帧（规格 §8.4「Cover」小节）：不透明白底 + 左上排
+    /// （logo + 「熊猫智研社」，整体 0.30 透明度，左对齐）+ 主标题（100px
+    /// 粗体，居中，支持换行）+ `cover` 预设水印。
+    ///
+    /// 居中容器（宽 1024px）整体垂直居中于 y=360：上排固定 52px 高
+    /// （logo 36px + 上下 margin 各 8px），主标题紧随其后，容器总高
+    /// = 52 + 主标题排版高度，容器顶 = 360 - 总高/2。
+    pub fn draw_cover(&mut self, pixmap: &mut Pixmap, title: &str) {
+        pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
+
+        let title_style = TextStyle {
+            size_px: COVER_TITLE_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: COVER_TITLE_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+        let (_, title_h) = self.renderer.measure(title, &title_style);
+
+        let container_h = COVER_ROW_HEIGHT_PX + title_h;
+        let container_top = COVER_CONTAINER_CENTER_Y - container_h / 2.0;
+        let row_center_y = container_top + COVER_ROW_HEIGHT_PX / 2.0;
+        let title_center_y = container_top + COVER_ROW_HEIGHT_PX + title_h / 2.0;
+
+        // 上排：logo（左对齐，四周 margin 8px，整体 0.30 透明度）。
+        let logo_left = COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX;
+        let logo_top = row_center_y - COVER_LOGO_SIZE_PX as f32 / 2.0;
+        pixmap.draw_pixmap(
+            logo_left.round() as i32,
+            logo_top.round() as i32,
+            self.logo_36.as_ref(),
+            &PixmapPaint { opacity: COVER_ROW_OPACITY, ..Default::default() },
+            Transform::identity(),
+            None,
+        );
+
+        // 上排：「熊猫智研社」（左对齐，与 logo 在这 52px 行内垂直居中，
+        // 38px 粗体，整体 0.30 透明度——与 logo 不重叠，逐元素施加等价于
+        // 整体施加）。
+        let row_text_style = TextStyle {
+            size_px: COVER_ROW_TEXT_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: COVER_ROW_TEXT_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+        let (row_text_w, _) = self.renderer.measure(COVER_ROW_TEXT, &row_text_style);
+        let row_text_center_x = COVER_ROW_TEXT_LEFT_PX + row_text_w / 2.0;
+        self.renderer.draw_centered(
+            pixmap,
+            COVER_ROW_TEXT,
+            row_text_center_x,
+            row_center_y,
+            &row_text_style,
+            COVER_ROW_OPACITY,
+            1.0,
+        );
+
+        // 主标题：100px 粗体，水平居中，支持换行，不透明。
+        self.renderer.draw_centered(
+            pixmap,
+            title,
+            COVER_TITLE_CENTER_X,
+            title_center_y,
+            &title_style,
+            1.0,
+            1.0,
+        );
+
+        draw_watermark(pixmap, &self.cover_watermark, 1.0);
+    }
+
+    /// 绘制 Intro 段一帧（规格 §8.4「Intro」小节）：不透明白底 + 打字机标题
+    /// （70px 粗体，居中，支持换行）+ 光标（打字未完成时显示，2 次/秒闪烁）+
+    /// 3.0s→3.5s 整体淡出。无水印。
+    pub fn draw_intro(&mut self, pixmap: &mut Pixmap, local_frame: u32, title: &str) {
+        pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
+        // 3.0s -> 3.5s 线性淡出：只作用于文字（含光标），白底始终不透明
+        // （brief 提醒 5：`opacity` 挂在 TS 的 `<h1>` 上，外层 `bg-white` 不
+        // 参与淡出）。
+        let fade_opacity = interpolate(local_frame as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
+        if fade_opacity <= 0.0 {
+            return;
+        }
+
+        // 打字机：`visible` 只取决于字符数与帧号，与光标 opacity 无关——
+        // 这正是「光标闪烁不导致文字抖动」的关键（brief 提醒 6）：文字排版
+        // 里从不包含光标本身，光标是完全独立的第二次绘制。
+        let title_chars: Vec<char> = title.chars().collect();
+        let total_chars = title_chars.len();
+        let chars_per_sec = total_chars as f64 / INTRO_TYPEWRITER_SECONDS;
+        let visible =
+            ((local_frame as f64 * chars_per_sec / FPS).floor() as usize).min(total_chars);
+        let display_text: String = title_chars[..visible].iter().collect();
+
+        let style = TextStyle {
+            size_px: INTRO_TITLE_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+
+        self.renderer.draw_centered(
+            pixmap,
+            &display_text,
+            INTRO_TITLE_CENTER_X,
+            INTRO_TITLE_CENTER_Y,
+            &style,
+            fade_opacity,
+            1.0,
+        );
+
+        if local_frame < INTRO_TYPEWRITER_FRAMES {
+            let blink_opacity =
+                interpolate3((local_frame % 15) as f64, [0.0, 7.5, 15.0], [1.0, 1.0, 0.0]) as f32;
+            let cursor_opacity = fade_opacity * blink_opacity;
+            if cursor_opacity > 0.0 {
+                let (right_edge_x, last_line_center_y) =
+                    self.intro_last_line_anchor(&title_chars, visible, &style);
+                let (cursor_w, _) = self.renderer.measure(INTRO_CURSOR_TEXT, &style);
+                let cursor_center_x = right_edge_x + INTRO_CURSOR_GAP_PX + cursor_w / 2.0;
+                self.renderer.draw_centered(
+                    pixmap,
+                    INTRO_CURSOR_TEXT,
+                    cursor_center_x,
+                    last_line_center_y,
+                    &style,
+                    cursor_opacity,
+                    1.0,
+                );
+            }
+        }
+    }
+
+    /// 定位「当前已显示文字」（`chars[..visible]`）最后一行的右边缘 x 与
+    /// 垂直中心 y，用于放置打字机光标（brief 提醒 6）。
+    ///
+    /// **定位办法**：对 `chars[0..=k]`（`k` 从 0 递增到 `visible`）逐个调用
+    /// `measure()`，比较相邻两次排版高度——70px 标题在 944px 宽度下常常换行，
+    /// 而 `measure` 返回的排版高度只在真正发生换行的那个字符处跳变一整行
+    /// 行高（`TextRenderer::measure` 文档：行高由 `Metrics` 直接给定，与
+    /// 字形/字符数无关，因此跳变点精确对应换行位置，不依赖任何行数估算）。
+    /// 高度不再变化时，从最后一次跳变位置到 `visible` 就是最后一行的内容；
+    /// 从未跳变（单行标题）时，最后一行就是整个 `display_text`——这也是本
+    /// 方法在不换行场景下自然退化为「整块即最后一行」的原因，对多行标题同样
+    /// 成立（每帧都重新扫一遍当前已显示的前缀，不依赖上一帧的状态）。
+    fn intro_last_line_anchor(
+        &mut self,
+        chars: &[char],
+        visible: usize,
+        style: &TextStyle,
+    ) -> (f32, f32) {
+        let heights: Vec<f32> = (0..=visible)
+            .map(|k| {
+                let prefix: String = chars[..k].iter().collect();
+                self.renderer.measure(&prefix, style).1
+            })
+            .collect();
+
+        let mut last_break = 0usize;
+        for k in 1..=visible {
+            if heights[k] > heights[k - 1] {
+                last_break = k - 1; // 第 k 个字符（0-based 索引 k-1）另起一行
+            }
+        }
+
+        let last_line: String = chars[last_break..visible].iter().collect();
+        let (last_line_w, _) = self.renderer.measure(&last_line, style);
+        let block_h = heights[visible];
+        let line_h = style.size_px * style.line_height;
+
+        let right_edge_x = INTRO_TITLE_CENTER_X + last_line_w / 2.0;
+        let last_line_center_y = INTRO_TITLE_CENTER_Y + block_h / 2.0 - line_h / 2.0;
+        (right_edge_x, last_line_center_y)
     }
 }
 
@@ -871,4 +1182,415 @@ mod tests {
         painter.draw_content(&mut b, 20, &padded);
         assert_eq!(a.data(), b.data(), "「文字」与「文字   」渲染结果应当一致（M1：尾随空格不应影响居中）");
     }
+
+    // ------------------------------------------------------------------
+    // Task 6：Cover / Intro。以下 5 条测试是 brief Step 1 原样照抄，一字未改。
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cover_paints_an_opaque_white_background() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "测试标题");
+        for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
+            let c = p.pixel(x, y).unwrap();
+            assert_eq!(c.alpha(), 255, "角点 ({x},{y}) 应不透明");
+            assert!(c.red() > 240 && c.green() > 240 && c.blue() > 240, "角点应为白底");
+        }
+    }
+
+    #[test]
+    fn intro_paints_an_opaque_white_background() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut p, 60, "测试标题");
+        let c = p.pixel(0, 0).unwrap();
+        assert_eq!(c.alpha(), 255);
+        assert!(c.red() > 240 && c.green() > 240 && c.blue() > 240);
+    }
+
+    #[test]
+    fn intro_typewriter_reveals_more_characters_over_time() {
+        let mut painter = Painter::new().unwrap();
+        let title = "这是一个比较长的测试标题用来看打字机效果";
+        let mut early = Pixmap::new(1280, 720).unwrap();
+        let mut mid = Pixmap::new(1280, 720).unwrap();
+        let mut done = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut early, 5, title);
+        painter.draw_intro(&mut mid, 30, title);
+        painter.draw_intro(&mut done, 62, title); // 2 秒 = 60 帧后打完
+
+        let ink = |p: &Pixmap| (0..p.height()).flat_map(|y| (0..p.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| { let c = p.pixel(x, y).unwrap(); c.red() < 200 }).count();
+        assert!(ink(&early) < ink(&mid), "第 30 帧应比第 5 帧显示更多字");
+        assert!(ink(&mid) < ink(&done), "打完后应比中途更多字");
+    }
+
+    #[test]
+    fn intro_fades_out_at_the_end() {
+        let mut painter = Painter::new().unwrap();
+        let title = "淡出测试";
+        let mut before = Pixmap::new(1280, 720).unwrap();
+        let mut last = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut before, 89, title); // 淡出开始前
+        painter.draw_intro(&mut last, 104, title); // 淡出终点
+        let ink = |p: &Pixmap| (0..p.height()).flat_map(|y| (0..p.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| { let c = p.pixel(x, y).unwrap(); c.red() < 200 }).count();
+        assert!(ink(&last) < ink(&before), "第 104 帧应比第 89 帧淡");
+    }
+
+    #[test]
+    fn cover_shows_the_given_title() {
+        let mut painter = Painter::new().unwrap();
+        let mut a = Pixmap::new(1280, 720).unwrap();
+        let mut b = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut a, "标题甲");
+        painter.draw_cover(&mut b, "标题乙完全不同");
+        assert_ne!(a.data(), b.data(), "不同标题应渲染出不同画面");
+    }
+
+    // ------------------------------------------------------------------
+    // Task 6 追加的鉴别性断言（协调者要求）：brief 那 5 条只能测出很粗的形状，
+    // 这里锁死协调者交接里点名的精确数值与几何关系。每条都做过变异验证，
+    // 记录见报告。
+    //
+    // **关键陷阱记录**：Cover/Intro 的画布从头到尾都是不透明白底铺满
+    // （`alpha` 恒为 255），不像 Content 段那样以透明为「无墨迹」的信号——
+    // 用 `c.alpha() > 0` 判断「有没有墨迹」在这里永远为真，是一个会让断言
+    // 静默失去区分度的陷阱（红色阶段的运行记录：好几条新断言用这个判据时
+    // 全部因为"整张图都算有墨迹"而给出荒谬的数值，被红色阶段当场抓出）。
+    // 这里统一改用 `darkness()`——离纯白的距离（`255 - min(r,g,b)`）——
+    // 作为"有没有墨迹/墨迹有多深"的判据，白底恒为 0，合成后的黑字/水印
+    // 越深该值越大。
+    // ------------------------------------------------------------------
+
+    fn darkness(c: tiny_skia::PremultipliedColorU8) -> u8 {
+        255 - c.red().min(c.green()).min(c.blue())
+    }
+
+    fn max_darkness_in_rect(p: &Pixmap, x0: u32, x1: u32, y0: u32, y1: u32) -> u8 {
+        let mut m = 0u8;
+        for y in y0..y1.min(p.height()) {
+            for x in x0..x1.min(p.width()) {
+                if let Some(c) = p.pixel(x, y) {
+                    m = m.max(darkness(c));
+                }
+            }
+        }
+        m
+    }
+
+    /// 按 `darkness>0`（非纯白）判定的包围盒，`y` 范围可限定，避免扫到无关区域。
+    fn ink_bbox_in_y_range(p: &Pixmap, y0: u32, y1: u32) -> Option<(u32, u32, u32, u32)> {
+        let (mut bx0, mut by0, mut bx1, mut by1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for y in y0..y1.min(p.height()) {
+            for x in 0..p.width() {
+                if p.pixel(x, y).map(|c| darkness(c) > 0).unwrap_or(false) {
+                    bx0 = bx0.min(x);
+                    by0 = by0.min(y);
+                    bx1 = bx1.max(x);
+                    by1 = by1.max(y);
+                }
+            }
+        }
+        (bx0 != u32::MAX).then_some((bx0, by0, bx1, by1))
+    }
+
+    /// Cover 上排「熊猫智研社」的整体不透明度应精确为 0.30
+    /// （黑字合成到白底：`darkness ≈ round(255*0.30) = 76`），而不是 255
+    /// （忘了施加整体透明度）。只扫文字所在的 x 范围（≥220，即
+    /// `COVER_ROW_TEXT_LEFT_PX`），避开 logo（颜色未知，会污染这个精确数值）。
+    #[test]
+    fn cover_top_row_opacity_is_about_76_not_opaque() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "标题");
+        // 容器垂直居中于 360，主标题至少一行（100px*1.2=120px），故容器总高
+        // >= 52+120=172，容器顶 <= 360-86=274；上排固定在容器顶部往下 52px，
+        // 取一段肯定覆盖上排、肯定不会碰到主标题的安全窗口。
+        let max_darkness = max_darkness_in_rect(&p, 220, 900, 0, 300);
+        assert!(
+            (max_darkness as i32 - 76).abs() <= 8,
+            "上排文字 darkness 应约为 76（0.30 组透明度合成到白底），实得 {max_darkness}"
+        );
+        assert_ne!(max_darkness, 255, "上排文字不应是纯黑（未施加整体透明度）");
+    }
+
+    /// Cover 应该画出 logo：logo 占据的 36x36 区域内应有非白像素。
+    #[test]
+    fn cover_draws_a_logo_in_the_top_row() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "标题");
+        // logo 左边缘 x=176，尺寸 36px；容器顶 <= 274（见上一条推导），
+        // 故 logo 顶 <= 274+8=282，给足够宽的窗口。
+        let has_logo_ink = (176..212).any(|x| (0..320).any(|y| p.pixel(x, y).map(|c| darkness(c) > 0).unwrap_or(false)));
+        assert!(has_logo_ink, "logo 所在的 36x36 区域内应有非白像素");
+    }
+
+    /// Cover 主标题应是 100px 量级：单行短标题的墨高与上排 38px 文字墨高的比值
+    /// 应约为 100/38（±10%）。
+    #[test]
+    fn cover_title_font_size_matches_100px() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "短标题"); // 短标题，单行，不换行
+        let (top_h, title_h) = cover_row_and_title_ink_heights(&p);
+        let ratio = title_h / top_h;
+        let expected = 100.0 / 38.0;
+        assert!(
+            (ratio - expected).abs() / expected <= 0.10,
+            "主标题/上排墨高比应约为 {expected:.3}±10%，实得 {ratio:.3}（top_h={top_h} title_h={title_h}）"
+        );
+    }
+
+    /// 扫描出上排（logo 所在带）与主标题各自的整体墨迹纵向跨度（最上一行有
+    /// 墨迹到最下一行有墨迹）。
+    ///
+    /// **不用"第一段连续墨迹"**：某些 CJK 字形内部存在完全空白的行（笔画间的
+    /// 间隙，例如既有测试 `font_size_threshold_ignores_whitespace_padding`
+    /// 文档记录的"三"字——三条横线，行扫描会在笔画间的空白处误判"这一段墨迹
+    /// 结束了"），用"从第一行有墨迹到最后一行有墨迹"的整体跨度不受这个陷阱
+    /// 影响（红色阶段实测：用连续段方法时"短标题"三个字被切成 18px 的碎片，
+    /// 换成整体跨度后量出正确的 ~95px 级别高度）。上排与主标题各自在互不重叠
+    /// 的 y 窗口内查找，两个窗口本身不会互相污染。
+    fn cover_row_and_title_ink_heights(p: &Pixmap) -> (f32, f32) {
+        let row_has_ink =
+            |y: u32| (0..p.width()).any(|x| p.pixel(x, y).map(|c| darkness(c) > 0).unwrap_or(false));
+        // 上排在 y<300（同上一条推导）；主标题在其后，用一个宽泛上界 700
+        // （水印固定在 y>=550 附近；这个函数只用于单行短标题场景，主标题块
+        // 不会延伸到那么低）。
+        let ink_extent = |y_start: u32, y_end: u32| -> Option<(u32, u32)> {
+            let mut first = None;
+            let mut last = None;
+            for y in y_start..y_end {
+                if row_has_ink(y) {
+                    first.get_or_insert(y);
+                    last = Some(y);
+                }
+            }
+            first.zip(last)
+        };
+        // 实测（"短标题"，见报告红色阶段记录）：上排墨迹实际跨度是
+        // y∈[282,318]（38px 字号的实际墨高比 em 方框小，末端到 318 而不是
+        // 想当然的 300 以内），窗口给到 335 留出安全余量，同时仍严格早于
+        // 主标题的起始行 339，不会把两者混到一起。主标题窗口上界不能沿用
+        // 700——那会把水印（实测 y∈[560,591]）也吞进"主标题"的墨迹跨度里
+        // （红色阶段实测：title_h 因此被撑到 253，而不是真实的 94），改用
+        // 500，仍远高于"短标题"单行墨迹的实际下边缘 432，同时严格低于水印
+        // 起始行 560。
+        let top_extent = ink_extent(0, 335).expect("上排应有墨迹");
+        let title_extent = ink_extent(top_extent.1 + 1, 500).expect("主标题应有墨迹");
+        (
+            (top_extent.1 - top_extent.0 + 1) as f32,
+            (title_extent.1 - title_extent.0 + 1) as f32,
+        )
+    }
+
+    /// Cover 水印：直接检查 `prepare_watermark` 预渲染出的水印小图（透明底上
+    /// 画出来的，未与 Cover 白底合成，因此可以像 `content` 预设的既有测试
+    /// 一样直接读 `alpha` 精确核对数值，不受"合成到不透明白底后 alpha 恒为
+    /// 255、只能靠颜色深浅反推"这件事的影响）：墨迹（含 origin 换算回画布
+    /// 坐标）水平/垂直中心分别 ≈640/≈576（±4），全区 maxAlpha 精确等于 102
+    /// （`rgba(23,23,23,0.4)`），且含中文后缀（墨宽显著大于 content 预设的
+    /// 275px，给下界 450px）；并确认 `draw_cover` 真的把它画了出来（不只是
+    /// prepare 了但没调用）。
+    #[test]
+    fn cover_watermark_is_centered_at_640_576_with_alpha_102_and_chinese_suffix() {
+        let mut renderer = TextRenderer::new().unwrap();
+        let prepared = prepare_watermark(&mut renderer, &cover_watermark_preset()).unwrap();
+        let (x0, y0, x1, y1) = non_transparent_bbox(&prepared.pixmap).expect("cover 水印应有墨迹");
+        let canvas_x0 = prepared.origin_x + x0 as i32;
+        let canvas_x1 = prepared.origin_x + x1 as i32;
+        let canvas_y0 = prepared.origin_y + y0 as i32;
+        let canvas_y1 = prepared.origin_y + y1 as i32;
+        let cx = (canvas_x0 + canvas_x1) as f32 / 2.0;
+        let cy = (canvas_y0 + canvas_y1) as f32 / 2.0;
+        assert!((cx - 640.0).abs() <= 4.0, "水印水平中心应≈640，实得 {cx}");
+        assert!((cy - 576.0).abs() <= 4.0, "水印垂直中心应≈576，实得 {cy}");
+
+        let mut max_alpha = 0u8;
+        for y in 0..prepared.pixmap.height() {
+            for x in 0..prepared.pixmap.width() {
+                if let Some(c) = prepared.pixmap.pixel(x, y) {
+                    max_alpha = max_alpha.max(c.alpha());
+                }
+            }
+        }
+        assert_eq!(max_alpha, 102, "cover 水印 maxAlpha 应精确等于 102");
+
+        let width = canvas_x1 - canvas_x0;
+        assert!(width > 450, "带中文后缀的水印墨宽应显著大于 content 预设的 275px，实得 {width}");
+
+        // 确认 draw_cover 真的调用了它，不只是 Painter::new() 里预渲染了但没贴图。
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut p, "标题");
+        assert!(
+            ink_bbox_in_y_range(&p, 550, 720).is_some(),
+            "draw_cover 应该把 cover 水印实际画到画布上"
+        );
+    }
+
+    /// Intro 不应有水印：下半部（y>600，覆盖 content 水印所在的位置区域）不应有墨。
+    #[test]
+    fn intro_has_no_watermark() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut p, 30, "标题");
+        assert!(ink_bbox_in_y_range(&p, 600, 720).is_none(), "Intro 下半部不应有水印墨迹");
+    }
+
+    /// 打字机字符数：用一个不会换行的短标题（6 字），断言 frame 5/15/30 的墨宽
+    /// 阶梯上升，且打完（frame>=60）后与整串标题的墨宽一致（±4px）。
+    #[test]
+    fn typewriter_ink_width_steps_up_and_matches_full_title_when_done() {
+        let mut painter = Painter::new().unwrap();
+        let title = "六个字标题呀"; // 6 字，不会换行
+        let mut f5 = Pixmap::new(1280, 720).unwrap();
+        let mut f15 = Pixmap::new(1280, 720).unwrap();
+        let mut f30 = Pixmap::new(1280, 720).unwrap();
+        let mut f70 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut f5, 5, title);
+        painter.draw_intro(&mut f15, 15, title);
+        painter.draw_intro(&mut f30, 30, title);
+        painter.draw_intro(&mut f70, 70, title);
+
+        let ink_width = |p: &Pixmap| -> f32 {
+            let (x0, _, x1, _) = ink_bbox_in_y_range(p, 0, 720).expect("应有墨迹");
+            (x1 - x0) as f32
+        };
+        let w5 = ink_width(&f5);
+        let w15 = ink_width(&f15);
+        let w30 = ink_width(&f30);
+        let w70 = ink_width(&f70);
+        assert!(w5 < w15, "frame 5 应比 frame 15 窄：{w5} vs {w15}");
+        assert!(w15 < w30, "frame 15 应比 frame 30 窄：{w15} vs {w30}");
+
+        // 单独渲染整串标题（不经打字机）作为基准比较墨宽。**必须先填白底**：
+        // `darkness()` 把「透明像素」（premultiplied rgb 恒为 0）误判成
+        // 「纯黑」（`darkness=255`），不填白底会让 `ink_bbox_in_y_range`
+        // 把整张画布都当成墨迹（红色阶段实测：这条测试当场因此失败）。
+        let mut full = Pixmap::new(1280, 720).unwrap();
+        full.fill(Color::from_rgba8(255, 255, 255, 255));
+        let style = TextStyle {
+            size_px: 70.0,
+            color: [0, 0, 0, 255],
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: 944.0,
+            line_height: 1.2,
+            bold: true,
+        };
+        painter.renderer.draw_centered(&mut full, title, 640.0, 360.0, &style, 1.0, 1.0);
+        let w_full = ink_width(&full);
+        assert!(
+            (w70 - w_full).abs() <= 4.0,
+            "打完后墨宽应与整串标题一致（±4px）：frame70={w70} full={w_full}"
+        );
+    }
+
+    /// 光标存在且会闪：`interpolate3((f%15) as f64,[0,7.5,15],[1,1,0])` 在
+    /// `f%15=0` 时最亮（1.0），在 `f%15=14` 时最暗（≈0.133）。用「标题」
+    /// （2 字，`chars_per_sec=1.0`）保证 frame 0 与 frame 14 的 `visible` 都是
+    /// 0（`30/chars_per_sec=30` 帧才显示第一个字），这样两帧唯一的差异就是
+    /// 光标本身的透明度——用累计 darkness（正比于合成的组透明度）而不是
+    /// "是否非纯白"的布尔判据来比较亮度，因为同一光标形状不管多暗、只要非
+    /// 纯白就会被布尔判据判定为"有墨迹"，量不出亮暗差异（红色阶段实测：
+    /// 用 `darkness>0` 布尔计数时 bright/dim 的墨迹像素数完全相等，虽然
+    /// 实际颜色深浅明显不同）。
+    #[test]
+    fn cursor_exists_blinks_and_disappears_once_typing_completes() {
+        let mut painter = Painter::new().unwrap();
+        let title = "标题"; // 2 字：chars_per_sec=1.0，frame<30 时 visible 恒为 0
+        let mut bright = Pixmap::new(1280, 720).unwrap();
+        let mut dim = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut bright, 0, title); // visible=0，f%15=0 → blink=1.0（最亮）
+        painter.draw_intro(&mut dim, 14, title); // visible=0，f%15=14 → blink≈0.133（最暗）
+        let darkness_sum = |p: &Pixmap| -> u64 {
+            (0..p.height())
+                .flat_map(|y| (0..p.width()).map(move |x| (x, y)))
+                .filter_map(|(x, y)| p.pixel(x, y))
+                .map(|c| u64::from(darkness(c)))
+                .sum()
+        };
+        let sum_bright = darkness_sum(&bright);
+        let sum_dim = darkness_sum(&dim);
+        assert!(sum_bright > sum_dim * 2, "光标全亮帧的累计 darkness 应显著大于全暗帧：bright={sum_bright} dim={sum_dim}");
+        assert!(sum_dim > 0, "全暗帧（blink≈0.133）光标仍应残留极淡的墨迹，不应完全消失");
+
+        // 打完（local_frame>=60）后不应有光标：与整串标题单独渲染逐字节一致。
+        // 同样必须先填白底（原因见上一条测试的注释）。
+        let title2 = "六个字标题呀";
+        let mut done = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut done, 60, title2);
+        let mut full = Pixmap::new(1280, 720).unwrap();
+        full.fill(Color::from_rgba8(255, 255, 255, 255));
+        let style = TextStyle {
+            size_px: 70.0,
+            color: [0, 0, 0, 255],
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: 944.0,
+            line_height: 1.2,
+            bold: true,
+        };
+        painter.renderer.draw_centered(&mut full, title2, 640.0, 360.0, &style, 1.0, 1.0);
+        assert_eq!(done.data(), full.data(), "打完后应与整串标题渲染结果逐字节一致（无光标残留）");
+    }
+
+    /// 光标闪烁不导致文字抖动：取同一 `visible`（=1）下光标不同透明度的两帧
+    /// （frame 15 与 frame 29，用 4 字标题使 `chars_per_sec=2.0`，每 15 帧显示
+    /// 一个字符，`visible=floor(f/15)` 在 `[15,29]` 内恒为 1，`f%15` 分别是
+    /// 0 与 14，正好是全亮与全暗），不预判光标的具体像素坐标（不写死"光标在
+    /// x>=某值"这类耦合实现细节的断言），而是直接比较两帧的像素差异区域：
+    /// 如果文字位置真的跟着光标透明度抖动，差异会扩散到整块文字的宽度
+    /// （几百像素）；如果只有光标本身在变暗变亮，差异只会集中在一个字形
+    /// 宽度以内的窄带。
+    #[test]
+    fn cursor_blinking_does_not_shift_text_pixels() {
+        let mut painter = Painter::new().unwrap();
+        let title = "标题文字"; // 4 字：chars_per_sec=2.0，每 15 帧显示一个字符
+        let mut bright = Pixmap::new(1280, 720).unwrap();
+        let mut dim = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut bright, 15, title); // visible=1，f%15=0 → 光标全亮
+        painter.draw_intro(&mut dim, 29, title); // visible=1，f%15=14 → 光标近乎全暗
+        let mut diff_x0 = u32::MAX;
+        let mut diff_x1 = 0u32;
+        let mut diff_count = 0usize;
+        for y in 0..720u32 {
+            for x in 0..1280u32 {
+                if bright.pixel(x, y) != dim.pixel(x, y) {
+                    diff_x0 = diff_x0.min(x);
+                    diff_x1 = diff_x1.max(x);
+                    diff_count += 1;
+                }
+            }
+        }
+        assert!(diff_count > 0, "光标不同透明度应产生像素差异（否则光标根本没画出来）");
+        let diff_width = diff_x1 - diff_x0;
+        assert!(
+            diff_width < 50,
+            "像素差异应只集中在光标本身的窄带内（<50px），不应扩散到文字：diff_x=[{diff_x0},{diff_x1}] 宽度={diff_width}"
+        );
+    }
+
+    /// 淡出端点：local_frame = 104 的墨迹应接近 0
+    /// （`interpolate(104,[90,104],[1,0])=0`），而 local_frame=89 是满不透明
+    /// （`interpolate(89,[90,104],[1,0])=1`，因为 89<=90）。
+    #[test]
+    fn fade_out_endpoints_match_interpolate_exactly() {
+        assert_eq!(interpolate(104.0, [90.0, 104.0], [1.0, 0.0]), 0.0);
+        assert_eq!(interpolate(89.0, [90.0, 104.0], [1.0, 0.0]), 1.0);
+
+        let mut painter = Painter::new().unwrap();
+        let title = "淡出端点测试";
+        let mut f89 = Pixmap::new(1280, 720).unwrap();
+        let mut f104 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_intro(&mut f89, 89, title);
+        painter.draw_intro(&mut f104, 104, title);
+        assert!(ink_bbox_in_y_range(&f104, 0, 720).is_none(), "frame 104 应完全无墨迹（fade=0）");
+        assert!(ink_bbox_in_y_range(&f89, 0, 720).is_some(), "frame 89 应满不透明，有墨迹");
+    }
+
 }
