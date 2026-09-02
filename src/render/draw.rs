@@ -12,7 +12,7 @@
 //! `PreparedWatermark` 的文档注释）。
 
 use anyhow::Context;
-use tiny_skia::{Color, IntSize, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{Color, FillRule, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
 
 use crate::assets::{github_mark_rgba, logo_rgba};
 use crate::render::anim::{interpolate, interpolate3, spring};
@@ -134,6 +134,61 @@ const INTRO_CURSOR_GAP_PX: f32 = 4.0;
 /// 3.0s -> 3.5s 线性淡出（brief 数值，逐字照用）。
 const INTRO_FADE_OUT_RANGE: [f64; 2] = [90.0, 104.0];
 
+/// Outro（规格 §8.4「Outro」小节）：同心圆环 + logo + 固定标题 + `cover` 预设
+/// 水印，整体淡出。
+///
+/// 同心圆环：5 个白色实心圆（`i = 0..OUTRO_RING_COUNT`，半径
+/// `OUTRO_RING_RADIUS_STEP_PX * i`），倒序绘制（大的先画），整体
+/// `scale = 1 / (1 - out_progress)` 以画布中心为原点——半径本身乘 `scale`
+/// 即可，不需要真去构造几何变换。白底上的白色实心圆视觉上不可见（TS 原版靠
+/// 一层本移植不做的 `box-shadow` 才看得出边缘），但仍照原样画出（协调者裁定：
+/// 忠实移植，不因「看不见」而省略，也不擅自改色/加阴影）。
+const OUTRO_RING_COUNT: u32 = 5;
+/// `720 * 0.3`：`720` 是规格字面值（`CANVAS_H`），不是 `min(1280,720)`
+/// （那是 logo 尺寸的算法，圆环半径规格另有其字面公式，两者数值恰好相同
+/// 纯属巧合，不应共用同一个常量表达不同的语义）。
+const OUTRO_RING_RADIUS_STEP_PX: f32 = CANVAS_H * 0.3;
+/// 圆环淡出弹簧：时长 0.5s、延迟 1s（规格字面值）。
+const OUTRO_RING_OUT_DURATION_SECONDS: f64 = 0.5;
+const OUTRO_RING_OUT_DELAY_SECONDS: f64 = 1.0;
+const OUTRO_RING_OUT_DURATION_FRAMES: f64 = OUTRO_RING_OUT_DURATION_SECONDS * FPS;
+const OUTRO_RING_OUT_DELAY_FRAMES: f64 = OUTRO_RING_OUT_DELAY_SECONDS * FPS;
+/// `out_progress` 的钳制上限（协调者裁定的两个等价方案之一）：`spring` 在
+/// `elapsed >= duration_frames`（即 `local_frame >= 30+15 = 45`）时**精确**
+/// 返回 `1.0`（见 `anim::spring` 文档），若不钳制，`1.0/(1.0-1.0)` = `inf`，
+/// 喂给 `tiny_skia::PathBuilder::from_circle` 会产生非有限半径。钳到 `0.99`
+/// 对应 scale 上限 100，仍然发散得足够快、不影响观感（120 帧全程测试见
+/// `mod tests`）。
+const OUTRO_RING_OUT_PROGRESS_MAX: f64 = 0.99;
+
+/// Outro logo：`min(1280,720) * 0.3 = 216`（`min` 在当前画布尺寸下就是
+/// `CANVAS_H`，与 `OUTRO_RING_RADIUS_STEP_PX` 数值相同但语义无关，见上）。
+const OUTRO_LOGO_SIZE_PX: u32 = (CANVAS_H * 0.3) as u32;
+/// logo 自身中心缩放：`0.2 -> 1.0`，首 0.8s 内完成（`[0, 24]` 帧，规格字面值）。
+const OUTRO_LOGO_SCALE_IN_FRAMES: [f64; 2] = [0.0, 24.0];
+const OUTRO_LOGO_SCALE_RANGE: [f64; 2] = [0.2, 1.0];
+
+/// 固定标题「熊猫智研社」：70px 粗体黑色，紧随 logo 淡入之后（`[24, 39]` 帧）
+/// 淡入 + 上移 50px 归位。TS 原版 `whiteSpace: nowrap`（不换行）——沿用既有
+/// 代码里表达「不换行」的惯例，给一个远大于画布宽度的 `max_width_px`
+/// （见 `WATERMARK_MAX_WIDTH_PX`/`COVER_ROW_TEXT_MAX_WIDTH_PX` 的同款注释）。
+const OUTRO_TITLE_TEXT: &str = "熊猫智研社";
+const OUTRO_TITLE_FONT_SIZE_PX: f32 = 70.0;
+const OUTRO_TITLE_MAX_WIDTH_PX: f32 = 2000.0;
+/// logo（未缩放的原生 216px 布局盒）与标题之间的纵向间距（TS `marginTop:40px`）。
+/// **CSS `transform: scale()` 不改变布局盒尺寸**：logo 的缩放动画只在其自身
+/// 中心原地放大/缩小，纵向组的布局高度按 logo 的 216px 原尺寸计算，标题位置
+/// 不随 logo 缩放动画上下移动。
+const OUTRO_TITLE_GAP_PX: f32 = 40.0;
+const OUTRO_TITLE_FADE_IN_FRAMES: [f64; 2] = [24.0, 39.0];
+const OUTRO_TITLE_OPACITY_RANGE: [f64; 2] = [0.0, 1.0];
+const OUTRO_TITLE_TRANSLATE_Y_RANGE: [f64; 2] = [-50.0, 0.0];
+
+/// 整体淡出（`[105, 119]` 帧，规格字面值）：作用于圆环、logo、标题、水印
+/// 四者，白底不受影响（与 Cover/Intro 的白底恒定不透明一致）。
+const OUTRO_FADE_OUT_FRAMES: [f64; 2] = [105.0, 119.0];
+const OUTRO_FADE_OUT_RANGE: [f64; 2] = [1.0, 0.0];
+
 /// 把 GitHub 图标的原始光栅化位图（`assets::github_mark_rgba` 返回的单色形状、
 /// 填充色不重要）按给定纯色重新着色，返回预乘 alpha 的 `Pixmap`，可直接用
 /// `Pixmap::draw_pixmap` 合成到目标画布上。已按尺寸/颜色两个维度参数化——
@@ -189,6 +244,22 @@ fn scaled_logo(size_px: u32) -> anyhow::Result<Pixmap> {
         IntSize::from_wh(size_px, size_px).context("logo 目标尺寸非零")?;
     Pixmap::from_vec(resized.into_raw(), size)
         .context("logo 缩放后 Pixmap 构造失败：像素数据长度与声明尺寸不匹配")
+}
+
+/// Outro 同心圆环的整体缩放：`1 / (1 - out_progress)`，`out_progress` 钳制在
+/// `OUTRO_RING_OUT_PROGRESS_MAX` 以内（见该常量文档：不钳制会在
+/// `local_frame >= 45` 时除零得到 `inf`）。抽成独立的纯函数，好让
+/// `mod tests` 直接对着它断言有限性/单调性，而不是只能靠「画一整帧不 panic」
+/// 这种鉴别力很弱的间接判据。
+fn outro_ring_scale(local_frame: f64) -> f64 {
+    let out_progress = spring(
+        local_frame,
+        FPS,
+        OUTRO_RING_OUT_DURATION_FRAMES,
+        OUTRO_RING_OUT_DELAY_FRAMES,
+    )
+    .min(OUTRO_RING_OUT_PROGRESS_MAX);
+    1.0 / (1.0 - out_progress)
 }
 
 /// 扫描整幅画布，返回非透明像素的包围盒 `(x0,y0,x1,y1)`（`alpha>0` 才算数，
@@ -443,8 +514,10 @@ pub struct Painter {
     /// `cover` 预设的水印，`new()` 里预渲染一次（Task 6）。
     cover_watermark: PreparedWatermark,
     /// Cover 上排用的 36px logo，`new()` 里用 Lanczos3 缩好一次缓存起来
-    /// （Task 6；Task 7 的 outro 216px 版本会是并列的另一个字段）。
+    /// （Task 6；Task 7 的 outro 216px 版本是并列的另一个字段，见 `logo_216`）。
     logo_36: Pixmap,
+    /// Outro 用的 216px logo（Task 7），同样在 `new()` 里缩好一次缓存起来。
+    logo_216: Pixmap,
 }
 
 impl Painter {
@@ -453,7 +526,8 @@ impl Painter {
         let content_watermark = prepare_watermark(&mut renderer, &content_watermark_preset())?;
         let cover_watermark = prepare_watermark(&mut renderer, &cover_watermark_preset())?;
         let logo_36 = scaled_logo(COVER_LOGO_SIZE_PX)?;
-        Ok(Self { renderer, content_watermark, cover_watermark, logo_36 })
+        let logo_216 = scaled_logo(OUTRO_LOGO_SIZE_PX)?;
+        Ok(Self { renderer, content_watermark, cover_watermark, logo_36, logo_216 })
     }
 
     /// 绘制 Content 段一帧：完全透明底 + 当前字幕（若有）+ 左下角水印。
@@ -686,6 +760,108 @@ impl Painter {
         let right_edge_x = INTRO_TITLE_CENTER_X + last_w / 2.0;
         let last_line_center_y = INTRO_TITLE_CENTER_Y + last_top_rel / 2.0;
         (right_edge_x, last_line_center_y)
+    }
+
+    /// 绘制 Outro 段一帧（规格 §8.4「Outro」小节）：不透明白底 + 同心圆环
+    /// （不可见，忠实移植）+ logo（自身中心缩放）+ 固定标题「熊猫智研社」
+    /// （紧随 logo 淡入 + 上移归位）+ `cover` 预设水印，末尾整体淡出。
+    pub fn draw_outro(&mut self, pixmap: &mut Pixmap, local_frame: u32) {
+        pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
+
+        let frame = local_frame as f64;
+        let fade_opacity = interpolate(frame, OUTRO_FADE_OUT_FRAMES, OUTRO_FADE_OUT_RANGE) as f32;
+        if fade_opacity <= 0.0 {
+            return;
+        }
+
+        // 同心圆环：5 个白色实心圆，倒序绘制（大的先画）。白底上的白色实心圆
+        // 视觉不可见，但仍照规格忠实画出（协调者裁定，见 `OUTRO_RING_COUNT`
+        // 文档）。`out_progress`/`scale` 的钳制见 `outro_ring_scale`。
+        let ring_scale = outro_ring_scale(frame);
+        let ring_alpha = (255.0 * fade_opacity).round().clamp(0.0, 255.0) as u8;
+        if ring_alpha > 0 {
+            let mut ring_paint = Paint::default();
+            ring_paint.set_color_rgba8(255, 255, 255, ring_alpha);
+            ring_paint.anti_alias = true;
+            for i in (0..OUTRO_RING_COUNT).rev() {
+                let radius = OUTRO_RING_RADIUS_STEP_PX as f64 * f64::from(i) * ring_scale;
+                if radius <= 0.0 {
+                    continue; // i=0：半径 0，`from_circle` 对非正半径返回 None
+                }
+                if let Some(path) =
+                    PathBuilder::from_circle(CANVAS_W / 2.0, CANVAS_H / 2.0, radius as f32)
+                {
+                    pixmap.fill_path(
+                        &path,
+                        &ring_paint,
+                        FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
+                }
+            }
+        }
+
+        // logo + 标题的纵向组：整体垂直居中于画布中心，`justify-center
+        // items-center` + `flexDirection: column` 语义。布局盒尺寸按 logo 的
+        // 216px **原尺寸**计算（`transform: scale()` 不改变布局盒尺寸），
+        // 标题位置因此不随 logo 的缩放动画上下移动。
+        let title_style = TextStyle {
+            size_px: OUTRO_TITLE_FONT_SIZE_PX,
+            color: TITLE_COLOR_BLACK,
+            stroke: None,
+            letter_spacing_px: 0.0,
+            max_width_px: OUTRO_TITLE_MAX_WIDTH_PX,
+            line_height: DEFAULT_LINE_HEIGHT,
+            bold: true,
+        };
+        let (_, title_h) = self.renderer.measure(OUTRO_TITLE_TEXT, &title_style);
+        let logo_size = OUTRO_LOGO_SIZE_PX as f32;
+        let group_h = logo_size + OUTRO_TITLE_GAP_PX + title_h;
+        let group_top = CANVAS_H / 2.0 - group_h / 2.0;
+        let logo_center_x = CANVAS_W / 2.0;
+        let logo_center_y = group_top + logo_size / 2.0;
+        let title_top = group_top + logo_size + OUTRO_TITLE_GAP_PX;
+
+        // Logo：以自身中心缩放，`scale` 0.2 -> 1.0。
+        let logo_scale =
+            interpolate(frame, OUTRO_LOGO_SCALE_IN_FRAMES, OUTRO_LOGO_SCALE_RANGE) as f32;
+        let half = logo_size / 2.0;
+        let logo_transform = Transform::from_translate(-half, -half)
+            .post_scale(logo_scale, logo_scale)
+            .post_translate(logo_center_x, logo_center_y);
+        pixmap.draw_pixmap(
+            0,
+            0,
+            self.logo_216.as_ref(),
+            &PixmapPaint { opacity: fade_opacity, ..Default::default() },
+            logo_transform,
+            None,
+        );
+
+        // 标题：紧随 logo 淡入之后（[24,39] 帧）淡入 + 从上方 50px 处归位；
+        // `translate_y` 只作用于标题自身、不影响 logo（两者是纵向组里独立的
+        // 两个元素，各自的入场动画互不耦合）。
+        let title_fade_in =
+            interpolate(frame, OUTRO_TITLE_FADE_IN_FRAMES, OUTRO_TITLE_OPACITY_RANGE) as f32;
+        let title_opacity = title_fade_in * fade_opacity;
+        let translate_y = interpolate(
+            frame,
+            OUTRO_TITLE_FADE_IN_FRAMES,
+            OUTRO_TITLE_TRANSLATE_Y_RANGE,
+        ) as f32;
+        let title_center_y = title_top + title_h / 2.0 + translate_y;
+        self.renderer.draw_centered(
+            pixmap,
+            OUTRO_TITLE_TEXT,
+            CANVAS_W / 2.0,
+            title_center_y,
+            &title_style,
+            title_opacity,
+            1.0,
+        );
+
+        draw_watermark(pixmap, &self.cover_watermark, fade_opacity);
     }
 }
 
@@ -2113,4 +2289,249 @@ mod tests {
         assert!(ink_bbox_in_y_range(&f89, 0, 720).is_some(), "frame 89 应满不透明，有墨迹");
     }
 
+    // ------------------------------------------------------------------
+    // Task 7：Outro。以下 5 条测试是 brief Step 1 原样照抄，一字未改。
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn outro_paints_an_opaque_white_background() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut p, 0);
+        let c = p.pixel(0, 0).unwrap();
+        assert_eq!(c.alpha(), 255);
+        assert!(c.red() > 240 && c.green() > 240 && c.blue() > 240);
+    }
+
+    #[test]
+    fn outro_logo_grows_during_the_first_08_seconds() {
+        let mut painter = Painter::new().unwrap();
+        let mut f0 = Pixmap::new(1280, 720).unwrap();
+        let mut f24 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut f0, 0);
+        painter.draw_outro(&mut f24, 24);
+        assert_ne!(f0.data(), f24.data(), "logo 应从 0.2 倍放大到 1.0 倍");
+    }
+
+    #[test]
+    fn outro_title_fades_in_after_the_logo() {
+        let mut painter = Painter::new().unwrap();
+        let mut f24 = Pixmap::new(1280, 720).unwrap();
+        let mut f39 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut f24, 24);
+        painter.draw_outro(&mut f39, 39);
+        assert_ne!(f24.data(), f39.data(), "标题应在第 24~39 帧淡入");
+    }
+
+    #[test]
+    fn outro_fades_out_at_the_end() {
+        let mut painter = Painter::new().unwrap();
+        let ink = |p: &Pixmap| (0..p.height()).flat_map(|y| (0..p.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| { let c = p.pixel(x, y).unwrap(); c.red() < 200 }).count();
+        let mut f100 = Pixmap::new(1280, 720).unwrap();
+        let mut f119 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut f100, 100);
+        painter.draw_outro(&mut f119, 119);
+        assert!(ink(&f119) < ink(&f100), "第 119 帧应比第 100 帧淡");
+    }
+
+    // ------------------------------------------------------------------
+    // Task 7 追加的鉴别性断言（协调者要求）：brief 那 5 条只能测出很粗的形状
+    // （3 条是 `assert_ne!`，改错任何一个常数它们都照样通过）。以下每条都
+    // 对着协调者点名的变异逐一验证过（记录见报告"变异实验"一节）：
+    // logo 尺寸 216→180、标题字号 70→50、标题下移 40→0、淡出区间
+    // [105,119]→[90,119]、圆环半径系数 0.3→0.5、logo 起始 scale 0.2→0.5、
+    // 标题淡入区间 [24,39]→[24,60]。
+    //
+    // **同心圆环在白底上真的不可见**（协调者裁定 2）：白色实心圆合成到白色
+    // 背景上，`SourceOver` 混合下 `out = src*a + dst*(1-a)`，当 `src==dst==255`
+    // 时无论 `a` 是多少结果恒为 255——这意味着圆环的 `scale`/`opacity`/
+    // 绘制顺序（倒序 vs 正序）对最终像素**完全没有可观测影响**，不是这里
+    // 哪条像素断言能测出来的（与 Task 6 `intro_has_no_watermark` 文档记录的
+    // 白叠白盲区是同一类现象）。圆环半径系数（`720*0.3`）与钳制上限改用
+    // 直接的常量/纯函数断言（`outro_ring_radius_step_is_216px`、
+    // `outro_ring_scale_is_finite_and_clamps_to_100_from_frame_45`），不依赖
+    // 像素。
+    // ------------------------------------------------------------------
+
+    /// **N: logo 尺寸 216→180**。`Painter::new()` 只应缩一次 216px logo，
+    /// 直接检查缓存的 `Pixmap` 尺寸——比像素扫描更精确，也不受 logo 图案
+    /// 本身留白/描边的影响。
+    #[test]
+    fn outro_logo_pixmap_is_scaled_to_216px() {
+        let painter = Painter::new().unwrap();
+        assert_eq!(painter.logo_216.width(), 216, "outro logo 应缩放到 216px");
+        assert_eq!(painter.logo_216.height(), 216, "outro logo 应缩放到 216px");
+    }
+
+    /// **N: 圆环半径系数 0.3→0.5**。半径公式 `720*0.3*i` 与 logo 尺寸公式
+    /// `min(1280,720)*0.3` 只是数值恰好相同（都是 216），语义不同（见
+    /// `OUTRO_RING_RADIUS_STEP_PX` 文档），不应共用同一个常量、也不能靠
+    /// 白叠白的圆环像素来验证系数——直接断言常量字面值。
+    #[test]
+    fn outro_ring_radius_step_is_216px() {
+        assert!(
+            (OUTRO_RING_RADIUS_STEP_PX - 216.0).abs() < 1e-4,
+            "圆环半径步长应精确为 720*0.3=216，实得 {OUTRO_RING_RADIUS_STEP_PX}"
+        );
+    }
+
+    /// **N: 淡出区间 [105,119]→[90,119]（钳制上限被动过）**。`outro_ring_scale`
+    /// 是抽出来的纯函数（`draw_outro` 内部就调它），直接断言：0..200 帧全程
+    /// 有限（覆盖 brief 那条测试的 0..120 之外更宽的范围）、`local_frame>=45`
+    /// 时 `out_progress` 精确钳在 0.99、scale 精确钳在 100.0（不是随便什么
+    /// 大数——钳制上限本身被改动也会被这条精确值断言抓到，而不只是「有限」
+    /// 这种弱判据）。
+    #[test]
+    fn outro_ring_scale_is_finite_and_clamps_to_100_from_frame_45() {
+        for f in 0..200 {
+            let s = outro_ring_scale(f as f64);
+            assert!(s.is_finite(), "frame {f} 得到非有限 scale {s}");
+        }
+        for f in [45, 46, 60, 119, 199] {
+            let s = outro_ring_scale(f as f64);
+            assert!(
+                (s - 100.0).abs() < 1e-6,
+                "frame {f}（out_progress 已到达终值 1.0）scale 应精确钳在 100.0，实得 {s}"
+            );
+        }
+        // 钳制发生之前，scale 应严格单调递增（弹簧本身单调，钳制只影响终值）。
+        let s30 = outro_ring_scale(30.0); // spring 尚未到达 45（delay 30+duration 15）
+        let s44 = outro_ring_scale(44.0);
+        assert!(s30 < s44, "钳制生效前 scale 应随帧数单调递增：{s30} vs {s44}");
+        assert!(s44 < 100.0, "frame 44（out_progress 尚未到达 1.0）scale 不应已经钳到 100.0");
+    }
+
+    /// **N: logo 起始 scale 0.2→0.5**。frame 0 的 logo 直径应约为
+    /// `216*0.2≈43px`；frame 24（缩放动画完成）应接近满尺寸 216px。用同心圆
+    /// logo 的墨迹纵向跨度（等价于直径）直接量，不依赖任何字体测量。
+    #[test]
+    fn outro_logo_diameter_grows_from_about_43px_to_full_size() {
+        let mut painter = Painter::new().unwrap();
+        let mut f0 = Pixmap::new(1280, 720).unwrap();
+        let mut f24 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut f0, 0);
+        painter.draw_outro(&mut f24, 24);
+
+        // 只扫上半屏（0..500），避开 y≈576 的水印，logo/标题纵向组是该范围内
+        // 唯一的墨迹来源。
+        let (_, y0, _, y1) = ink_bbox_in_y_range(&f0, 0, 500).expect("frame 0 应有 logo 墨迹");
+        let diameter0 = (y1 - y0 + 1) as f32;
+        assert!(
+            (20.0..70.0).contains(&diameter0),
+            "frame 0（scale=0.2）logo 直径应约 43px（±较宽容差覆盖圆形留白），实得 {diameter0}"
+        );
+
+        let (_, y0, _, y1) = ink_bbox_in_y_range(&f24, 0, 500).expect("frame 24 应有 logo 墨迹");
+        let diameter24 = (y1 - y0 + 1) as f32;
+        assert!(
+            (195.0..220.0).contains(&diameter24),
+            "frame 24（scale=1.0）logo 直径应接近满尺寸 216px，实得 {diameter24}"
+        );
+        assert!(diameter24 > diameter0 * 3.0, "frame 24 直径应远大于 frame 0：{diameter24} vs {diameter0}");
+    }
+
+    /// **N: 标题字号 70→50**。用与 Task 6 `cover_title_font_size_matches_100px`
+    /// 同样的手法：拿一个字号已知且与标题文字**完全相同**（都是「熊猫智研社」）
+    /// 的参照——Cover 上排文字，38px——比较两者的墨高比值，预期 ≈70/38。
+    /// 用同一段文字当参照，字形本身的度量特征完全一致，比值只随字号变化，
+    /// 排除了字形差异带来的噪声。
+    #[test]
+    fn outro_title_font_size_matches_70px() {
+        let mut painter = Painter::new().unwrap();
+
+        let mut cover_p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_cover(&mut cover_p, "任意标题");
+        let (row_h_38px, _) = cover_row_and_title_ink_heights(&mut painter, "任意标题", &cover_p);
+
+        let mut outro_p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut outro_p, 60); // 标题淡入已完成、尚未开始整体淡出
+        // 窗口 [420,555]：logo（≈y192..403）与水印（≈y560..591，`cover`
+        // 预设垂直中心 576）之间的区间，宽松覆盖标题实际墨迹带（实测
+        // ≈455..521），不掺入相邻元素。
+        let (_, ty0, _, ty1) =
+            ink_bbox_in_y_range(&outro_p, 420, 555).expect("Outro 标题应有墨迹");
+        let title_h_70px = (ty1 - ty0 + 1) as f32;
+
+        let ratio = title_h_70px / row_h_38px;
+        let expected = 70.0 / 38.0;
+        assert!(
+            (ratio - expected).abs() / expected <= 0.12,
+            "Outro 标题/Cover 上排墨高比应约为 {expected:.3}±12%，实得 {ratio:.3}\
+             （outro_title_h={title_h_70px} cover_row_h={row_h_38px}）"
+        );
+    }
+
+    /// **N: 标题下移 40→0**。logo 与标题在纵向组里的墨迹纵向间隙应能反映
+    /// `OUTRO_TITLE_GAP_PX`（40px 的布局盒间距）——用字面量而不是常量算期望
+    /// 值（Task 6 `cover_top_row_left_edge_is_176` 记录过的教训：用同一个
+    /// 被改动的常量算期望值等于没测）。logo 是近乎顶满 216 盒子的圆形
+    /// （见报告实测），标题墨迹顶部因为字体上伸空间会比布局盒顶低几像素——
+    /// 综合下来实测像素间隙比 40px 布局间距略宽，给一个覆盖这个偏移量、
+    /// 但仍能被「间距归零」清晰打破的区间。
+    #[test]
+    fn outro_title_sits_a_visible_gap_below_the_logo() {
+        let mut painter = Painter::new().unwrap();
+        let mut p = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut p, 60); // 稳态：logo 满尺寸、标题淡入完成
+
+        // logo 与标题分别落在上半屏（0..500，避开水印）里的两段独立墨迹
+        // 纵向游程；用逐行扫描找出这两段游程的边界，不预设具体像素窗口。
+        let row_has_ink = |y: u32| {
+            (0..p.width()).any(|x| p.pixel(x, y).map(|c| darkness(c) > 0).unwrap_or(false))
+        };
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        let mut cur: Option<u32> = None;
+        for y in 0..500u32 {
+            if row_has_ink(y) {
+                cur.get_or_insert(y);
+            } else if let Some(s) = cur.take() {
+                runs.push((s, y - 1));
+            }
+        }
+        if let Some(s) = cur {
+            runs.push((s, 499));
+        }
+        assert!(runs.len() >= 2, "上半屏应恰好扫到 logo + 标题两段独立墨迹游程，实得 {runs:?}");
+        let logo_run = runs[0];
+        let title_run = runs[1];
+        let gap = title_run.0 as i32 - logo_run.1 as i32;
+        assert!(
+            (20..90).contains(&gap),
+            "logo 底部与标题顶部的墨迹间隙应落在 [20,90]px（40px 布局间距 + 字体量出的余量），实得 {gap}"
+        );
+    }
+
+    /// **N: 标题淡入区间 [24,39]→[24,60]；淡出区间 [105,119]→[90,119]**。
+    /// frame 40 与 frame 104 在正确实现下都处于「已完全稳定、尚未开始整体
+    /// 淡出」的窗口（logo 缩放在 24 帧完成、标题淡入在 39 帧完成、整体淡出
+    /// 105 帧才开始），此时圆环虽然还在继续演化但白叠白不产生任何可观测
+    /// 像素差异（见本节前言）——因此这两帧在正确实现下应当**逐字节相同**。
+    /// 这条单一断言同时钉住 logo scale 结束帧、标题淡入结束帧、整体淡出
+    /// 起始帧三个边界常量：任何一个被改动到 (39,105) 这个区间内，都会让
+    /// 其中一帧落入"仍在动画中"而另一帧"已稳定"，产生字节差异。
+    #[test]
+    fn outro_is_pixel_identical_between_settled_frames_40_and_104() {
+        let mut painter = Painter::new().unwrap();
+        let mut f40 = Pixmap::new(1280, 720).unwrap();
+        let mut f104 = Pixmap::new(1280, 720).unwrap();
+        painter.draw_outro(&mut f40, 40);
+        painter.draw_outro(&mut f104, 104);
+        assert_eq!(
+            f40.data(),
+            f104.data(),
+            "frame 40 与 frame 104 都应处于「已稳定、未开始淡出」窗口，逐字节相同"
+        );
+    }
+
+    #[test]
+    fn outro_never_produces_non_finite_geometry() {
+        // 圆环的 scale = 1/(1-out_progress)，out_progress→1 时发散，必须钳制
+        let mut painter = Painter::new().unwrap();
+        for f in 0..120 {
+            let mut p = Pixmap::new(1280, 720).unwrap();
+            painter.draw_outro(&mut p, f); // 不 panic 即通过
+            assert_eq!(p.width(), 1280);
+        }
+    }
 }
