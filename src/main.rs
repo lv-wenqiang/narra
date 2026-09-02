@@ -1,9 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use panda::config;
+use panda::render::frame::FrameSource;
 use panda::tts::pipeline::{process_narration_file, ProcessOptions};
 
 #[derive(Parser)]
@@ -28,6 +29,77 @@ enum Commands {
         #[arg(long)]
         batch_size: Option<usize>,
     },
+    /// 把指定帧渲染成 PNG，用于人工核对视觉
+    DebugFrames {
+        /// VTT 文件路径
+        #[arg(long)]
+        vtt: PathBuf,
+        /// 标题，默认「熊猫智研社」
+        #[arg(long)]
+        title: Option<String>,
+        /// 输出目录
+        #[arg(short, long)]
+        out: PathBuf,
+        /// 要导出的帧号，逗号分隔；不给则每 30 帧导一张
+        #[arg(long)]
+        frames: Option<String>,
+    },
+}
+
+/// 默认标题：VTT 上游没有专门的标题字段，`--title` 缺省时用品牌名占位。
+const DEFAULT_DEBUG_TITLE: &str = "熊猫智研社";
+
+/// 解析 `--frames`：逗号分隔的帧号列表；缺省时按每 30 帧取一张覆盖整条时间轴。
+fn parse_frame_list(frames: Option<&str>, total_frames: u32) -> Result<Vec<u32>> {
+    match frames {
+        Some(s) => s
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .parse::<u32>()
+                    .with_context(|| format!("--frames 里的 “{part}” 不是合法帧号"))
+            })
+            .collect(),
+        None => Ok((0..total_frames).step_by(30).collect()),
+    }
+}
+
+fn run_debug_frames(
+    vtt: PathBuf,
+    title: Option<String>,
+    out: PathBuf,
+    frames: Option<String>,
+) -> Result<()> {
+    let vtt_text = std::fs::read_to_string(&vtt)
+        .with_context(|| format!("读取 VTT 文件失败：{}", vtt.display()))?;
+    let title = title.unwrap_or_else(|| DEFAULT_DEBUG_TITLE.to_string());
+
+    let mut source = FrameSource::new(&vtt_text, title)?;
+    let total_frames = source.total_frames();
+    let frame_ids = parse_frame_list(frames.as_deref(), total_frames)?;
+
+    std::fs::create_dir_all(&out)
+        .with_context(|| format!("创建输出目录失败：{}", out.display()))?;
+
+    let mut exported = Vec::with_capacity(frame_ids.len());
+    for f in frame_ids {
+        let pixmap = source
+            .render(f)
+            .with_context(|| format!("渲染帧 {f} 失败（总帧数 {total_frames}）"))?;
+        let path = out.join(format!("frame_{f:05}.png"));
+        pixmap
+            .save_png(&path)
+            .with_context(|| format!("写出 PNG 失败：{}", path.display()))?;
+        exported.push(path);
+    }
+
+    println!("总帧数：{total_frames}");
+    println!("已导出 {} 帧：", exported.len());
+    for path in &exported {
+        println!("  {}", path.display());
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -58,6 +130,9 @@ async fn main() -> Result<()> {
             };
 
             process_narration_file(&input, &outdir, &opts).await
+        }
+        Commands::DebugFrames { vtt, title, out, frames } => {
+            run_debug_frames(vtt, title, out, frames)
         }
     }
 }

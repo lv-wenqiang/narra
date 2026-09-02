@@ -134,10 +134,10 @@ pub fn parse_vtt(text: &str) -> Vec<Caption> {
     let mut buf: Vec<String> = Vec::new();
 
     let flush = |out: &mut Vec<Caption>, pending: &mut Option<(u64, u64)>, buf: &mut Vec<String>| {
-        if let Some((start_ms, end_ms)) = pending.take() {
-            if !buf.is_empty() {
-                out.push(Caption { text: buf.join("\n"), start_ms, end_ms });
-            }
+        if let Some((start_ms, end_ms)) = pending.take()
+            && !buf.is_empty()
+        {
+            out.push(Caption { text: buf.join("\n"), start_ms, end_ms });
         }
         buf.clear();
     };
