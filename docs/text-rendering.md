@@ -33,7 +33,7 @@
 | `cosmic-text` | 0.19.0 |
 | `ttf-parser` | 0.25.1 |
 | `tiny-skia` | 0.12.0（依赖的 `tiny-skia-path` 也是 0.12.0） |
-| `image` | 0.25.10（探针里没有实际用到，见下方"未用到 image crate"一节） |
+| `image` | 0.25.10（文字描边探针没直接用到，保留给 `assets::logo_rgba()` 用，见下方一节） |
 
 `Cargo.toml` 通过 `cargo add tiny-skia cosmic-text ttf-parser image` 添加，未指定精确版本号
 （走的是 `^` 语义化范围），后续任务如果要锁定这些版本，直接沿用现有 `Cargo.lock` 即可。
@@ -53,6 +53,80 @@ font_system.db_mut().load_font_data(FONT_BYTES.to_vec());
 `FontSystem::db_mut()` 返回 `&mut fontdb::Database`；`fontdb::Database::load_font_data`
 的签名是 `pub fn load_font_data(&mut self, data: Vec<u8>)`（`fontdb-0.23.0/src/lib.rs:195`），
 接受的是拥有所有权的 `Vec<u8>`，不是借用。
+
+## ⚠️ 系统字体静默回退陷阱（代码审查发现，务必照做规避方案）
+
+**`FontSystem::new()` 会把运行机器上装的所有系统字体也注册进同一个 `fontdb::Database`，
+且 `Shaping::Advanced` 在内嵌字体不覆盖某个字符时会静默回退到这些系统字体——不报错，
+也不画内嵌字体自己的 `.notdef`。**
+
+源码位置：`FontSystem::new()` → `new_with_fonts(empty)`
+（`cosmic-text-0.19.0/src/font/system.rs:191-192`）→ `load_fonts(&mut db, empty)`
+→ `db.load_system_fonts()`（`src/font/system.rs:433-438`，`std` feature 下）。这一行
+和 `load_font_data(FONT_BYTES.to_vec())` 一样，都是把字体塞进*同一个* `db` 里，
+之后 `cosmic-text` 的字体匹配逻辑（`FontMatchKey`）分不清哪些是"我特意内嵌的"、
+哪些是"系统顺带装进来的"，缺字时会在整个 `db` 范围内挑一个能覆盖该字符的字体。
+
+**为什么这对本项目是致命的**：项目的全局约束是"所有文字只用内嵌的
+`dingliesongtypeface`，不内嵌第二套字体"。这个回退行为意味着**渲染结果长什么样
+取决于运行机器上装了什么系统字体**——本机和别人的机器可能不一致，CI 环境和生产
+环境也可能不一致，而且是静默的，没有任何报错或日志提示。真实文稿里出现内嵌字体
+没覆盖的字符（生僻符号、某些全角标点、非中文字符）时就会撞上，观感上是"字体突然
+变了"，排查起来毫无线索。
+
+**实测复现**（`examples/text_probe.rs` 的 `resolve_glyphs()`；本机是 x86_64 Linux /
+NixOS 环境）：用 `FontSystem::new()` + `load_font_data(FONT_BYTES)` 排版内嵌字体大概率
+不覆盖的阿拉伯字母 `ا`（U+0627），`cargo run --example text_probe` 的实际输出：
+
+```
+系统字体回退核对：用内嵌字体大概率不覆盖的字符 "ا" (U+0627) 探测……
+  1) FontSystem::new()（会 load_system_fonts）+ load_font_data：
+     glyph_id=1365, font_id=ID(InnerId(1v1)), post_script_name=Some("DejaVuSans")
+     [复现成功] 落到了内嵌字体（family=Some("dingliesongtypeface")）以外的字体上——
+     cosmic-text 静默回退到了系统字体，而不是内嵌字体自己的 .notdef。
+```
+
+`glyph_id=1365` 是一个非零、有意义的字形 id，`post_script_name` 是
+`"DejaVuSans"`——不是我们指定的 `family = "dingliesongtypeface"`，也不是 `.notdef`
+（`glyph_id=0`）。证实了回退确实发生了。（本机装的系统字体恰好也是 DejaVu Sans，
+和代码审查者在 Nix 环境下复现时看到的一致，但**这只是巧合**——换一台机器，回退
+去的字体名字会不同，行为本身不会变。）
+
+**规避方案（已实测跑通）**：不要用 `FontSystem::new()`，改成自己构造一个**从未调用
+过 `load_system_fonts()`** 的 `fontdb::Database`，只塞内嵌字体，再用
+`FontSystem::new_with_locale_and_db` 包起来：
+
+```rust
+fn font_system_without_system_fonts(font_bytes: &[u8]) -> cosmic_text::FontSystem {
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(font_bytes.to_vec());
+    cosmic_text::FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+}
+```
+
+- `FontSystem::new_with_locale_and_db(locale: String, db: fontdb::Database) -> Self`
+  （`cosmic-text-0.19.0/src/font/system.rs:276-278`）直接委托给
+  `new_with_locale_and_db_and_fallback(locale, db, PlatformFallback)`，**完全不经过**
+  `new_with_fonts()`/`load_fonts()`，所以不会调用 `load_system_fonts()`。
+- `locale` 参数传字面量 `"en-US"` 就够：locale 只影响"缺字时按脚本/语言挑哪个系统
+  回退字体"的排序（`Fallbacks::new`），既然我们的 `db` 里压根没有系统字体可回退，
+  这个值不影响任何观察到的行为。
+- `cosmic_text::fontdb` 是 `cosmic-text` 对 `fontdb` crate 的 re-export
+  （`pub use fontdb;`，`src/font/system.rs:14`），不需要单独把 `fontdb` 加进
+  `Cargo.toml` 依赖。
+
+**验证规避方案生效**（同一个探针，同一个字符，换成上面这个构造函数）：
+
+```
+  2) font_system_without_system_fonts()（跳过 load_system_fonts）+ 同一个字符：
+     glyph_id=0, font_id=ID(InnerId(1v1)), post_script_name=Some("dingliesongtypeface")
+     [PASS] 落回了内嵌字体自己的 .notdef（glyph_id=0），没有回退到别的字体——规避方案有效。
+```
+
+`glyph_id=0` 就是 `.notdef`（内嵌字体自己的占位符），`post_script_name` 变回了
+`"dingliesongtypeface"`——确认不再触碰任何系统字体。**Task 4 必须用
+`FontSystem::new_with_locale_and_db`（或等价的、跳过 `load_system_fonts` 的构造方式）
+来创建生产环境用的 `FontSystem`，不能直接用 `FontSystem::new()`。**
 
 ## 字体内部家族名（关键：解决"中文显示为豆腐块"的第一道检查）
 
@@ -276,6 +350,59 @@ white_paint.anti_alias = true;
 `Path::transform(&self, ts: Transform) -> Option<Path>`
 （返回 `Option`，退化变换如缩放为 0 时返回 `None`）。
 
+## 合成粗体（协调者拍板方案，已实测验证生效）
+
+`assets/dingliesongtypeface.ttf` 用 `ttf-parser` 核实过：`weight: Normal`、
+`is_bold: false`、`is_variable: false`（没有 `fvar` 可变字重轴）、只有 1 个 face、
+Subfamily 是 `"Regular"`、Full name 是 `"鼎猎宋刻体"`——**只有一个静态字重，没有
+真正的 Bold 字面**。`cosmic-text` 本身也不做合成粗体（fake bold）：`Attrs::weight`
+只用来在多字重字体族里挑字面，对单字重字体没有任何加粗效果。规格要求四个段落的
+文字都是粗体，所以描边/填充这一步必须自己合成粗体，否则整体观感偏细。
+
+**做法**：拿到像素空间的 `path`（前一节"构造 Path"算出来的那个）之后，按顺序画三遍：
+
+```rust
+let bold_w = font_size * 0.03; // font_size 是这个字形的实际像素字号（这里是 70.0）
+
+// 1) 描边色（黑）描边：宽度是 stroke_w+bold_w；bold=false 时就是原始 stroke_w。
+let outer_stroke_width = if bold { stroke.width + bold_w } else { stroke.width };
+let outer_stroke = Stroke { width: outer_stroke_width, ..stroke.clone() };
+pixmap.stroke_path(&path, &black_paint, &outer_stroke, Transform::identity(), None);
+
+// 2) 仅 bold=true 时，再用**填充色**（白）描边一次，宽度 bold_w。
+//    这一步把内部的白色实体向外挤宽 bold_w/2，是真正产生"变粗"视觉效果的一步；
+//    因为黑色描边（第 1 步）的总宽度比它多出 stroke_w，缩回去之后黑色轮廓
+//    仍然完整地包在加粗后的白色字形外侧，宽度还是原始的 stroke_w。
+if bold {
+    let bold_stroke = Stroke { width: bold_w, ..stroke.clone() };
+    pixmap.stroke_path(&path, &white_paint, &bold_stroke, Transform::identity(), None);
+}
+
+// 3) 填充色（白）填充路径内部，补上笔画本身较粗、两侧描边圈不满的区域。
+pixmap.fill_path(&path, &white_paint, FillRule::Winding, Transform::identity(), None);
+```
+
+`bold=false` 时完全退化成原来的两步画法（先黑描边、后白填充），不会影响非粗体的
+渲染结果。
+
+**验证**（`examples/text_probe.rs`，`main_text` 换成较短的"熊猫智研社"、
+canvas 500×220、其余参数不变，`bold=true` 和 `bold=false` 各渲染一次，统计
+`analyze()` 里"近纯白 + 近纯黑"像素数——用这个而不是简单数 `alpha > 128` 的像素，
+是因为画布背景本身是半透明灰底（alpha=180 > 128），直接数 alpha 会把整张画布都
+算成"墨迹"，两个版本量出来的数字会一样，等于没测——已实测踩到这个坑，改用
+`analyze()` 的口径后才测出真实差异）：
+
+```
+合成粗体核对：对比同一段文字 bold=true / bold=false 的墨迹量……
+  bold=false 墨迹像素数：11088
+  bold=true  墨迹像素数：13464
+  比例：1.214
+  [PASS] 加粗版墨迹明显更多（1.214 倍），且未超过 2.5 倍上限
+```
+
+加粗版比非加粗版墨迹多约 21.4%，肉眼比对 `text_probe.png`（主探针文本用的就是
+`bold=true`）也能看出笔画明显更饱满，同时黑色描边依然完整、均匀，没有断裂。
+
 ## 背景 / 画布
 
 ```rust
@@ -286,13 +413,15 @@ pixmap.fill(tiny_skia::Color::from_rgba8(128, 128, 128, 180)); // 半透明灰�
 `tiny_skia::Pixmap::save_png(&self, path) -> Result<(), png::EncodingError>`
 直接存 PNG，不需要额外引入 `image` crate。
 
-## 未用到 `image` crate
+## `image` crate：保留，不是探针本身用到的
 
-brief Step 1 让 `cargo add` 时一并加了 `image`，探针里最终没有用它——`tiny_skia::Pixmap`
-自带 `save_png`，像素级校验也是直接读 `Pixmap::pixels()`
-（`&[tiny_skia::PremultipliedColorU8]`）算的，不需要额外解码 PNG。`image = "0.25.10"`
-仍然留在 `Cargo.toml` 里（按 brief 要求执行了 `cargo add`），Task 4 如果需要读取/合成
-其他位图素材（背景图、水印图）时可以直接用，但纯文字描边这条路径不依赖它。
+brief Step 1 让 `cargo add` 时一并加了 `image`，探针里最终没有用它渲染文字——
+`tiny_skia::Pixmap` 自带 `save_png`，像素级校验也是直接读 `Pixmap::pixels()`
+（`&[tiny_skia::PremultipliedColorU8]`）算的，不需要额外解码 PNG 来验证文字这条路径。
+
+**结论（协调者已拍板）：保留这个依赖。** 下一个任务里 `assets::logo_rgba()` 需要
+`image` 来解码 `logo.png` 得到 RGBA 位图，不是可有可无的依赖——只是跟本文档记录的
+"文字描边"这条路径没有关系。
 
 ## 像素级验收方法（探针里怎么做的）
 

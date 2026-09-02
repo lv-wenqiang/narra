@@ -8,7 +8,7 @@
 // tiny-skia 0.12.0、image 0.25.10。
 
 use anyhow::{anyhow, Context, Result};
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
+use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
@@ -81,6 +81,7 @@ fn render_text(
     text: &str,
     canvas_w: u32,
     canvas_h: u32,
+    bold: bool,
 ) -> Result<Pixmap> {
     let metrics = Metrics::new(70.0, 84.0);
     let mut buffer = Buffer::new(font_system, metrics);
@@ -178,7 +179,43 @@ fn render_text(
                 None => continue,
             };
 
-            pixmap.stroke_path(&path, &black_paint, &stroke, Transform::identity(), None);
+            // 合成粗体（协调者拍板的方案，见 docs/text-rendering.md 的"合成粗体"一节）：
+            // 按 size_px * 0.03 算出 bold_w，画三遍：
+            //   1) 描边色描边，宽度 stroke_w+bold_w（bold=false 时就是原始 stroke_w）
+            //   2) 仅 bold=true 时，再用**填充色**描边一次，宽度 bold_w——
+            //      这一步把白色内芯向外挤宽 bold_w/2，产生"加粗"的视觉效果，
+            //      同时黑色描边留下的外圈宽度仍是原始 stroke_w，完整包住加粗后的字形。
+            //   3) 填充色填充路径内部（处理笔画本身较粗、两侧描边圈不了满的区域）。
+            let bold_w = font_size * 0.03;
+            let outer_stroke_width = if bold {
+                stroke.width + bold_w
+            } else {
+                stroke.width
+            };
+            let outer_stroke = Stroke {
+                width: outer_stroke_width,
+                ..stroke.clone()
+            };
+            pixmap.stroke_path(
+                &path,
+                &black_paint,
+                &outer_stroke,
+                Transform::identity(),
+                None,
+            );
+            if bold {
+                let bold_stroke = Stroke {
+                    width: bold_w,
+                    ..stroke.clone()
+                };
+                pixmap.stroke_path(
+                    &path,
+                    &white_paint,
+                    &bold_stroke,
+                    Transform::identity(),
+                    None,
+                );
+            }
             pixmap.fill_path(
                 &path,
                 &white_paint,
@@ -246,6 +283,54 @@ fn analyze(pixmap: &Pixmap) -> PixelStats {
     }
 }
 
+/// 用给定的 family 排版一段文本，报告每个字形最终落在哪个字体、哪个 glyph_id 上。
+/// 专门用来复现/验证"cosmic-text 静默回退到系统字体"这个问题
+/// （见 docs/text-rendering.md"系统字体静默回退"一节）。
+///
+/// 返回 `(glyph_id, font_id, 该字体的 post_script_name)`。`glyph_id == 0` 就是
+/// `.notdef`（字体自己也没有这个字符的占位符）。
+fn resolve_glyphs(
+    font_system: &mut FontSystem,
+    family: &str,
+    text: &str,
+) -> Vec<(u16, fontdb::ID, Option<String>)> {
+    let metrics = Metrics::new(70.0, 84.0);
+    let mut buffer = Buffer::new(font_system, metrics);
+    buffer.set_size(Some(400.0), Some(200.0));
+    let attrs = Attrs::new().family(Family::Name(family));
+    buffer.set_text(text, &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+
+    let mut out = Vec::new();
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+            let ck = physical.cache_key;
+            let post_script_name = font_system
+                .db()
+                .face(ck.font_id)
+                .map(|info| info.post_script_name.clone());
+            out.push((ck.glyph_id, ck.font_id, post_script_name));
+        }
+    }
+    out
+}
+
+/// 构造一个**从未调用过 `fontdb::Database::load_system_fonts()`** 的 `FontSystem`：
+/// 自己 new 一个空 `fontdb::Database`，只塞入内嵌字体字节，再用
+/// `FontSystem::new_with_locale_and_db` 包起来（这条构造路径完全跳过
+/// `FontSystem::new()`/`new_with_fonts()` 里对 `load_fonts()` 的调用，
+/// 见 cosmic-text-0.19.0/src/font/system.rs:191-208 与 :276）。
+///
+/// locale 传字面量 `"en-US"` 即可：locale 只用于给"缺字时按脚本/语言挑哪个系统
+/// 回退字体"排序（`Fallbacks::new`），而这里我们压根没有系统字体可回退，locale
+/// 的取值不影响任何行为。
+fn font_system_without_system_fonts(font_bytes: &[u8]) -> FontSystem {
+    let mut db = fontdb::Database::new();
+    db.load_font_data(font_bytes.to_vec());
+    FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+}
+
 fn main() -> Result<()> {
     let family = family_name_from_ttf(FONT_BYTES)?;
     println!("字体内部家族名（name 表 FAMILY 记录）：{family:?}");
@@ -256,7 +341,7 @@ fn main() -> Result<()> {
     // 探针要求的主文本：70px 粗体，6px 黑色描边 + 白色填充，画在半透明灰底上。
     let main_text = "熊猫智研社 Test 123";
     println!("渲染主探针文本：{main_text:?}");
-    let pixmap = render_text(&mut font_system, &family, main_text, 900, 220)?;
+    let pixmap = render_text(&mut font_system, &family, main_text, 900, 220, true)?;
     pixmap
         .save_png("text_probe.png")
         .context("保存 text_probe.png 失败")?;
@@ -287,8 +372,8 @@ fn main() -> Result<()> {
     // 如果两者都是豆腐块（.notdef），它们的形状、宽度往往一致，
     // 两张图会几乎逐像素相同；只要像素分布不同，就说明确实取到了各自的字形轮廓。
     println!("豆腐块核对：分别渲染「熊猫」与「智研」并比较像素……");
-    let pixmap_a = render_text(&mut font_system, &family, "熊猫", 300, 220)?;
-    let pixmap_b = render_text(&mut font_system, &family, "智研", 300, 220)?;
+    let pixmap_a = render_text(&mut font_system, &family, "熊猫", 300, 220, false)?;
+    let pixmap_b = render_text(&mut font_system, &family, "智研", 300, 220, false)?;
     pixmap_a.save_png("text_probe_cjk_a.png").ok();
     pixmap_b.save_png("text_probe_cjk_b.png").ok();
 
@@ -311,6 +396,84 @@ fn main() -> Result<()> {
         println!("  [FAIL] 至少一张图没有黑色描边像素，取轮廓可能失败了");
     } else {
         println!("  [PASS] 两张图像素分布不同，且都有黑/白像素——CJK 字形取到了各自正确的轮廓，不是豆腐块");
+    }
+
+    // ------------------------------------------------------------------
+    // 系统字体静默回退：复现问题 + 验证规避方案
+    // （审查者在代码审查里指出的坑，见 docs/text-rendering.md 对应一节）
+    // ------------------------------------------------------------------
+    // 内嵌字体（CJK 字形为主）大概率不覆盖阿拉伯字母，用 U+0627 (ا) 探测。
+    let uncovered = "\u{0627}";
+    println!("系统字体回退核对：用内嵌字体大概率不覆盖的字符 {uncovered:?} (U+0627) 探测……");
+
+    println!("  1) FontSystem::new()（会 load_system_fonts）+ load_font_data：");
+    let leaky = resolve_glyphs(&mut font_system, &family, uncovered);
+    for (glyph_id, font_id, psname) in &leaky {
+        println!("     glyph_id={glyph_id}, font_id={font_id:?}, post_script_name={psname:?}");
+    }
+    let embedded_face = Face::parse(FONT_BYTES, 0).context("解析内嵌字体失败")?;
+    let embedded_psname = family_name_from_ttf(FONT_BYTES).ok();
+    let leaked_to_other_font = leaky
+        .iter()
+        .any(|(_, _, psname)| psname.as_deref() != embedded_psname.as_deref());
+    if leaked_to_other_font {
+        println!(
+            "     [复现成功] 落到了内嵌字体（family={embedded_psname:?}）以外的字体上——\
+             cosmic-text 静默回退到了系统字体，而不是内嵌字体自己的 .notdef。"
+        );
+    } else {
+        println!(
+            "     [未复现] 本机环境下没有触发系统字体回退（可能本机没有覆盖该字符的系统字体，\
+             或内嵌字体本身意外覆盖了它）——不代表这个坑不存在，换一台机器/换一个字符仍可能触发。"
+        );
+    }
+    let _ = embedded_face; // 仅用于确认能正常解析，避免 unused 警告
+
+    println!("  2) font_system_without_system_fonts()（跳过 load_system_fonts）+ 同一个字符：");
+    let mut isolated_font_system = font_system_without_system_fonts(FONT_BYTES);
+    let isolated = resolve_glyphs(&mut isolated_font_system, &family, uncovered);
+    for (glyph_id, font_id, psname) in &isolated {
+        println!("     glyph_id={glyph_id}, font_id={font_id:?}, post_script_name={psname:?}");
+    }
+    let all_notdef_on_own_font = isolated.iter().all(|(glyph_id, _, psname)| {
+        *glyph_id == 0 && psname.as_deref() == embedded_psname.as_deref()
+    });
+    if all_notdef_on_own_font {
+        println!(
+            "     [PASS] 落回了内嵌字体自己的 .notdef（glyph_id=0），没有回退到别的字体——\
+             规避方案有效。"
+        );
+    } else {
+        println!("     [FAIL] 仍然没有落在内嵌字体自己的 .notdef 上，规避方案未生效");
+    }
+
+    // ------------------------------------------------------------------
+    // 合成粗体：对比 bold=true / bold=false 的墨迹量（alpha > 128 的像素数）
+    // ------------------------------------------------------------------
+    println!("合成粗体核对：对比同一段文字 bold=true / bold=false 的墨迹量……");
+    let bold_text = "熊猫智研社";
+    let pixmap_thin = render_text(&mut font_system, &family, bold_text, 500, 220, false)?;
+    let pixmap_bold = render_text(&mut font_system, &family, bold_text, 500, 220, true)?;
+    // 注意：不能直接数 `alpha > 128` 的像素——画布背景本身是半透明灰底
+    // （alpha=180），会把整张画布都算成"墨迹"，bold/非 bold 两版因此测出同一个数字
+    // （已实测踩到：改前两者都等于画布总像素数 500*220=110000）。
+    // 复用 `analyze()` 的近纯白+近纯黑统计（要求 alpha==255，天然排除半透明背景）。
+    let ink = |p: &Pixmap| -> usize {
+        let s = analyze(p);
+        s.near_white + s.near_black
+    };
+    let ink_thin = ink(&pixmap_thin);
+    let ink_bold = ink(&pixmap_bold);
+    let ratio = ink_bold as f64 / ink_thin as f64;
+    println!("  bold=false 墨迹像素数：{ink_thin}");
+    println!("  bold=true  墨迹像素数：{ink_bold}");
+    println!("  比例：{ratio:.3}");
+    if ink_bold <= ink_thin {
+        println!("  [FAIL] 加粗版墨迹量没有比非加粗版多，合成粗体没有生效");
+    } else if ratio > 2.5 {
+        println!("  [FAIL] 墨迹量比例 {ratio:.3} 超过 2.5 倍，加粗过头，检查 bold_w 参数");
+    } else {
+        println!("  [PASS] 加粗版墨迹明显更多（{ratio:.3} 倍），且未超过 2.5 倍上限");
     }
 
     Ok(())
