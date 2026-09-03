@@ -4,7 +4,8 @@
 //! （由音频时长算出的分段边界）与字幕列表，`render(global_frame)` 每次只做
 //! `segment_at` 查表 + 建画布 + 分发到对应 `draw_*`，不重造任何昂贵对象。
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use std::io::Write;
 use tiny_skia::Pixmap;
 
 use crate::render::draw::Painter;
@@ -48,6 +49,53 @@ impl FrameSource {
             Segment::Outro => self.painter.draw_outro(&mut pixmap, local),
         }
         Ok(pixmap)
+    }
+
+    /// 音频时长 `A`（秒）：VTT 最后一条字幕的结束时间。
+    /// Content 段长 `ceil((A+2)*30)` 帧，BGM 的淡出区间由它推出。
+    pub fn audio_secs(&self) -> f64 {
+        self.captions.iter().map(|c| c.end_ms).max().unwrap_or(0) as f64 / 1000.0
+    }
+
+    /// Content 段的帧数。Outro 起点 = `120 + content_frames`。
+    pub fn content_frames(&self) -> u32 {
+        self.layout.content_frames
+    }
+
+    /// 逐帧渲染整条时间轴并写出 straight-alpha RGBA8，返回写出的帧数。
+    ///
+    /// 缓冲区跨帧复用（一帧 3.5MB，每帧重新分配是纯浪费）。写失败立即返回
+    /// `Err` 并停止渲染——ffmpeg 提前退出时这里会收到 broken pipe，属于正常
+    /// 的失败路径，不是 panic。
+    pub fn write_rgba_frames<W: Write>(&mut self, out: &mut W) -> Result<u32> {
+        let total = self.total_frames();
+        let mut buf: Vec<u8> = Vec::with_capacity(WIDTH as usize * HEIGHT as usize * 4);
+        for f in 0..total {
+            let pixmap = self.render(f)?;
+            unpremultiply_into(&pixmap, &mut buf);
+            out.write_all(&buf)
+                .with_context(|| format!("写第 {f} 帧到管道失败"))?;
+        }
+        out.flush().context("刷新帧流管道失败")?;
+        Ok(total)
+    }
+}
+
+/// 把 `Pixmap` 的**预乘** RGBA8 转成 ffmpeg `-pix_fmt rgba` 要求的
+/// **straight** alpha，写进 `buf`（会先 `clear()`，容量复用）。
+///
+/// 为什么必须做这一步：`tiny_skia::Pixmap` 内部存的是预乘值（R 已经乘过
+/// alpha），而 ffmpeg 的 `rgba` 是 straight。直接喂过去，每个半透明像素会
+/// 被再乘一次 alpha——Content 段字幕的入场动画（opacity 0→1）与 Outro 的
+/// 整体淡出会整体发暗，而**成片能播、不报错**，属于不容易发现的那类。
+///
+/// `alpha == 0` 时 RGB 没有定义，统一输出 0，避免把预乘残留的垃圾值喂出去。
+fn unpremultiply_into(pixmap: &Pixmap, buf: &mut Vec<u8>) {
+    buf.clear();
+    buf.reserve(pixmap.width() as usize * pixmap.height() as usize * 4);
+    for px in pixmap.pixels() {
+        let c = px.demultiply();
+        buf.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
 }
 
@@ -171,5 +219,283 @@ mod tests {
         // max(30, 10) = 30 秒 → content = ceil(32*30) = 960 → 总帧 = 240+960 = 1200
         // 若误用 last().end_ms（=10 秒）会得到 600，与此不同。
         assert_eq!(fs.total_frames(), 1200);
+    }
+
+    use tiny_skia::{Paint, Rect, Transform};
+
+    /// 造一张含半透明像素的画布：左半边 alpha=128 的纯红，右半边全透明。
+    fn half_transparent_red() -> Pixmap {
+        let mut p = Pixmap::new(4, 1).unwrap();
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(255, 0, 0, 128);
+        p.fill_rect(
+            Rect::from_xywh(0.0, 0.0, 2.0, 1.0).unwrap(),
+            &paint,
+            Transform::identity(),
+            None,
+        );
+        p
+    }
+
+    #[test]
+    fn unpremultiply_restores_full_intensity_red_for_half_alpha_pixels() {
+        let p = half_transparent_red();
+        // 预乘态下红通道已经被 alpha 乘过：128/255*255 ≈ 128，而不是 255。
+        assert!(
+            p.data()[0] < 200,
+            "前提检查：Pixmap 应是预乘的，实得 R={}",
+            p.data()[0]
+        );
+
+        let mut buf = Vec::new();
+        unpremultiply_into(&p, &mut buf);
+
+        #[allow(clippy::identity_op)] // 保留 w*h*4 的字面形状，w=4/h=1 只是这张探针画布的尺寸
+        {
+            assert_eq!(buf.len(), 4 * 1 * 4, "输出应是 w*h*4 字节");
+        }
+        // 反预乘后红通道应回到接近 255（整数除法允许 ±2 误差）。
+        assert!(buf[0] >= 253, "反预乘后 R 应接近 255，实得 {}", buf[0]);
+        assert_eq!(buf[3], 128, "alpha 通道不应被改动");
+        // 全透明像素：alpha=0 时 RGB 无意义，但必须是 0 而不是垃圾值。
+        assert_eq!(&buf[8..12], &[0, 0, 0, 0], "全透明像素应输出全 0");
+    }
+
+    #[test]
+    fn unpremultiply_leaves_opaque_pixels_byte_identical() {
+        // alpha=255 时反预乘是恒等运算——这条保证 Cover/Intro/Outro 三段不受影响。
+        let mut p = Pixmap::new(2, 1).unwrap();
+        p.fill(tiny_skia::Color::from_rgba8(200, 100, 50, 255));
+        let mut buf = Vec::new();
+        unpremultiply_into(&p, &mut buf);
+        assert_eq!(buf, vec![200, 100, 50, 255, 200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn unpremultiply_reuses_the_buffer_without_growing_it() {
+        // 写帧是热路径，缓冲区必须复用而不是每帧重新分配。
+        let p = half_transparent_red();
+        let mut buf = Vec::new();
+        unpremultiply_into(&p, &mut buf);
+        let cap = buf.capacity();
+        for _ in 0..10 {
+            unpremultiply_into(&p, &mut buf);
+            assert_eq!(buf.len(), 16);
+        }
+        assert_eq!(buf.capacity(), cap, "重复调用不应导致重新分配");
+    }
+
+    #[test]
+    fn audio_secs_and_content_frames_follow_the_layout() {
+        let fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        // A = 10 秒 → content = ceil(12*30) = 360 → 总帧 600
+        assert!(
+            (fs.audio_secs() - 10.0).abs() < 1e-9,
+            "实得 {}",
+            fs.audio_secs()
+        );
+        assert_eq!(fs.content_frames(), 360);
+        assert_eq!(fs.total_frames(), 600);
+    }
+
+    /// 鉴别性测试：`audio_secs` 必须由「所有字幕结束时间的最大值」决定，而不是
+    /// 「文件里最后一条字幕」的结束时间——理由与
+    /// `total_frames_uses_the_max_end_time_not_the_last_caption_in_file_order`
+    /// 完全一样，但那条测的是 `total_frames`（经 `FrameSource::new` 里另一份
+    /// 独立的 `.max()` 计算得出），并不经过 `audio_secs()` 这个方法本身；本任务
+    /// 模块级 `VTT` 常量里两条 cue 恰好按结束时间升序排列，`.last().end_ms` 与
+    /// `.max()` 在那份输入上结果相同，不足以把两种实现区分开，必须用一份「结束
+    /// 更晚的字幕排在文件前面」的输入才能让 `audio_secs()` 的这两种写法分道扬镳。
+    #[test]
+    fn audio_secs_uses_the_max_end_time_not_the_last_caption_in_file_order() {
+        let vtt = "WEBVTT\n\n\
+                   1\n00:00:00.000 --> 00:00:30.000\n时间更晚但排在前面的字幕。\n\n\
+                   2\n00:00:05.000 --> 00:00:10.000\n排在后面但结束更早的字幕。\n";
+        let fs = FrameSource::new(vtt, "标题".into()).unwrap();
+        // max(30, 10) = 30 秒。若误用 last().end_ms（=10 秒）会得到 10.0，与此不同。
+        assert!(
+            (fs.audio_secs() - 30.0).abs() < 1e-9,
+            "实得 {}",
+            fs.audio_secs()
+        );
+    }
+
+    /// 只统计字节数、不保存内容。整条时间轴是 600 帧 × 3.5MB ≈ 2.1GB，
+    /// 攒进 `Vec<u8>` 是不可接受的；写帧本来就是流式的，测试也该是流式的。
+    struct CountingWriter {
+        bytes: usize,
+    }
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.bytes += b.len();
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 只记住指定帧的**首像素**，其余字节丢弃。用来在字节流里验证段落语义
+    /// 而不占内存。依赖 `write_rgba_frames` 每帧恰好一次 `write_all`。
+    struct FirstPixelPicker {
+        frame_bytes: usize,
+        seen: usize,
+        picked: std::collections::HashMap<usize, [u8; 4]>,
+    }
+    impl std::io::Write for FirstPixelPicker {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(b.len(), self.frame_bytes, "每帧应恰好一次 write_all 整帧");
+            self.picked.insert(self.seen, [b[0], b[1], b[2], b[3]]);
+            self.seen += 1;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 这两条「写满整条时间轴」的测试用的 VTT 与其余测试不同（空字幕，而不是
+    /// 模块级 `VTT` 常量）：`opt-level=3` 的 dev profile 覆盖只作用于依赖
+    /// crate（见 `Cargo.toml` 里 `[profile.dev.package."*"]` 上方的注释），
+    /// `unpremultiply_into` 是本任务新加的、属于我们自己 crate 的逐像素循环，
+    /// 不在覆盖范围内——实测过 600 帧全量跑 `write_rgba_frames` 单条要 ~27s，
+    /// 而 `render()`（同样全量 600 帧、但不走 `unpremultiply_into`）只要 6.6s，
+    /// 说明多出来的时间几乎全在这个新循环上，不是 profile 没生效。
+    ///
+    /// 参照仓库既有的代表帧收窄手法（`src/render/draw.rs` 里
+    /// `outro_renders_representative_frames_without_panicking` 一带），把
+    /// 输入换成空字幕（`audio_secs=0` → `content_frames` 取 `layout()` 里
+    /// `CONTENT_TAIL_SECS` 撑出的下限 60 帧 → 总帧数 300，是能达到的最小
+    /// 时间轴），实测把单条压到 ~12.7s。这不是跳过帧——`write_rgba_frames`
+    /// 仍然对返回的全部帧各自调用恰好一次 `write_all`，只是全量意义上的
+    /// 「全部帧」从 600 条缩到 300 条；两个测试真正要钉住的性质（字节数精确
+    /// 等于 帧数×W×H×4、Cover 不透明、Content 透明）在 300 帧下同样成立。
+    const SHORT_VTT: &str = "WEBVTT\n\n";
+
+    #[test]
+    fn write_rgba_frames_emits_exactly_one_frame_worth_of_bytes_per_frame() {
+        let mut fs = FrameSource::new(SHORT_VTT, "标题".into()).unwrap();
+        assert_eq!(fs.total_frames(), 300, "空字幕应给出最小时间轴 300 帧");
+        let mut w = CountingWriter { bytes: 0 };
+        let n = fs.write_rgba_frames(&mut w).unwrap();
+        assert_eq!(n, 300);
+        assert_eq!(w.bytes, 300 * 1280 * 720 * 4, "字节数必须精确等于 帧数×W×H×4");
+    }
+
+    #[test]
+    fn write_rgba_frames_emits_opaque_cover_and_transparent_content() {
+        // 在字节流里验证段落语义：帧 0（Cover）左上角必须不透明，
+        // 帧 150（Content 段，120..180 之间）左上角必须全透明。
+        // 这条同时钉住「反预乘没有破坏 alpha」。
+        let mut fs = FrameSource::new(SHORT_VTT, "标题".into()).unwrap();
+        let mut w = FirstPixelPicker {
+            frame_bytes: 1280 * 720 * 4,
+            seen: 0,
+            picked: std::collections::HashMap::new(),
+        };
+        fs.write_rgba_frames(&mut w).unwrap();
+
+        let cover = w.picked[&0];
+        let content = w.picked[&150];
+        assert_eq!(cover[3], 255, "Cover 帧左上角应不透明");
+        assert!(cover[0] > 240, "Cover 帧左上角应接近白色，实得 {}", cover[0]);
+        assert_eq!(content[3], 0, "Content 帧左上角应全透明");
+    }
+
+    /// 只保留指定帧的完整字节（一帧 3.5MB，可接受），其余帧丢弃。
+    struct WholeFramePicker {
+        frame_bytes: usize,
+        target: usize,
+        seen: usize,
+        captured: Option<Vec<u8>>,
+    }
+    impl std::io::Write for WholeFramePicker {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(b.len(), self.frame_bytes, "每帧应恰好一次 write_all 整帧");
+            if self.seen == self.target {
+                self.captured = Some(b.to_vec());
+            }
+            self.seen += 1;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 鉴别性测试：钉住「`write_rgba_frames` 里那次对 `unpremultiply_into` 的调用
+    /// 没有被漏掉」这件事本身。上面 `write_rgba_frames_emits_opaque_cover_and_
+    /// transparent_content` 只在左上角（帧 0 全不透明、帧 150 全透明）取样，这两个
+    /// 位置的 alpha 恰好都在“预乘/straight 两种语义唯一重合”的地方（0 或 255），
+    /// 所以就算 `write_rgba_frames` 里忘了调 `unpremultiply_into`、直接把 `Pixmap`
+    /// 的预乘字节写出去，那条测试也发现不了——已实测确认（变异实验，写进任务
+    /// 报告）。这里改为动态在 Content 帧里找一个半透明像素（水印图标的抗锯齿
+    /// 边缘天然会有，不依赖具体坐标、不因排版微调而碎），直接对着同一张
+    /// `render()` 出来的 `Pixmap`、用 `unpremultiply_into` 算出期望值，跟
+    /// `write_rgba_frames` 实际写出的字节比对，这样才是真的在测「写出的字节确实
+    /// 经过了反预乘」，而不是只测「alpha 没被反预乘弄坏」。
+    #[test]
+    fn write_rgba_frames_applies_unpremultiply_to_semi_transparent_pixels_too() {
+        const CONTENT_FRAME: u32 = 150;
+
+        // 只造一个 FrameSource（`Painter::new()` 约 100ms，两次全时间轴测试已经
+        // 各付一次这个成本，这里复用同一个实例，避免再多付一次）：先直接渲染
+        // 同一帧，找一个半透明像素（水印抗锯齿边缘），算出期望的 straight-alpha
+        // 字节；`render()` 不带跨帧状态，之后接着跑 `write_rgba_frames` 不受影响
+        // （`renders_the_whole_timeline_without_panicking` 等既有测试也是同一个
+        // `FrameSource` 反复调 `render()`，顺序不敏感）。
+        let mut fs = FrameSource::new(SHORT_VTT, "标题".into()).unwrap();
+        let pixmap = fs.render(CONTENT_FRAME).unwrap();
+        let idx = pixmap
+            .pixels()
+            .iter()
+            .position(|px| px.alpha() > 0 && px.alpha() < 255)
+            .expect("Content 帧应存在半透明的抗锯齿边缘像素（水印图标边缘）");
+        let want = pixmap.pixels()[idx].demultiply();
+        let want_bytes = [want.red(), want.green(), want.blue(), want.alpha()];
+        assert_ne!(
+            want.red(),
+            pixmap.pixels()[idx].red(),
+            "前提检查：这个像素的反预乘结果应与预乘原值不同，否则这条测试测不出东西"
+        );
+
+        // 再走 write_rgba_frames，取同一帧的完整字节，比对同一个像素偏移。
+        let mut w = WholeFramePicker {
+            frame_bytes: 1280 * 720 * 4,
+            target: CONTENT_FRAME as usize,
+            seen: 0,
+            captured: None,
+        };
+        fs.write_rgba_frames(&mut w).unwrap();
+        let frame = w.captured.expect("目标帧应被捕获");
+        let got_bytes = &frame[idx * 4..idx * 4 + 4];
+        assert_eq!(
+            got_bytes, want_bytes,
+            "write_rgba_frames 写出的半透明像素字节应等于直接对 render() 结果做反预乘"
+        );
+    }
+
+    #[test]
+    fn write_rgba_frames_propagates_writer_errors_instead_of_panicking() {
+        // ffmpeg 提前退出时写端会遇到 broken pipe，必须变成 Err 而不是 panic。
+        struct FailAfter(usize);
+        impl std::io::Write for FailAfter {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                if self.0 == 0 {
+                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "管道已关闭"));
+                }
+                self.0 -= 1;
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let err = fs.write_rgba_frames(&mut FailAfter(3)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("管道"),
+            "错误应透出底层原因：{err:#}"
+        );
     }
 }
