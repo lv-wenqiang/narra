@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 pub const FONT: &[u8] = include_bytes!("../assets/dingliesongtypeface.ttf");
 pub const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
 pub const GITHUB_MARK_SVG: &[u8] = include_bytes!("../assets/github-mark.svg");
+pub const INTRO_MP3: &[u8] = include_bytes!("../assets/intro.mp3");
+pub const INTRO_TYPEWRITER_MP3: &[u8] = include_bytes!("../assets/intro_typewriter.mp3");
 
 /// 解码内嵌 logo 为 RGBA8，返回 (像素, 宽, 高)。
 pub fn logo_rgba() -> Result<(Vec<u8>, u32, u32)> {
@@ -30,6 +32,23 @@ pub fn github_mark_rgba(size: u32) -> Result<(Vec<u8>, u32, u32)> {
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     Ok((pixmap.data().to_vec(), size, size))
+}
+
+/// 把两段内嵌音效写进 `dir`，返回 `(intro.mp3, intro_typewriter.mp3)` 的路径。
+///
+/// ffmpeg 的四路音频里有两路是内嵌资源，而 stdin 已经被帧流占用，无法再从
+/// 管道喂第二、第三份数据；所以运行时落成真实文件是最简单可靠的做法。
+/// 调用方负责选一个临时目录并在结束后清理。
+pub fn write_embedded_audio(
+    dir: &std::path::Path,
+) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let intro = dir.join("intro.mp3");
+    let typewriter = dir.join("intro_typewriter.mp3");
+    std::fs::write(&intro, INTRO_MP3)
+        .with_context(|| format!("写入内嵌片尾音效失败：{}", intro.display()))?;
+    std::fs::write(&typewriter, INTRO_TYPEWRITER_MP3)
+        .with_context(|| format!("写入内嵌打字机音效失败：{}", typewriter.display()))?;
+    Ok((intro, typewriter))
 }
 
 #[cfg(test)]
@@ -64,5 +83,39 @@ mod tests {
         assert_eq!((w, h), (32, 32));
         assert_eq!(px.len(), 32 * 32 * 4);
         assert!(px.chunks(4).any(|p| p[3] > 0), "图标全透明");
+    }
+
+    #[test]
+    fn embedded_audio_is_non_empty_mp3() {
+        // ID3v2 头是 "ID3"，裸 MPEG 帧头是 0xFF 0xFB/0xF3/0xF2。两者都算合法 mp3 开头。
+        for (name, bytes) in [("intro", INTRO_MP3), ("typewriter", INTRO_TYPEWRITER_MP3)] {
+            assert!(bytes.len() > 10_000, "{name} 太小，可能没复制成功：{}", bytes.len());
+            let ok = bytes.starts_with(b"ID3") || (bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0);
+            assert!(ok, "{name} 开头不像 mp3：{:02X?}", &bytes[..4]);
+        }
+    }
+
+    #[test]
+    fn write_embedded_audio_produces_two_readable_files() {
+        let dir = std::env::temp_dir().join(format!("panda_assets_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (intro, typewriter) = write_embedded_audio(&dir).unwrap();
+
+        assert_eq!(std::fs::read(&intro).unwrap(), INTRO_MP3, "写出的内容应与内嵌字节一致");
+        assert_eq!(std::fs::read(&typewriter).unwrap(), INTRO_TYPEWRITER_MP3);
+        assert_ne!(intro, typewriter, "两个文件不能是同一个路径");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_embedded_audio_is_idempotent() {
+        // render 与 make 可能在同一个目录下先后调用，重复写不应报错。
+        let dir = std::env::temp_dir().join(format!("panda_assets_idem_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = write_embedded_audio(&dir).unwrap();
+        let second = write_embedded_audio(&dir).unwrap();
+        assert_eq!(first, second);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
