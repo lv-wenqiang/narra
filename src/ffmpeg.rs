@@ -212,6 +212,40 @@ mod tests {
     }
 
     #[test]
+    fn each_stream_carries_its_own_complete_filter_chain() {
+        // 修复轮 1：审查实测到一个 audio_graph_pairs_each_stream_selector_
+        // with_its_own_delay 抓不住的变异——把 [2:a] 接上 BGM 的链
+        // （volume=0.15,afade=...）、[3:a] 接上 TTS 的链（volume=1），字面值
+        // 一个不改、只换配对。之前 10 条测试全部通过，原因和 M11 同源：TTS
+        // 与 BGM 共用 adelay=4000，`bgm_is_ducked_...` 与
+        // `sound_effects_use_...` 都只检查「某个值在字符串某处出现」，不检查
+        // 它挂在哪一路上；`audio_graph_pairs_each_stream_selector_with_its_
+        // own_delay` 只覆盖「选择器 + adelay」，不覆盖整条链，所以对
+        // volume/afade 部分被调包同样无感。
+        //
+        // 后果比 M11 严重：M11 对调的是两段静默待触发的音效，这条会让背景
+        // 音乐播在人声的位置、人声播在背景音乐的位置——一耳朵就能听出来的
+        // 成片缺陷，测试却全绿。这里把每一路的整条链作为一个连续子串来断
+        // 言，而不是逐项检查「字符串里某处有某个值」，四路一次堵死，而不是
+        // 只补出问题的那一对。
+        let g = audio_filter_graph(10.0, 16.0);
+        for (label, chain) in [
+            ("TTS", "[2:a]adelay=4000:all=1,volume=1[a_tts]"),
+            (
+                "BGM",
+                "[3:a]adelay=4000:all=1,volume=0.15,afade=t=out:st=12.000:d=2[a_bgm]",
+            ),
+            ("打字机", "[4:a]adelay=500:all=1,volume=0.6[a_type]"),
+            ("片尾音效", "[5:a]adelay=16000:all=1,volume=0.6[a_intro]"),
+        ] {
+            assert!(
+                g.contains(chain),
+                "{label} 这一路的完整链应原样出现：\n期望 {chain}\n实得 {g}"
+            );
+        }
+    }
+
+    #[test]
     fn amix_disables_normalization_and_mixes_four_inputs() {
         // normalize=1（默认）会按输入数自动缩放，把各路相对音量全改掉。
         let g = audio_filter_graph(10.0, 16.0);
