@@ -502,6 +502,24 @@ mod tests {
     }
 
     #[test]
+    fn background_chain_applies_scale_then_crop_then_brightness_in_order() {
+        // 修复轮 1：上面那条测试对 scale/crop/colorchannelmixer 用的是三个
+        // 独立的 contains，从不断言相对次序。审查实测：把实现改成
+        // 「先 crop 后 scale」，三个 contains 全部照样通过（次序对调不影响
+        // 各滤镜「有没有出现」）。但对非 1280x720 的源（背景素材是
+        // 1920x1080），先裁后缩会裁错区域，破坏 objectFit:cover 语义——
+        // 一类「成片画面裁切错误但测试全绿」的缺陷。这里照 Task 3 的写法，
+        // 把整条链当一个连续子串断言，把顺序钉死。
+        let args = sample_args();
+        let g = value_after(&args, "-filter_complex").unwrap();
+        let expected = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8";
+        assert!(
+            g.contains(expected),
+            "背景处理必须按 scale→crop→colorchannelmixer 的顺序连续出现；先裁后缩会对非 1280x720 的源裁错区域、破坏 cover 语义：{g}"
+        );
+    }
+
+    #[test]
     fn frame_stream_is_overlaid_on_the_background() {
         let args = sample_args();
         let g = value_after(&args, "-filter_complex").unwrap();
