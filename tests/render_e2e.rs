@@ -80,5 +80,45 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
         .expect("应有 duration");
     assert!((dur - 16.0).abs() < 0.5, "时长应约 16 秒，实得 {dur}");
 
+    // 修复轮 1 I2：上面这些断言（大小/流类型/编码/时长）对"冻结帧填充"
+    // 型的静默坏片完全无感——如果写帧半途出错但错误被吞掉（比如 `run_
+    // render` 把 `write_result` 的 `Err` 错当成 `Ok`），`overlay=shortest=0`
+    // 配合 `eof_action=repeat` 会用最后写出的那一帧一直填满剩下的时长，
+    // 产物依然是一个大小正常、h264/aac 齐全、时长精确到 16.0 秒的"合法"
+    // mp4——上面每一条断言都会通过。审查实测过这个具体场景：把帧流截断到
+    // 60 帧后静默返回 `Ok`，抽第 200 帧发现是冻结的 Intro 画面，480 帧里
+    // 420 帧是同一张静止图，而上面的断言全绿。本任务用同样的手法（临时
+    // 包一层只转发前 60 帧字节的 Write，其余静默假装成功）复现过一次，
+    // 结果一致：上面所有断言通过，只有下面这条抓住。
+    //
+    // 这里抽两帧比对像素字节，钉住"后半段确实在变化，不是同一张静止图
+    // 复制粘贴"。选 300（Content 段中段）和 470（Outro 段尾部）而不是
+    // 简报原来给的 0/300：这两帧都落在时间轴的后半段（Content 120~359、
+    // Outro 360~479），一次典型的"写到一半失败被吞掉"无论具体断在哪一帧，
+    // 只要断在 300 之前，300 和 470 就会是同一张被复读的冻结帧——比选一
+    // 头一尾（0 和 300）更不容易被"恰好断在两个采样点之间"漏过去，因为
+    // 断点通常离末尾更远（越早失败越常见，比如某个片段的渲染在处理到
+    // 一半就出错）。
+    let frame_dir = tmp.join("freeze_check");
+    std::fs::create_dir_all(&frame_dir).unwrap();
+    let extract = std::process::Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-i"])
+        .arg(&out)
+        .args(["-vf", r"select='eq(n\,300)+eq(n\,470)'", "-vsync", "0"])
+        .arg(frame_dir.join("f_%02d.png"))
+        .output()
+        .unwrap();
+    assert!(
+        extract.status.success(),
+        "抽帧失败：{}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+    let frame_300 = std::fs::read(frame_dir.join("f_01.png")).expect("应能读到第 300 帧");
+    let frame_470 = std::fs::read(frame_dir.join("f_02.png")).expect("应能读到第 470 帧");
+    assert_ne!(
+        frame_300, frame_470,
+        "第 300 帧（Content 段）与第 470 帧（Outro 段）字节完全相同——很可能是写帧半途失败被静默吞掉，后半段被同一帧冻结填充了"
+    );
+
     std::fs::remove_dir_all(&tmp).ok();
 }

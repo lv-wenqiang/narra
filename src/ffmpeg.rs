@@ -842,13 +842,14 @@ mod tests {
         std::fs::remove_file("/tmp/panda_early_exit_test.mp4").ok();
     }
 
-    /// 写一个可执行的假 ffmpeg 脚本到临时目录，返回其路径。仅用于下面两条
+    /// 写一个可执行的假 ffmpeg 脚本到临时目录，返回其路径。仅用于下面三条
     /// 白盒测试：它们要验证的编排细节（并发读 stderr、ffmpeg 成功但写帧
-    /// 失败时不吞错误）在真实 ffmpeg 上要么需要填满 64KB 管道缓冲区（约
-    /// 4 分钟挂钟时间，见 `docs/ffmpeg-pipeline.md` 第 6 节），要么依赖
-    /// ffmpeg 恰好提前关闭 stdin 又恰好退出码 0——都不是能在单测规模下
-    /// 稳定复现的条件。用假脚本直接控制这两种行为，比等真实 ffmpeg 巧合
-    /// 触发要可靠得多。
+    /// 失败时不吞错误、输出目录建没建好）在真实 ffmpeg 上要么需要填满
+    /// 64KB 管道缓冲区（约 4 分钟挂钟时间，见 `docs/ffmpeg-pipeline.md`
+    /// 第 6 节），要么依赖 ffmpeg 恰好提前关闭 stdin 又恰好退出码 0，要么
+    /// 依赖输入素材缺失又恰好走到打开输出路径那一步——都不是能在单测
+    /// 规模下稳定复现的条件。用假脚本直接控制这几种行为，比等真实 ffmpeg
+    /// 巧合触发要可靠得多。
     #[cfg(unix)]
     fn write_fake_ffmpeg(name: &str, script: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -861,6 +862,44 @@ mod tests {
         path
     }
 
+    /// 三条用假 ffmpeg 脚本的测试共用的超时预算。
+    ///
+    /// `cargo test` 本身没有全局超时：一次把编排逻辑改错到真的死锁/永久
+    /// 挂起的回归，如果测试没有自己的超时兜底，会一路挂到 CI 作业级的
+    /// 外层超时才被发现，而且不会打印任何一行「哪条测试挂了」的结果
+    /// （修复轮 1 I3 实测：删掉 `drop(stdin)` 后，`run_render_creates_
+    /// the_output_directory_before_invoking_ffmpeg` 之前没有超时保护，
+    /// `timeout 90 cargo test` 直接把整个进程杀掉，一行结果都没打印）。
+    ///
+    /// 120 秒定得比表面看起来宽：这个超时只在"真的挂死"时才会被吃满，
+    /// 通过路径命中 `recv_timeout` 会立刻返回，不会真等 120 秒。实测过
+    /// （20 核空载机单独跑这一条）本 debug 构建下渲染全时间轴 330 帧只要
+    /// 约 15 秒；即便机器负载重、多个测试并发抢 CPU，30 秒的预算也只有
+    /// 约 2 倍余量——假阳性（把慢速渲染误判成死锁）曾经真的发生过一次
+    /// （见任务报告「自审发现」）。既然假阴性风险是零（真死锁永远不会
+    /// 提前返回），把预算调宽到 120 秒对通过路径零成本，只是让失败路径
+    /// 多等一会儿——这个方向没有理由省。
+    const FAKE_FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// 在独立线程里跑 `f`，用 [`FAKE_FFMPEG_TIMEOUT`] 兜底。
+    ///
+    /// 用 `recv_timeout` 而不是直接在当前线程调用 `f`：真死锁下 `f` 本身
+    /// 永远不返回，只有把它挪到别的线程、主线程改为"等消息或等超时"，
+    /// 才能把"挂死"变成一条可读的 panic，而不是让整个测试进程被外部
+    /// 工具杀掉、什么都不打印。
+    fn run_with_timeout<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(FAKE_FFMPEG_TIMEOUT).unwrap_or_else(|_| {
+            panic!(
+                "{}秒内未返回，疑似死锁/永久挂起：假 ffmpeg 与我们的写端/读端谁也没有先撒手",
+                FAKE_FFMPEG_TIMEOUT.as_secs()
+            )
+        })
+    }
+
     #[test]
     #[cfg(unix)]
     fn run_render_reads_stderr_concurrently_with_writing_frames_and_does_not_deadlock() {
@@ -871,18 +910,11 @@ mod tests {
         // 才读），这里会真挂死：假 ffmpeg 卡在写 stderr（没人读、缓冲区
         // 写满），于是它永远读不到 stdin；我们的主线程又卡在把帧写进
         // stdin（同样没人读、缓冲区写满）。双方互相等待，谁也不会先撒手。
-        // 用超时代替死等，超时本身就是「抓到了」的证据。
-        //
-        // 超时定得比较宽（30 秒）：实测过，本 debug 构建下渲染全时间轴
-        // 330 帧（Cover+Intro+Content+Outro 四段都要走一遍 `Painter`）
-        // 本身就要约 12～13 秒（`[profile.dev.package."*"]` 只优化了依赖，
-        // 没优化本 crate 自己的代码），这是正常但慢的成功路径，不是死锁；
-        // 真死锁会一直卡到进程被杀，30 秒对两者的区分足够。
+        // 用 `run_with_timeout` 代替死等，超时本身就是「抓到了」的证据。
         let script = write_fake_ffmpeg(
             "stderr_then_stdin",
             "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' 'x' 1>&2\ncat >/dev/null\nexit 0\n",
         );
-        let script_for_cleanup = script.clone();
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
         let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
@@ -894,38 +926,29 @@ mod tests {
         let audio_secs = fs.audio_secs();
         let content_frames = fs.content_frames();
 
-        // out 是拥有所有权的局部值，线程要求闭包内容 'static；把 out（以及
-        // fs）整个移进闭包，在闭包内部再借用，而不是从外面借一个短命的引用。
-        let (tx, rx) = std::sync::mpsc::channel();
-        let out_for_join = out.clone();
-        std::thread::spawn(move || {
+        let script_for_run = script.clone();
+        let out_for_run = out.clone();
+        let result = run_with_timeout(move || {
             let inputs = RenderInputs {
                 bg: bad,
                 tts_audio: bad,
                 bgm: bad,
                 typewriter: bad,
                 intro: bad,
-                out: &out,
+                out: &out_for_run,
                 total_frames,
                 audio_secs,
                 content_frames,
             };
-            let result = run_render_with_ffmpeg_binary(&script, &mut fs, &inputs);
-            let _ = tx.send(result.map(|_| ()).map_err(|e| format!("{e:#}")));
+            run_render_with_ffmpeg_binary(&script_for_run, &mut fs, &inputs)
+                .map_err(|e| format!("{e:#}"))
         });
-
-        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(result) => assert!(
-                result.is_ok(),
-                "假 ffmpeg 正常读完 stdin 后退出 0，不应报错：{result:?}"
-            ),
-            Err(_) => panic!(
-                "30 秒内 run_render 未返回，疑似死锁：stderr 没有被并发读取，\
-                 假 ffmpeg 卡在写 stderr、我们卡在写 stdin，双方互相等待对方"
-            ),
-        }
-        std::fs::remove_file(&out_for_join).ok();
-        std::fs::remove_file(&script_for_cleanup).ok();
+        assert!(
+            result.is_ok(),
+            "假 ffmpeg 正常读完 stdin 后退出 0，不应报错：{result:?}"
+        );
+        std::fs::remove_file(&out).ok();
+        std::fs::remove_file(&script).ok();
     }
 
     #[test]
@@ -938,7 +961,10 @@ mod tests {
         // 这条测试专门堵住 `run_render` 末尾最容易被写错的一行：如果把
         // `write_result.map(|_| ())` 改成无条件 `Ok(())`，ffmpeg 退出码
         // 是 0 会让这条测试从「返回 Err」变成「返回 Ok」——静默产出一个
-        // 帧数被截断的坏成片，且没有任何报错。
+        // 帧数被截断的坏成片，且没有任何报错。也走 `run_with_timeout`：
+        // 假 ffmpeg 提前退出、我们仍在写的场景理论上不该挂死，但既然三条
+        // 假 ffmpeg 测试共用同一套编排代码，统一套上超时兜底，不去赌
+        // "这条肯定不会挂"。
         let script = write_fake_ffmpeg(
             "read_100_bytes_then_exit",
             "#!/bin/sh\nhead -c 100 >/dev/null\nexit 0\n",
@@ -951,21 +977,28 @@ mod tests {
             "panda_write_swallow_test_{}.mp4",
             std::process::id()
         ));
-        let inputs = RenderInputs {
-            bg: bad,
-            tts_audio: bad,
-            bgm: bad,
-            typewriter: bad,
-            intro: bad,
-            out: &out,
-            total_frames: fs.total_frames(),
-            audio_secs: fs.audio_secs(),
-            content_frames: fs.content_frames(),
-        };
+        let total_frames = fs.total_frames();
+        let audio_secs = fs.audio_secs();
+        let content_frames = fs.content_frames();
 
-        let err = run_render_with_ffmpeg_binary(&script, &mut fs, &inputs)
-            .expect_err("假 ffmpeg 提前关闭 stdin 后写帧应失败，即使它自己退出码是 0");
-        let msg = format!("{err:#}");
+        let script_for_run = script.clone();
+        let out_for_run = out.clone();
+        let result = run_with_timeout(move || {
+            let inputs = RenderInputs {
+                bg: bad,
+                tts_audio: bad,
+                bgm: bad,
+                typewriter: bad,
+                intro: bad,
+                out: &out_for_run,
+                total_frames,
+                audio_secs,
+                content_frames,
+            };
+            run_render_with_ffmpeg_binary(&script_for_run, &mut fs, &inputs)
+                .map_err(|e| format!("{e:#}"))
+        });
+        let msg = result.expect_err("假 ffmpeg 提前关闭 stdin 后写帧应失败，即使它自己退出码是 0");
         assert!(
             msg.contains("管道") || msg.contains("pipe") || msg.contains("Broken"),
             "错误应指出是写帧/管道失败，而不是别的：{msg}"
@@ -991,7 +1024,11 @@ mod tests {
         // 参数（`build_render_args` 里输出路径永远是最后一项）尝试建一个
         // 空文件——这正是真实 ffmpeg 打开输出文件写入时会做的事：目录
         // 不存在就失败。成败完全取决于 `run_render` 有没有先把父目录
-        // 建好，和输入素材是否存在无关。
+        // 建好，和输入素材是否存在无关。也走 `run_with_timeout`：修复轮 1
+        // 实测过，删掉 `drop(stdin)` 那个变异会让这条测试之前没有超时
+        // 保护，`cat >/dev/null` 永远等不到 EOF、整条 `cargo test` 被外部
+        // `timeout` 杀掉、一行结果都不打印——统一走超时兜底后，同样的
+        // 变异会得到一条可读的 panic，而不是一次静默的挂起。
         let script = write_fake_ffmpeg(
             "touch_output_path",
             "#!/bin/sh\ncat >/dev/null\nfor out; do :; done\n: > \"$out\" || exit 3\nexit 0\n",
@@ -1007,19 +1044,27 @@ mod tests {
         ));
         std::fs::remove_dir_all(&out_dir).ok();
         let out = out_dir.join("nested").join("out.mp4");
-        let inputs = RenderInputs {
-            bg: bad,
-            tts_audio: bad,
-            bgm: bad,
-            typewriter: bad,
-            intro: bad,
-            out: &out,
-            total_frames: fs.total_frames(),
-            audio_secs: fs.audio_secs(),
-            content_frames: fs.content_frames(),
-        };
+        let total_frames = fs.total_frames();
+        let audio_secs = fs.audio_secs();
+        let content_frames = fs.content_frames();
 
-        let result = run_render_with_ffmpeg_binary(&script, &mut fs, &inputs);
+        let script_for_run = script.clone();
+        let out_for_run = out.clone();
+        let result = run_with_timeout(move || {
+            let inputs = RenderInputs {
+                bg: bad,
+                tts_audio: bad,
+                bgm: bad,
+                typewriter: bad,
+                intro: bad,
+                out: &out_for_run,
+                total_frames,
+                audio_secs,
+                content_frames,
+            };
+            run_render_with_ffmpeg_binary(&script_for_run, &mut fs, &inputs)
+                .map_err(|e| format!("{e:#}"))
+        });
         assert!(
             result.is_ok(),
             "输出目录应已被建好，假 ffmpeg 应能顺利在那里创建文件并退出 0：{result:?}"
