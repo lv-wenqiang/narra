@@ -1,7 +1,8 @@
 use crate::render::timeline::{FPS, HEIGHT, WIDTH};
 use anyhow::{bail, Context, Result};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// 探测 PATH 上是否有可用的 ffmpeg。对应 TS 版 assertFfmpegAvailable。
 pub fn assert_available() -> Result<()> {
@@ -214,6 +215,104 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
         "192k".into(),
         s(i.out),
     ]
+}
+
+/// 起 ffmpeg 子进程，另开线程并发读它的 stderr，主线程把帧流写进它的
+/// stdin，最后等待结束。真实的可执行文件名固定是 `"ffmpeg"`；测试用
+/// [`run_render_with_ffmpeg_binary`] 注入假进程验证编排细节。
+pub fn run_render(
+    source: &mut crate::render::frame::FrameSource,
+    inputs: &RenderInputs,
+) -> Result<()> {
+    assert_available()?;
+    run_render_with_ffmpeg_binary(Path::new("ffmpeg"), source, inputs)
+}
+
+/// `run_render` 的实际实现，program 可替换——生产路径永远是字面量
+/// `"ffmpeg"`（见 [`run_render`]），测试路径可以指向一个模拟慢速/提前
+/// 退出/超量 stderr 的假脚本，从而对「stdin/stderr 并发编排是否正确」
+/// 和「ffmpeg 成功但写帧失败时错误不能被吞掉」这两条真实 ffmpeg 很难在
+/// 单测规模下稳定复现的语义做确定性验证，且不必去碰进程级的 `PATH`
+/// 环境变量（那样会和同一进程里并发跑的其它测试互相干扰）。
+///
+/// **顺序很要紧**（Task 0 探针实测确认，见 `docs/ffmpeg-pipeline.md` 第 6
+/// 节）：先 `spawn`，再 `take()` 走 stdin 与 stderr，再起并发读 stderr 的
+/// 线程，然后主线程写帧，最后 `wait()`。stderr 用管道时若不并发读取，
+/// ffmpeg 侧的进度输出把 64KB 管道缓冲区写满后会阻塞在 `write()` 上，
+/// 而我们如果这时候还在等 `child.wait()`（或者压根没读 stderr），双方
+/// 互相等待——死锁，且探针规模的测试完全测不出来（stderr 体积随挂钟时间
+/// 线性增长，填满缓冲区约需 4 分钟挂钟时间，真实渲染每帧要过 tiny-skia，
+/// 挂钟耗时远高于探针的纯内存 memcpy）。写帧留在主线程、只把 stderr 读
+/// 挪到子线程，是刻意的最小改动：只要 stderr 读取与写帧是并发的，就不会
+/// 卡在缓冲区上，不需要额外再起一个写帧线程。
+///
+/// **ffmpeg 提前退出**（参数错误、素材缺失）时写帧会遇到 broken pipe。
+/// 那是正常的失败路径：`write_rgba_frames` 返回 `Err`，但我们优先报告
+/// ffmpeg 自己的 stderr，因为它说的才是根因，写端的 broken pipe 只是
+/// 后果——`if !status.success()` 分支永远先于 `write_result` 被检查。
+/// 反过来，**ffmpeg 退出码是 0 但写帧失败**（比如它提前关闭了 stdin、
+/// 我们还有帧没写完）属于我们这侧的错，`write_result` 的错误不能被
+/// `Ok(())` 吞掉，否则会静默产出一个帧数被截断的坏成片。
+fn run_render_with_ffmpeg_binary(
+    program: &Path,
+    source: &mut crate::render::frame::FrameSource,
+    inputs: &RenderInputs,
+) -> Result<()> {
+    if let Some(parent) = inputs.out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建输出目录失败：{}", parent.display()))?;
+    }
+
+    let args = build_render_args(inputs);
+    let mut child = Command::new(program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("启动 ffmpeg 失败")?;
+
+    let mut stdin = child.stdin.take().expect("stdin 已声明为 piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr 已声明为 piped");
+
+    // 必须在 wait() 之前就跑起来，且与写帧并发：否则 ffmpeg 进度输出把
+    // 管道缓冲区写满会阻塞在 write() 上，我们又卡在 wait()——死锁。
+    let stderr_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        stderr_pipe.read_to_string(&mut s).ok();
+        s
+    });
+
+    let write_result = source.write_rgba_frames(&mut stdin);
+    // 显式 drop 关闭管道，让 ffmpeg 知道输入结束——这一行不是可有可无的
+    // 收尾清洁，删掉它会让真实 ffmpeg **真的永久挂起**（Task 5 实测确认，
+    // 不是理论推测：用真实素材跑端到端渲染，删掉这行后 60 秒仍不退出）。
+    // 两条看似矛盾、实则互补的事实都要记住：
+    // 1. **光关 stdin 不够**：`build_render_args` 里 `overlay=shortest=0`
+    //    配合 `-stream_loop -1` 与 rawvideo 输入的 `eof_action=repeat`，
+    //    提前关闭 stdin（帧还没写完）不会让 ffmpeg 收尾，它会用最后一帧
+    //    一直填下去，真正的终止条件是 `build_render_args` 算出的那个
+    //    `-t`（Task 0 探针实测确认，见 `docs/ffmpeg-pipeline.md` 第 7 节）。
+    // 2. **光靠 -t 也不够**：即使写完的帧数正好等于 `-t` 对应的时长，
+    //    不主动 drop、让 stdin 停留在"没写但也没关"的状态，ffmpeg 的
+    //    rawvideo 分离器会阻塞在读下一帧的 `read()` 上，永远等不到那个
+    //    让它意识到"该停了"的信号——`-t` 本身不会主动打断一次阻塞的读。
+    // 两者缺一不可：`-t` 定义"该在哪停"，EOF 定义"没有更多数据了，请去检查
+    // 是否已经该停"。
+    drop(stdin);
+
+    let status = child.wait().context("等待 ffmpeg 结束失败")?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+
+    if !status.success() {
+        // ffmpeg 的 stderr 说的才是根因，原样透出，不做吞噬或改写。
+        bail!("ffmpeg 退出码 {status}，原始输出：\n{stderr}");
+    }
+    // ffmpeg 成功了但写帧失败：说明帧数/管道对不上，属于我们这侧的错，
+    // 不能因为 ffmpeg 自己退出码是 0 就当作整体成功。
+    write_result.map(|_| ())
 }
 
 #[cfg(test)]
@@ -666,5 +765,354 @@ mod tests {
         assert_eq!(pix_positions.len(), 2);
         assert!(pix_positions[0] < last_i_pos, "输入 -pix_fmt 应在最后一个 -i 之前");
         assert!(pix_positions[1] > last_i_pos, "输出 -pix_fmt 应在最后一个 -i 之后");
+    }
+
+    /// 串行化所有依赖「真实 `ffmpeg` 能否通过 `PATH` 解析到」的测试。
+    ///
+    /// `run_render_returns_assert_available_error_when_ffmpeg_is_missing`
+    /// 要临时把进程级 `PATH` 改成不含 ffmpeg 的目录，这个变量是整个进程
+    /// 共享的——`cargo test` 默认多线程并发跑测试，如果这时候
+    /// `run_render_reports_ffmpeg_stderr_verbatim_when_it_exits_nonzero` /
+    /// `run_render_does_not_panic_when_ffmpeg_exits_early` 恰好也在跑（它们
+    /// 靠字面量 `"ffmpeg"` 走 `PATH` 查真实 ffmpeg），会撞上被清空的 `PATH`
+    /// 假性失败。三条测试都先拿这把锁再动手，串行化掉这段窗口。用假 ffmpeg
+    /// 脚本的另外两条测试传的是带 `/` 的绝对路径，`execvp` 语义下根本不查
+    /// `PATH`，不受影响，不需要跟着拿锁。
+    static REAL_FFMPEG_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn run_render_reports_ffmpeg_stderr_verbatim_when_it_exits_nonzero() {
+        let _guard = REAL_FFMPEG_PATH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // 用一个必然失败的参数组合（不存在的输入素材）触发 ffmpeg 非零退出，
+        // 确认错误信息把 ffmpeg 自己的话原样透出，而不是吞掉或改写。
+        //
+        // 输出路径特意放在一个存在且可写的临时目录下（而不是 `/` 根目录下
+        // 拼一个不存在的目录）：本机沙箱里当前用户对 `/` 没有写权限，若
+        // `out` 的父目录本身建不出来，`run_render` 会在 `create_dir_all`
+        // 那一步就先报「创建输出目录失败」，根本走不到 ffmpeg，测不到这
+        // 条测试真正想测的东西（ffmpeg 自己的 stderr 有没有被原样透出）。
+        // 让 ffmpeg 报错的是不存在的 `bg`/`a`，不是输出路径。
+        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
+        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let out_dir = std::env::temp_dir().join("panda_ffmpeg_stderr_test");
+        let out = out_dir.join("out.mp4");
+        let bg = std::path::Path::new("/nonexistent-bg-xyz.mp4");
+        let a = std::path::Path::new("/nonexistent-a-xyz.mp3");
+        // 三个数值必须在 &mut fs 之前算好：否则 &mut fs 与 &fs 同时活着，借用检查不过。
+        let total_frames = fs.total_frames();
+        let audio_secs = fs.audio_secs();
+        let content_frames = fs.content_frames();
+        let err = run_render(
+            &mut fs,
+            &RenderInputs {
+                bg,
+                tts_audio: a,
+                bgm: a,
+                typewriter: a,
+                intro: a,
+                out: &out,
+                total_frames,
+                audio_secs,
+                content_frames,
+            },
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("ffmpeg"), "错误应指明是 ffmpeg 失败：{msg}");
+        // ffmpeg 找不到输入时会说 "No such file or directory"
+        assert!(
+            msg.contains("No such file") || msg.contains("Invalid"),
+            "应原样透出 ffmpeg 的 stderr：{msg}"
+        );
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn run_render_does_not_panic_when_ffmpeg_exits_early() {
+        let _guard = REAL_FFMPEG_PATH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // ffmpeg 因参数错误立刻退出时，写帧线程会遇到 broken pipe。
+        // 这条测试的全部要求就是：返回 Err，不 panic，不挂死。
+        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:20.000\n够长的一条，保证帧数多到写端会撞上已关闭的管道。\n";
+        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
+        // 三个数值必须在 &mut fs 之前算好：否则 &mut fs 与 &fs 同时活着，借用检查不过。
+        let total_frames = fs.total_frames();
+        let audio_secs = fs.audio_secs();
+        let content_frames = fs.content_frames();
+        let result = run_render(
+            &mut fs,
+            &RenderInputs {
+                bg: bad,
+                tts_audio: bad,
+                bgm: bad,
+                typewriter: bad,
+                intro: bad,
+                out: std::path::Path::new("/tmp/panda_early_exit_test.mp4"),
+                total_frames,
+                audio_secs,
+                content_frames,
+            },
+        );
+        assert!(result.is_err(), "应返回 Err");
+        std::fs::remove_file("/tmp/panda_early_exit_test.mp4").ok();
+    }
+
+    #[test]
+    fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
+        // 鉴别性测试：钉住「`run_render` 真的调用了 `assert_available()`」
+        // 这件事本身，补上自审发现的一个盲区。
+        //
+        // 上面两条 `run_render_*` 测试在本机（ffmpeg 真实存在）跑，无法
+        // 区分「有调用 assert_available()」和「删掉这一行」——两种情况下
+        // `assert_available()` 都会成功（或者压根没被调用），程序继续往下
+        // 走到真正的 spawn，行为完全一样。只有当 ffmpeg 在 PATH 上确实
+        // 找不到时，两者才会分道扬镳：有 `assert_available()?` 时报的是
+        // 它那句面向用户的安装提示；删掉后，`Command::new("ffmpeg").spawn()`
+        // 自己失败，报的是泛泛的「启动 ffmpeg 失败：No such file or
+        // directory」——同样是 Err，但说的不是同一件事。
+        //
+        // 用系统临时目录本身（不含任何 "ffmpeg" 可执行文件）顶替 PATH，
+        // 让 `Command::new("ffmpeg")` 无论在哪一步被调用都找不到它。
+        let _guard = REAL_FFMPEG_PATH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
+        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
+        let total_frames = fs.total_frames();
+        let audio_secs = fs.audio_secs();
+        let content_frames = fs.content_frames();
+
+        let original_path = std::env::var_os("PATH");
+        // SAFETY（就多线程而言）：`REAL_FFMPEG_PATH_LOCK` 保证同一时刻只有
+        // 这一条测试在改 PATH；其余会经 PATH 解析 "ffmpeg" 的测试都持有
+        // 同一把锁，不会在这段窗口内并发执行。
+        unsafe {
+            std::env::set_var("PATH", std::env::temp_dir());
+        }
+        let result = run_render(
+            &mut fs,
+            &RenderInputs {
+                bg: bad,
+                tts_audio: bad,
+                bgm: bad,
+                typewriter: bad,
+                intro: bad,
+                out: std::path::Path::new("/tmp/panda_missing_ffmpeg_test.mp4"),
+                total_frames,
+                audio_secs,
+                content_frames,
+            },
+        );
+        // 无论断言接下来是否 panic，先把 PATH 恢复原状，不把坏状态泄漏给
+        // 同一进程里后续的测试。
+        unsafe {
+            match &original_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        let err = result.expect_err("PATH 上没有 ffmpeg，run_render 应报错");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("请安装 ffmpeg"),
+            "应是 assert_available() 那句面向用户的安装提示，说明它真的被调用了；\
+             如果这一行被删掉，这里会看到的是 spawn() 自己泛泛的「启动 ffmpeg 失败」：{msg}"
+        );
+        std::fs::remove_file("/tmp/panda_missing_ffmpeg_test.mp4").ok();
+    }
+
+    /// 写一个可执行的假 ffmpeg 脚本到临时目录，返回其路径。仅用于下面两条
+    /// 白盒测试：它们要验证的编排细节（并发读 stderr、ffmpeg 成功但写帧
+    /// 失败时不吞错误）在真实 ffmpeg 上要么需要填满 64KB 管道缓冲区（约
+    /// 4 分钟挂钟时间，见 `docs/ffmpeg-pipeline.md` 第 6 节），要么依赖
+    /// ffmpeg 恰好提前关闭 stdin 又恰好退出码 0——都不是能在单测规模下
+    /// 稳定复现的条件。用假脚本直接控制这两种行为，比等真实 ffmpeg 巧合
+    /// 触发要可靠得多。
+    #[cfg(unix)]
+    fn write_fake_ffmpeg(name: &str, script: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "panda_fake_ffmpeg_{name}_{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_render_reads_stderr_concurrently_with_writing_frames_and_does_not_deadlock() {
+        // 鉴别性测试：假 ffmpeg 先往 stderr 塞 200000 字节（远超 64KB 管道
+        // 缓冲区），再读 stdin，最后退出 0。
+        //
+        // 如果 stderr 的读取不是与写帧并发进行（比如被挪到 `wait()` 之后
+        // 才读），这里会真挂死：假 ffmpeg 卡在写 stderr（没人读、缓冲区
+        // 写满），于是它永远读不到 stdin；我们的主线程又卡在把帧写进
+        // stdin（同样没人读、缓冲区写满）。双方互相等待，谁也不会先撒手。
+        // 用超时代替死等，超时本身就是「抓到了」的证据。
+        //
+        // 超时定得比较宽（30 秒）：实测过，本 debug 构建下渲染全时间轴
+        // 330 帧（Cover+Intro+Content+Outro 四段都要走一遍 `Painter`）
+        // 本身就要约 12～13 秒（`[profile.dev.package."*"]` 只优化了依赖，
+        // 没优化本 crate 自己的代码），这是正常但慢的成功路径，不是死锁；
+        // 真死锁会一直卡到进程被杀，30 秒对两者的区分足够。
+        let script = write_fake_ffmpeg(
+            "stderr_then_stdin",
+            "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' 'x' 1>&2\ncat >/dev/null\nexit 0\n",
+        );
+        let script_for_cleanup = script.clone();
+        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
+        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
+        let out = std::env::temp_dir().join(format!(
+            "panda_stderr_deadlock_test_{}.mp4",
+            std::process::id()
+        ));
+        let total_frames = fs.total_frames();
+        let audio_secs = fs.audio_secs();
+        let content_frames = fs.content_frames();
+
+        // out 是拥有所有权的局部值，线程要求闭包内容 'static；把 out（以及
+        // fs）整个移进闭包，在闭包内部再借用，而不是从外面借一个短命的引用。
+        let (tx, rx) = std::sync::mpsc::channel();
+        let out_for_join = out.clone();
+        std::thread::spawn(move || {
+            let inputs = RenderInputs {
+                bg: bad,
+                tts_audio: bad,
+                bgm: bad,
+                typewriter: bad,
+                intro: bad,
+                out: &out,
+                total_frames,
+                audio_secs,
+                content_frames,
+            };
+            let result = run_render_with_ffmpeg_binary(&script, &mut fs, &inputs);
+            let _ = tx.send(result.map(|_| ()).map_err(|e| format!("{e:#}")));
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(result) => assert!(
+                result.is_ok(),
+                "假 ffmpeg 正常读完 stdin 后退出 0，不应报错：{result:?}"
+            ),
+            Err(_) => panic!(
+                "30 秒内 run_render 未返回，疑似死锁：stderr 没有被并发读取，\
+                 假 ffmpeg 卡在写 stderr、我们卡在写 stdin，双方互相等待对方"
+            ),
+        }
+        std::fs::remove_file(&out_for_join).ok();
+        std::fs::remove_file(&script_for_cleanup).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_render_reports_write_failure_even_when_ffmpeg_exits_zero() {
+        // 鉴别性测试：假 ffmpeg 只读 100 字节就退出 0——模拟"ffmpeg 提前
+        // 收尾、退出码是 0，但我们这边还有帧没写完"的场景（现实中对应
+        // ffmpeg 意外提前结束但没有报错退出的情况）。
+        //
+        // 这条测试专门堵住 `run_render` 末尾最容易被写错的一行：如果把
+        // `write_result.map(|_| ())` 改成无条件 `Ok(())`，ffmpeg 退出码
+        // 是 0 会让这条测试从「返回 Err」变成「返回 Ok」——静默产出一个
+        // 帧数被截断的坏成片，且没有任何报错。
+        let script = write_fake_ffmpeg(
+            "read_100_bytes_then_exit",
+            "#!/bin/sh\nhead -c 100 >/dev/null\nexit 0\n",
+        );
+        // 字幕够长，保证 total_frames 对应的字节数远大于假 ffmpeg 会读的 100 字节。
+        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:05.000\n足够长，保证多于一帧要写，写端会在假 ffmpeg 提前退出后撞上已关闭的管道。\n";
+        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
+        let out = std::env::temp_dir().join(format!(
+            "panda_write_swallow_test_{}.mp4",
+            std::process::id()
+        ));
+        let inputs = RenderInputs {
+            bg: bad,
+            tts_audio: bad,
+            bgm: bad,
+            typewriter: bad,
+            intro: bad,
+            out: &out,
+            total_frames: fs.total_frames(),
+            audio_secs: fs.audio_secs(),
+            content_frames: fs.content_frames(),
+        };
+
+        let err = run_render_with_ffmpeg_binary(&script, &mut fs, &inputs)
+            .expect_err("假 ffmpeg 提前关闭 stdin 后写帧应失败，即使它自己退出码是 0");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("管道") || msg.contains("pipe") || msg.contains("Broken"),
+            "错误应指出是写帧/管道失败，而不是别的：{msg}"
+        );
+        assert!(
+            !msg.contains("退出码"),
+            "假 ffmpeg 退出码是 0，不应误报成 ffmpeg 非零退出：{msg}"
+        );
+        std::fs::remove_file(&out).ok();
+        std::fs::remove_file(&script).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_render_creates_the_output_directory_before_invoking_ffmpeg() {
+        // 鉴别性测试：钉住 `create_dir_all` 这一步本身，补上自审发现的
+        // 另一个盲区——`run_render_reports_ffmpeg_stderr_verbatim_when_it_
+        // exits_nonzero` 虽然也用了一个不存在的输出目录，但它的 `bg`/`a`
+        // 同样不存在，ffmpeg 会先在读取输入那一步就失败，根本走不到
+        // 「打开输出路径写入」这一步，测不出 `create_dir_all` 有没有跑。
+        //
+        // 假 ffmpeg 会先把 stdin 读空（避免写端卡住），再取 argv 最后一个
+        // 参数（`build_render_args` 里输出路径永远是最后一项）尝试建一个
+        // 空文件——这正是真实 ffmpeg 打开输出文件写入时会做的事：目录
+        // 不存在就失败。成败完全取决于 `run_render` 有没有先把父目录
+        // 建好，和输入素材是否存在无关。
+        let script = write_fake_ffmpeg(
+            "touch_output_path",
+            "#!/bin/sh\ncat >/dev/null\nfor out; do :; done\n: > \"$out\" || exit 3\nexit 0\n",
+        );
+        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
+        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
+        // 特意让输出的父目录（两层，逼 create_dir_all 而不是单层 mkdir）
+        // 在测试开始前不存在。
+        let out_dir = std::env::temp_dir().join(format!(
+            "panda_create_dir_test_{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&out_dir).ok();
+        let out = out_dir.join("nested").join("out.mp4");
+        let inputs = RenderInputs {
+            bg: bad,
+            tts_audio: bad,
+            bgm: bad,
+            typewriter: bad,
+            intro: bad,
+            out: &out,
+            total_frames: fs.total_frames(),
+            audio_secs: fs.audio_secs(),
+            content_frames: fs.content_frames(),
+        };
+
+        let result = run_render_with_ffmpeg_binary(&script, &mut fs, &inputs);
+        assert!(
+            result.is_ok(),
+            "输出目录应已被建好，假 ffmpeg 应能顺利在那里创建文件并退出 0：{result:?}"
+        );
+        assert!(out.exists(), "假 ffmpeg 应已在正确路径创建了文件，说明目录确实建好了");
+
+        std::fs::remove_dir_all(&out_dir).ok();
+        std::fs::remove_file(&script).ok();
     }
 }
