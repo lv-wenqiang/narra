@@ -1,3 +1,4 @@
+use crate::render::timeline::{FPS, HEIGHT, WIDTH};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -116,6 +117,103 @@ pub fn audio_filter_graph(audio_secs: f64, outro_start_secs: f64) -> String {
          [5:a]adelay={outro_ms}:all=1,volume={SFX_VOLUME}[a_intro];\
          [a_tts][a_bgm][a_type][a_intro]amix=inputs=4:normalize=0:duration=longest[a]"
     )
+}
+
+/// 一次成片合成所需的全部输入与参数。
+pub struct RenderInputs<'a> {
+    pub bg: &'a Path,
+    pub tts_audio: &'a Path,
+    pub bgm: &'a Path,
+    pub typewriter: &'a Path,
+    pub intro: &'a Path,
+    pub out: &'a Path,
+    pub total_frames: u32,
+    pub audio_secs: f64,
+    pub content_frames: u32,
+}
+
+/// 构造完整的 ffmpeg 参数向量（不含程序名）。
+///
+/// 纯函数，不碰文件系统也不起进程——规格 §5 要求 `ffmpeg` 模块「只构造参数
+/// （可断言命令行）」，进程管理是 `run_render` 的事。
+///
+/// **输入顺序即 filter_complex 里的编号**：0 背景视频、1 stdin 帧流、
+/// 2 TTS、3 BGM、4 打字机、5 片尾音效。改动顺序必须同步改滤镜图。
+///
+/// **`-stream_loop -1` 是输入选项**，必须紧贴它要循环的那个 `-i`。放错位置
+/// 会静默失效（素材播完即止，ffmpeg 不报错）。
+pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
+    // Outro 起点 = Content 段起点 + content_frames，换算成秒。
+    // `CONTENT_START_SECS * FPS` = 120 帧（Cover 15 帧 + Intro 105 帧）——
+    // 这个 120 与 `audio_filter_graph` 文档里、以及 CONTENT_START_SECS 本身
+    // 表示的是同一件事实，不能各写一份字面量：写两份，其中一份被改错时
+    // （比如改成 121）不会编译失败，只会让 Outro 音效错位几十毫秒——听感
+    // 上未必能察觉，但确实是错的。这里从 CONTENT_START_SECS 反推，让两处
+    // 共享同一个真相源。
+    let outro_start_secs =
+        (CONTENT_START_SECS * FPS as f64 + i.content_frames as f64) / FPS as f64;
+    let total_secs = i.total_frames as f64 / FPS as f64;
+
+    let filter = format!(
+        "[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,\
+         crop={WIDTH}:{HEIGHT},colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
+         [bg][1:v]overlay=shortest=0[v];{}",
+        audio_filter_graph(i.audio_secs, outro_start_secs)
+    );
+
+    let s = |p: &Path| p.to_string_lossy().into_owned();
+    vec![
+        "-y".into(),
+        // 0: 背景视频（循环）
+        "-stream_loop".into(),
+        "-1".into(),
+        "-i".into(),
+        s(i.bg),
+        // 1: 帧流（stdin）
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "-s".into(),
+        format!("{WIDTH}x{HEIGHT}"),
+        "-r".into(),
+        FPS.to_string(),
+        "-i".into(),
+        "-".into(),
+        // 2: TTS
+        "-i".into(),
+        s(i.tts_audio),
+        // 3: BGM（循环）
+        "-stream_loop".into(),
+        "-1".into(),
+        "-i".into(),
+        s(i.bgm),
+        // 4: 打字机音效
+        "-i".into(),
+        s(i.typewriter),
+        // 5: 片尾音效
+        "-i".into(),
+        s(i.intro),
+        "-filter_complex".into(),
+        filter,
+        "-map".into(),
+        "[v]".into(),
+        "-map".into(),
+        "[a]".into(),
+        "-t".into(),
+        format!("{total_secs}"),
+        "-c:v".into(),
+        "libx264".into(),
+        "-crf".into(),
+        "23".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "192k".into(),
+        s(i.out),
+    ]
 }
 
 #[cfg(test)]
@@ -275,5 +373,280 @@ mod tests {
     fn audio_graph_ends_with_the_mixed_output_label() {
         let g = audio_filter_graph(10.0, 16.0);
         assert!(g.trim_end().ends_with("[a]"), "输出标签应为 [a]：{g}");
+    }
+
+    fn sample_inputs() -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        (
+            "/m/bg.mp4".into(),
+            "/m/audio.mp3".into(),
+            "/m/bgm.mp3".into(),
+            "/m/typewriter.mp3".into(),
+            "/m/intro.mp3".into(),
+            "/m/out.mp4".into(),
+        )
+    }
+
+    fn sample_args() -> Vec<String> {
+        let (bg, tts, bgm, tw, intro, out) = sample_inputs();
+        build_render_args(&RenderInputs {
+            bg: &bg,
+            tts_audio: &tts,
+            bgm: &bgm,
+            typewriter: &tw,
+            intro: &intro,
+            out: &out,
+            total_frames: 600,
+            audio_secs: 10.0,
+            content_frames: 360,
+        })
+    }
+
+    /// 取 `args` 里 `flag` 后面紧跟的那个值。
+    fn value_after(args: &[String], flag: &str) -> Option<String> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    }
+
+    #[test]
+    fn inputs_appear_in_the_order_the_filter_graph_assumes() {
+        // filter_complex 用 [0:v] 背景、[1:v] 帧流、[2:a] TTS、[3:a] BGM、
+        // [4:a] 打字机、[5:a] 片尾音效。-i 的顺序就是编号，错位会静默画错。
+        let args = sample_args();
+        let inputs: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(f, _)| *f == "-i")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(inputs.len(), 6, "应有 6 个输入：{args:?}");
+        assert_eq!(inputs[0], "/m/bg.mp4");
+        assert_eq!(inputs[1], "-", "第二个输入必须是 stdin 帧流");
+        assert_eq!(inputs[2], "/m/audio.mp3");
+        assert_eq!(inputs[3], "/m/bgm.mp3");
+        assert_eq!(inputs[4], "/m/typewriter.mp3");
+        assert_eq!(inputs[5], "/m/intro.mp3");
+    }
+
+    #[test]
+    fn stream_loop_precedes_the_inputs_it_applies_to() {
+        // -stream_loop 是输入选项，必须紧接在它要循环的那个 -i 之前。
+        // 放错位置会静默失效：背景视频与 BGM 播完就断，而 ffmpeg 不报错。
+        let args = sample_args();
+        let loops: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-stream_loop")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(loops.len(), 2, "背景视频与 BGM 都需要循环：{args:?}");
+        for i in loops {
+            assert_eq!(args[i + 1], "-1", "应是无限循环");
+            assert_eq!(args[i + 2], "-i", "-stream_loop 必须紧贴它的 -i：{args:?}");
+        }
+        // 且这两个 -i 分别是背景视频与 BGM
+        let looped: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| *a == "-stream_loop" && args.get(i + 3).is_some())
+            .map(|(i, _)| &args[i + 3])
+            .collect();
+        assert!(
+            looped.contains(&&"/m/bg.mp4".to_string()),
+            "背景视频应被循环：{looped:?}"
+        );
+        assert!(
+            looped.contains(&&"/m/bgm.mp3".to_string()),
+            "BGM 应被循环：{looped:?}"
+        );
+    }
+
+    #[test]
+    fn raw_frame_stream_declares_size_rate_and_pixel_format() {
+        let args = sample_args();
+        assert_eq!(value_after(&args, "-f").as_deref(), Some("rawvideo"));
+        assert_eq!(
+            value_after(&args, "-pix_fmt").as_deref(),
+            Some("rgba"),
+            "帧流是 straight-alpha RGBA8"
+        );
+        assert_eq!(value_after(&args, "-s").as_deref(), Some("1280x720"));
+        assert_eq!(value_after(&args, "-r").as_deref(), Some("30"));
+    }
+
+    #[test]
+    fn background_uses_cover_scaling_and_multiplicative_brightness() {
+        let args = sample_args();
+        let g = value_after(&args, "-filter_complex").expect("应有 filter_complex");
+        assert!(
+            g.contains("scale=1280:720:force_original_aspect_ratio=increase"),
+            "objectFit:cover 的等价是 increase + crop：{g}"
+        );
+        assert!(g.contains("crop=1280:720"), "{g}");
+        assert!(
+            g.contains("colorchannelmixer=rr=0.8:gg=0.8:bb=0.8"),
+            "CSS brightness(0.8) 是乘性的：{g}"
+        );
+        assert!(
+            !g.contains("eq=brightness"),
+            "eq=brightness 是加性的，语义不同，不得使用：{g}"
+        );
+    }
+
+    #[test]
+    fn frame_stream_is_overlaid_on_the_background() {
+        let args = sample_args();
+        let g = value_after(&args, "-filter_complex").unwrap();
+        assert!(
+            g.contains("[bg][1:v]overlay=shortest=0[v]"),
+            "帧流应叠在处理后的背景之上：{g}"
+        );
+    }
+
+    #[test]
+    fn filter_complex_embeds_the_audio_graph() {
+        // 视频与音频合成一条 filter_complex；音频部分由 Task 3 的函数产出。
+        let args = sample_args();
+        let g = value_after(&args, "-filter_complex").unwrap();
+        assert!(
+            g.contains(&audio_filter_graph(10.0, 16.0)),
+            "应内嵌 audio_filter_graph 的产物：{g}"
+        );
+    }
+
+    #[test]
+    fn outro_start_is_derived_from_content_frames_not_hardcoded() {
+        // Outro 起点 = (120 + content_frames) / 30。content_frames=360 → 16.0s。
+        // 换一组数验证不是写死的：content_frames=90 → (120+90)/30 = 7.0s。
+        let (bg, tts, bgm, tw, intro, out) = sample_inputs();
+        let args = build_render_args(&RenderInputs {
+            bg: &bg,
+            tts_audio: &tts,
+            bgm: &bgm,
+            typewriter: &tw,
+            intro: &intro,
+            out: &out,
+            total_frames: 330,
+            audio_secs: 1.0,
+            content_frames: 90,
+        });
+        let g = value_after(&args, "-filter_complex").unwrap();
+        assert!(
+            g.contains("adelay=7000:all=1"),
+            "Outro 起点应为 7000ms：{g}"
+        );
+    }
+
+    #[test]
+    fn duration_comes_from_total_frames_at_thirty_fps() {
+        let args = sample_args();
+        assert_eq!(
+            value_after(&args, "-t").as_deref(),
+            Some("20"),
+            "600 帧 / 30fps = 20 秒"
+        );
+    }
+
+    #[test]
+    fn output_encoding_matches_the_spec() {
+        let args = sample_args();
+        assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "libx264"));
+        assert!(args.windows(2).any(|w| w[0] == "-crf" && w[1] == "23"));
+        assert!(
+            args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"),
+            "mp4 容器需要 aac 音频：{args:?}"
+        );
+        // 输出的像素格式是 yuv420p（与输入帧流的 rgba 是两回事）
+        let pix: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(f, _)| *f == "-pix_fmt")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(pix, vec!["rgba", "yuv420p"], "输入 rgba、输出 yuv420p：{pix:?}");
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("/m/out.mp4"),
+            "输出路径必须在最后：{args:?}"
+        );
+    }
+
+    #[test]
+    fn maps_only_the_composed_video_and_mixed_audio() {
+        let args = sample_args();
+        let maps: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(f, _)| *f == "-map")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(
+            maps,
+            vec!["[v]", "[a]"],
+            "只映射合成后的视频与混合后的音频，不得带上任何原始流：{maps:?}"
+        );
+    }
+
+    #[test]
+    fn overwrites_without_prompting() {
+        // 没有 -y 时 ffmpeg 会在目标已存在时交互式询问，管道场景下会挂死。
+        assert!(sample_args().contains(&"-y".to_string()));
+    }
+
+    #[test]
+    fn output_only_options_all_appear_after_the_last_input() {
+        // 补充测试（自查发现的缺口）：ffmpeg 的命令行是位置敏感的——输出选项
+        // 必须出现在所有 -i 之后，否则会被当成下一个输入的选项，静默改变
+        // 行为而不报错。`output_encoding_matches_the_spec` 与
+        // `overwrites_without_prompting` 都只用 `contains`/`windows(2).any`
+        // 问「有没有」，不问「在哪」：把 `-c:v libx264 -crf 23` 整体挪到
+        // 第一个 -i 之前，那两条测试与本文件其余所有测试全部照样通过（实测
+        // 验证过）。这里把「最后一个 -i 之后」当成一条硬约束，钉住位置。
+        let args = sample_args();
+        let last_i_pos = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-i")
+            .map(|(i, _)| i)
+            .max()
+            .expect("应至少有一个 -i");
+        for flag in [
+            "-filter_complex",
+            "-map",
+            "-t",
+            "-c:v",
+            "-crf",
+            "-c:a",
+            "-b:a",
+        ] {
+            let pos = args
+                .iter()
+                .position(|a| a == flag)
+                .unwrap_or_else(|| panic!("缺少 {flag}：{args:?}"));
+            assert!(
+                pos > last_i_pos,
+                "{flag}（位于 {pos}）必须出现在最后一个 -i（位于 {last_i_pos}）之后，\
+                 否则会被 ffmpeg 当成输入选项：{args:?}"
+            );
+        }
+        // 输出的 -pix_fmt（第二次出现）同样必须在最后一个 -i 之后；
+        // 第一次出现（帧流的 rgba）则必须在它之前。
+        let pix_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-pix_fmt")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(pix_positions.len(), 2);
+        assert!(pix_positions[0] < last_i_pos, "输入 -pix_fmt 应在最后一个 -i 之前");
+        assert!(pix_positions[1] > last_i_pos, "输出 -pix_fmt 应在最后一个 -i 之后");
     }
 }
