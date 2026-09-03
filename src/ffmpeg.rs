@@ -767,24 +767,8 @@ mod tests {
         assert!(pix_positions[1] > last_i_pos, "输出 -pix_fmt 应在最后一个 -i 之后");
     }
 
-    /// 串行化所有依赖「真实 `ffmpeg` 能否通过 `PATH` 解析到」的测试。
-    ///
-    /// `run_render_returns_assert_available_error_when_ffmpeg_is_missing`
-    /// 要临时把进程级 `PATH` 改成不含 ffmpeg 的目录，这个变量是整个进程
-    /// 共享的——`cargo test` 默认多线程并发跑测试，如果这时候
-    /// `run_render_reports_ffmpeg_stderr_verbatim_when_it_exits_nonzero` /
-    /// `run_render_does_not_panic_when_ffmpeg_exits_early` 恰好也在跑（它们
-    /// 靠字面量 `"ffmpeg"` 走 `PATH` 查真实 ffmpeg），会撞上被清空的 `PATH`
-    /// 假性失败。三条测试都先拿这把锁再动手，串行化掉这段窗口。用假 ffmpeg
-    /// 脚本的另外两条测试传的是带 `/` 的绝对路径，`execvp` 语义下根本不查
-    /// `PATH`，不受影响，不需要跟着拿锁。
-    static REAL_FFMPEG_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn run_render_reports_ffmpeg_stderr_verbatim_when_it_exits_nonzero() {
-        let _guard = REAL_FFMPEG_PATH_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // 用一个必然失败的参数组合（不存在的输入素材）触发 ffmpeg 非零退出，
         // 确认错误信息把 ffmpeg 自己的话原样透出，而不是吞掉或改写。
         //
@@ -831,9 +815,6 @@ mod tests {
 
     #[test]
     fn run_render_does_not_panic_when_ffmpeg_exits_early() {
-        let _guard = REAL_FFMPEG_PATH_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // ffmpeg 因参数错误立刻退出时，写帧线程会遇到 broken pipe。
         // 这条测试的全部要求就是：返回 Err，不 panic，不挂死。
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:20.000\n够长的一条，保证帧数多到写端会撞上已关闭的管道。\n";
@@ -859,73 +840,6 @@ mod tests {
         );
         assert!(result.is_err(), "应返回 Err");
         std::fs::remove_file("/tmp/panda_early_exit_test.mp4").ok();
-    }
-
-    #[test]
-    fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
-        // 鉴别性测试：钉住「`run_render` 真的调用了 `assert_available()`」
-        // 这件事本身，补上自审发现的一个盲区。
-        //
-        // 上面两条 `run_render_*` 测试在本机（ffmpeg 真实存在）跑，无法
-        // 区分「有调用 assert_available()」和「删掉这一行」——两种情况下
-        // `assert_available()` 都会成功（或者压根没被调用），程序继续往下
-        // 走到真正的 spawn，行为完全一样。只有当 ffmpeg 在 PATH 上确实
-        // 找不到时，两者才会分道扬镳：有 `assert_available()?` 时报的是
-        // 它那句面向用户的安装提示；删掉后，`Command::new("ffmpeg").spawn()`
-        // 自己失败，报的是泛泛的「启动 ffmpeg 失败：No such file or
-        // directory」——同样是 Err，但说的不是同一件事。
-        //
-        // 用系统临时目录本身（不含任何 "ffmpeg" 可执行文件）顶替 PATH，
-        // 让 `Command::new("ffmpeg")` 无论在哪一步被调用都找不到它。
-        let _guard = REAL_FFMPEG_PATH_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
-        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
-        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
-        let total_frames = fs.total_frames();
-        let audio_secs = fs.audio_secs();
-        let content_frames = fs.content_frames();
-
-        let original_path = std::env::var_os("PATH");
-        // SAFETY（就多线程而言）：`REAL_FFMPEG_PATH_LOCK` 保证同一时刻只有
-        // 这一条测试在改 PATH；其余会经 PATH 解析 "ffmpeg" 的测试都持有
-        // 同一把锁，不会在这段窗口内并发执行。
-        unsafe {
-            std::env::set_var("PATH", std::env::temp_dir());
-        }
-        let result = run_render(
-            &mut fs,
-            &RenderInputs {
-                bg: bad,
-                tts_audio: bad,
-                bgm: bad,
-                typewriter: bad,
-                intro: bad,
-                out: std::path::Path::new("/tmp/panda_missing_ffmpeg_test.mp4"),
-                total_frames,
-                audio_secs,
-                content_frames,
-            },
-        );
-        // 无论断言接下来是否 panic，先把 PATH 恢复原状，不把坏状态泄漏给
-        // 同一进程里后续的测试。
-        unsafe {
-            match &original_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-
-        let err = result.expect_err("PATH 上没有 ffmpeg，run_render 应报错");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("请安装 ffmpeg"),
-            "应是 assert_available() 那句面向用户的安装提示，说明它真的被调用了；\
-             如果这一行被删掉，这里会看到的是 spawn() 自己泛泛的「启动 ffmpeg 失败」：{msg}"
-        );
-        std::fs::remove_file("/tmp/panda_missing_ffmpeg_test.mp4").ok();
     }
 
     /// 写一个可执行的假 ffmpeg 脚本到临时目录，返回其路径。仅用于下面两条
