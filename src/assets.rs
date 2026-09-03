@@ -118,4 +118,40 @@ mod tests {
         assert_eq!(first, second);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// 把「常量」与「它自称来自的那个文件」绑定死。
+    ///
+    /// 此前三条测试对「两个 `include_bytes!` 路径写反」完全无感：两个文件都是
+    /// 合法 mp3、都远超长度下限，而另两条测试是拿写出的文件跟**同一个**常量比，
+    /// 自指恒真。审查用真实变异（对调两个路径）实测确认 7 条全过。
+    ///
+    /// 这里用编译期绝对路径重新读一遍磁盘上的文件，逐字节比对——对「有人改了
+    /// include 路径」这个唯一现实的回退变异精确响应，且不依赖测试进程的 CWD。
+    #[test]
+    fn each_constant_holds_the_file_it_claims_to_come_from() {
+        let intro_on_disk =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/intro.mp3")).unwrap();
+        let typewriter_on_disk =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/intro_typewriter.mp3")).unwrap();
+
+        assert_eq!(INTRO_MP3, intro_on_disk.as_slice(), "INTRO_MP3 应内嵌 assets/intro.mp3");
+        assert_eq!(
+            INTRO_TYPEWRITER_MP3,
+            typewriter_on_disk.as_slice(),
+            "INTRO_TYPEWRITER_MP3 应内嵌 assets/intro_typewriter.mp3"
+        );
+    }
+
+    /// 尺寸关系哨兵：片尾音效（2.486s、44.1kHz）明显大于打字机音效（3.157s、24kHz）。
+    /// 比上面那条弱，但失败信息更直白，能一眼看出是不是两者搞反了。
+    #[test]
+    fn intro_is_substantially_larger_than_the_typewriter_clip() {
+        assert!(
+            INTRO_MP3.len() > INTRO_TYPEWRITER_MP3.len(),
+            "片尾音效应大于打字机音效；若两者接近或反了，多半是 include_bytes! 路径写反：\
+             intro={} typewriter={}",
+            INTRO_MP3.len(),
+            INTRO_TYPEWRITER_MP3.len()
+        );
+    }
 }
