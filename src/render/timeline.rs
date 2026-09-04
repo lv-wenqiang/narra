@@ -1,6 +1,12 @@
 pub const FPS: u32 = 30;
-pub const WIDTH: u32 = 1280;
-pub const HEIGHT: u32 = 720;
+/// 时间轴模块沿用的画布尺寸。**不再各写一份**：由 `Canvas::BASE` 推导，
+/// 与 `render::draw` 共享唯一真相源（销 `docs/follow-ups.md` TTS 子系统
+/// 第 3 条：画布尺寸此前同时存在于两个文件且互不引用）。
+///
+/// 计划 B 会把这两个 re-export 换成随运行期 `Canvas` 走的参数；本计划只做
+/// 收敛，不改数值。
+pub const WIDTH: u32 = crate::render::canvas::Canvas::BASE.w;
+pub const HEIGHT: u32 = crate::render::canvas::Canvas::BASE.h;
 
 /// Cover 段帧数。**`ffmpeg.rs` 的 `INTRO_START_SECS` 由它推导**——打字机音效
 /// 的起点就是 Intro 段的起点，两处必须是同一个真相源：写成两份字面量时，
