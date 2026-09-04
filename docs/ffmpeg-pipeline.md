@@ -594,7 +594,7 @@ ffmpeg -y \
   -filter_complex "\
 [0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
 [bg][1:v]overlay=shortest=0[v];\
-[2:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=4000:all=1,volume=1[a_tts];\
+[2:a]aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0,adelay=4000:all=1,volume=1[a_tts];\
 [3:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=4000:all=1,volume=0.15,afade=t=out:st=18.276:d=2[a_bgm];\
 [4:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=500:all=1,volume=0.6[a_type];\
 [5:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=22300:all=1,volume=0.6[a_intro];\
@@ -641,6 +641,15 @@ ffmpeg -y \
 后果是三路立体声素材被砍掉 12kHz 以上的全部频段、丢掉立体声像，且下混用功率
 保持系数（每声道 ≈0.707 而非算术平均 0.5），让 BGM/音效比规格 §9.3 的
 `volume` 字面值响约 3dB——而成片照样能播、ffmpeg 一句警告也没有。
+
+**TTS 那一路用的不是同一个 `aformat`**（裁定 R-F9，见 §9.7）：它是四路里唯一
+的单声道源，而 `channel_layouts=stereo` 交给 swresample 做的单声道→立体声上混
+用的是和下混同一套**功率保持**系数，实测恰好 −3.01 dB——规格 §9.3 写死的
+`volume=1` 就名不副实了。所以这一路写成
+`aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0`：先只重采样（保持单声道），
+再用 `pan` 把 c0 原样复制到两个声道，实测 ±0.00 dB。**`sample_rates=48000` 不能
+省**——`pan` 只改声道布局不改采样率，省掉它这一路就不再自己声明采样率，上面那条
+「协商被最低的一路拉走」少一道明示的防线。
 
 **在输出侧写 `-ar 48000 -ac 2` 解决不了这件事，还会把问题藏起来**（实测）：
 `-ar`/`-ac` **不会**经 `amix` 反向传播，转换发生在 `amix` 之后
@@ -735,6 +744,9 @@ $ ffmpeg -hide_banner -nostats -ss <起点> -t <时长> -i <文件> -map 0:a -af
 | `-ac 2 -ar 48000` | −3.00 dB | 0.7079 |
 | `aformat=...:channel_layouts=stereo` | −3.00 dB | 0.7079 |
 | `pan=stereo\|c0=c0\|c1=c0` | ±0.00 dB | 1.0000 |
+
+> **本节以下的数字是 R-F9 修复之前的状态。** 这条 −3.01 dB 已由裁定 R-F9 修掉，
+> 复测见 §9.7；保留原表是为了留住「三路立体声修好之后偏差移到了哪里」这条线索。
 
 也就是说 **TTS↔BGM 的相对关系没有变**（±3 dB 从「BGM 偏响」换成了「TTS 偏轻」），
 整条音轨比修复前低约 3 dB。人声高出纯 BGM 的实测量：
@@ -835,3 +847,54 @@ nb_frames=6300   nb_read_frames=6300   r_frame_rate=30/1   duration=210.000000
 **结论：两条 `-stream_loop -1` 都按预期工作**——BGM 的内嵌 mjpeg 封面图没有
 干扰循环（`[3:a]` 显式选流的功劳），AV1 背景视频在循环点是一次干净的硬切、
 不是黑帧或冻结帧，音频在接缝处连续。
+
+### 9.7 TTS 单声道上混不再衰减 3.01 dB（裁定 R-F9，2026-09-04）
+
+§9.5 修好三路立体声之后，±3 dB 的相对偏差整个移到了唯一的单声道源 TTS 上：
+`aformat=...:channel_layouts=stereo` 让 swresample 做单声道→立体声上混，用的是
+和下混同一套**功率保持**系数。修法是这一路改用
+`aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0`（其余三路不动）。
+
+**为什么保留 `sample_rates=48000` 而不是只写 `pan`**：`pan` 只改声道布局，不改
+采样率。只写 `pan` 也能跑通——实测 `amix` 仍协商到 48000/stereo——但那是靠**另外
+三路**把协商拉上去的，这一路自己不再声明采样率，§9.2 那条「协商被最低的一路
+拉走」就少了一道明示的防线。多这一个滤镜的代价实测为零（见下面的转换清单：
+TTS 那一路只做了一次 `mono 24k → mono 48k`）。
+
+**滤镜图协商结果**（`ffmpeg -v verbose`，四路真实素材）：
+
+```
+[Parsed_amix]      inputs:4 fmt:fltp srate:48000 cl:stereo
+[auto_aresample_0] ch:1 chl:mono   fmt:fltp r:24000Hz -> ch:1 chl:mono   fmt:fltp r:48000Hz   ← TTS
+[auto_aresample_1] ch:2 chl:stereo fmt:fltp r:24000Hz -> ch:2 chl:stereo fmt:fltp r:48000Hz   ← 打字机
+[auto_aresample_2] ch:2 chl:stereo fmt:fltp r:44100Hz -> ch:2 chl:stereo fmt:fltp r:48000Hz   ← 片尾音效
+```
+
+`amix` 仍运行在 48000/stereo（I1 未被破坏），BGM（48kHz 立体声）依旧**零转换**。
+关键是 TTS 那一路：`mono 24k → mono 48k`，**全程没有 mono→stereo 的 swresample
+转换**——声道数是随后由 `pan` 以单位增益改的，0.707 从此没有产生的地方。
+
+**电平复测**（真实 Edge TTS 产物 `output/tts/audio.mp3`，24kHz 单声道，
+`A = 16.276s`；把 BGM 换成同格式的静音 mp3 以隔离 TTS，成片 TTS 窗
+`[4.000, 16.276]` 对源 `[0.000, 16.276]`）：
+
+| | mean_volume | max_volume | 相对源 |
+|---|---|---|---|
+| 源 `audio.mp3`（单声道） | −24.1 dB | −4.4 dB | — |
+| 修复前（`channel_layouts=stereo`） | −27.1 dB | −7.4 dB | **−3.0 dB** |
+| 修复后（`pan`） | −24.1 dB | −4.4 dB | **±0.0 dB** |
+
+两个读数与源逐字相同。同一条隔离片的 `[21.0, 22.0]`（TTS 已结束、Outro 音效
+未起）实测 −91.0 dB 数字静音，确认静音 BGM 确实生效、上面的窗口里只有 TTS。
+
+**产物规格未变**（`ffprobe`，真实 BGM 的正常成片）：`h264 / 1280x720 /
+nb_frames=789`，`aac / sample_rate=48000 / channels=2 / channel_layout=stereo`，
+`duration=26.300000`。
+
+**变异检出**（`cargo test --lib`，每次只改生产代码，测试侧字面量不动）：
+
+| 变异 | 结果 |
+|---|---|
+| TTS 退回 `{MIX_FORMAT}`（修复前的真实状态） | 4 条变红 |
+| `TTS_MIX_FORMAT` 去掉 `aformat=sample_rates=48000,`（只剩 `pan`） | 2 条变红 |
+| `pan=stereo\|c0=c0\|c1=c0` → `\|c1=c1`（对单声道输入是错的） | 1 条变红 |

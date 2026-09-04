@@ -116,6 +116,33 @@ const INTRO_START_SECS: f64 = COVER_FRAMES as f64 / FPS as f64;
 /// 每路前置 `aformat` 后，`amix` 实际运行在 `srate:48000 cl:stereo`，BGM
 /// 一路零转换，两段音效只升采样、保住立体声，只有单声道 TTS 被上混。
 const MIX_FORMAT: &str = "aformat=sample_rates=48000:channel_layouts=stereo";
+/// TTS 那一路的格式统一：重采样到 48kHz，再用 `pan` 把单声道**原样**铺到
+/// 两个声道。
+///
+/// **为什么不能和另外三路共用 [`MIX_FORMAT`]**：`channel_layouts=stereo` 交给
+/// swresample 做单声道→立体声上混，用的是和下混同一套**功率保持**系数，实测
+/// 恰好 −3.01 dB。于是规格 §9.3 逐字写死的 `volume=1` 名不副实——真正进
+/// `amix` 的 TTS 是 0.707，整条音轨比应有电平低约 3 dB。失败形式是纯粹的
+/// 音量偏差：不报错、不失真、不削顶，ffprobe 的采样率/声道数读数还完全正确。
+///
+/// 实测（ffmpeg 8.1.2，四路同真实生产格式，其余三路静音以隔离 TTS，PCM 输出
+/// 以避开 aac 编码噪声，对比单声道源的 `mean_volume`）：
+///
+/// | TTS 这一路 | `amix` 协商结果 | 相对单声道源 |
+/// |---|---|---|
+/// | `aformat=…:channel_layouts=stereo` | 48000 / stereo | −3.0 dB |
+/// | `pan=stereo|c0=c0|c1=c0`（仅此一条） | 48000 / stereo | ±0.0 dB |
+/// | 本常量（`aformat` + `pan`） | 48000 / stereo | ±0.0 dB |
+///
+/// **为什么仍保留 `sample_rates=48000`**：`pan` 只改声道布局，不改采样率。
+/// 只写 `pan` 也能跑通——但那是靠**另外三路**把 `amix` 的协商拉上去的，
+/// 这一路自己不再声明采样率，[`MIX_FORMAT`] 文档里那个「协商被最低的一路
+/// 拉走」就少了一道明示的防线。多这一个滤镜的代价是零（实测零转换）。
+///
+/// **`c0=c0|c1=c0` 假设输入是单声道**：由 `tts::edge` 的
+/// `OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"` 结构性保证。若将来换成
+/// 立体声的 TTS 后端，这里会把左声道复制到两边、丢掉右声道，必须一并改。
+const TTS_MIX_FORMAT: &str = "aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0";
 /// BGM 淡出时长（秒），规格 §9.3。
 const BGM_FADE_SECS: f64 = 2.0;
 /// BGM 在 TTS 之下的基准音量，规格 §9.3。
@@ -160,7 +187,7 @@ pub fn audio_filter_graph(audio_secs: f64, outro_start_secs: f64) -> String {
     let fade_start = CONTENT_START_SECS + audio_secs - BGM_FADE_SECS;
 
     format!(
-        "[2:a]{MIX_FORMAT},adelay={content_ms}:all=1,volume=1[a_tts];\
+        "[2:a]{TTS_MIX_FORMAT},adelay={content_ms}:all=1,volume=1[a_tts];\
          [3:a]{MIX_FORMAT},adelay={content_ms}:all=1,volume={BGM_VOLUME},\
          afade=t=out:st={fade_start:.3}:d={BGM_FADE_SECS}[a_bgm];\
          [4:a]{MIX_FORMAT},adelay={intro_ms}:all=1,volume={SFX_VOLUME}[a_type];\
@@ -410,11 +437,18 @@ mod tests {
             .split(selector)
             .nth(1)
             .unwrap_or_else(|| panic!("滤镜图里找不到 {selector}：{graph}"));
-        let after = after
-            .strip_prefix(MIX_FORMAT)
+        // 三路立体声素材走 MIX_FORMAT，单声道的 TTS 走 TTS_MIX_FORMAT——
+        // 两者都必须紧跟 adelay=，认哪一个由支路自己决定，不接受第三种形状。
+        let after = [MIX_FORMAT, TTS_MIX_FORMAT]
+            .iter()
+            .find_map(|prefix| after.strip_prefix(*prefix))
             .and_then(|r| r.strip_prefix(","))
             .and_then(|r| r.strip_prefix("adelay="))
-            .unwrap_or_else(|| panic!("{selector} 之后不是 {MIX_FORMAT},adelay=：{graph}"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "{selector} 之后不是 {MIX_FORMAT},adelay= 或 {TTS_MIX_FORMAT},adelay=：{graph}"
+                )
+            });
         after
             .split(':')
             .next()
@@ -530,7 +564,7 @@ mod tests {
         // 「流选择器 + adelay」的连续子串，把配对关系钉死。
         let g = audio_filter_graph(10.0, 16.0);
         assert!(
-            g.contains(&format!("[2:a]{MIX_FORMAT},adelay=4000:all=1")),
+            g.contains(&format!("[2:a]{TTS_MIX_FORMAT},adelay=4000:all=1")),
             "TTS 应在 [2:a] 上应用 4000ms 延迟：{g}"
         );
         assert!(
@@ -568,7 +602,7 @@ mod tests {
         for (label, chain) in [
             (
                 "TTS",
-                format!("[2:a]{MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"),
+                format!("[2:a]{TTS_MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"),
             ),
             (
                 "BGM",
@@ -601,30 +635,80 @@ mod tests {
     /// 让 BGM/音效比规格 §9.3 的 volume 字面值响约 3dB。成片照样能播、
     /// ffmpeg 一句警告也没有——只能靠 ffprobe 看采样率才发现。
     ///
-    /// 断言「每一路的流选择器紧跟 `aformat`」而不是「图里有 4 个 aformat」：
-    /// 后者对「漏掉某一路、另一路写了两遍」无感，而漏掉的那一路正是会把整条
-    /// 混音链拉回 24kHz 单声道的那一路。
+    /// 断言「每一路的流选择器紧跟它**该用的那个**归一化前缀」而不是「图里有
+    /// 4 个 aformat」：后者对「漏掉某一路、另一路写了两遍」无感，而漏掉的
+    /// 那一路正是会把整条混音链拉回 24kHz 单声道的那一路。
+    ///
+    /// **四路并不共用同一个前缀**：三路立体声素材用 [`MIX_FORMAT`]，单声道的
+    /// TTS 用 [`TTS_MIX_FORMAT`]（`pan` 上混，不衰减 3.01 dB，理由见该常量）。
+    /// 所以「统一到 48kHz」这一半按 `sample_rates=48000` 计数——它是两个前缀
+    /// 的共同部分，也是防止协商被拉走的那一道；「统一到立体声」这一半由每路
+    /// 各自的前缀断言覆盖。
     #[test]
-    fn every_branch_is_normalized_to_the_mix_format_before_amix() {
+    fn every_branch_is_normalized_to_forty_eight_k_stereo_before_amix() {
         let g = audio_filter_graph(10.0, 16.0);
-        for sel in ["[2:a]", "[3:a]", "[4:a]", "[5:a]"] {
+        for (sel, prefix) in [
+            ("[2:a]", TTS_MIX_FORMAT),
+            ("[3:a]", MIX_FORMAT),
+            ("[4:a]", MIX_FORMAT),
+            ("[5:a]", MIX_FORMAT),
+        ] {
             assert!(
-                g.contains(&format!("{sel}{MIX_FORMAT},")),
-                "{sel} 这一路必须先过 {MIX_FORMAT} 再进 amix：{g}"
+                g.contains(&format!("{sel}{prefix},")),
+                "{sel} 这一路必须先过 {prefix} 再进 amix：{g}"
             );
         }
         assert_eq!(
-            g.matches(MIX_FORMAT).count(),
+            g.matches(RATE_DECL).count(),
             4,
-            "四路各一次，不多不少：{g}"
+            "四路各声明一次 48kHz，不多不少：{g}"
         );
-        // aformat 必须在 amix 之前——写在 amix 之后只是给混完的结果补一次
+        // 归一化必须在 amix 之前——写在 amix 之后只是给混完的结果补一次
         // 升采样，改不了混音本身的格式。
         let amix_pos = g.find("amix=").expect("应有 amix");
         assert!(
-            g.rfind(MIX_FORMAT).unwrap() < amix_pos,
-            "所有 aformat 都必须出现在 amix 之前：{g}"
+            g.rfind(RATE_DECL).unwrap() < amix_pos,
+            "所有归一化都必须出现在 amix 之前：{g}"
         );
+    }
+
+    /// 两个归一化前缀的共同部分：把这一路自己的采样率钉在 48kHz。
+    ///
+    /// 单独抽出来，是为了让上面那条测试按「声明了 48kHz 的支路数」计数——
+    /// 四路里有两种前缀，按任一个前缀计数都只能数到它那几路。
+    const RATE_DECL: &str = "sample_rates=48000";
+
+    #[test]
+    fn tts_branch_upmixes_mono_with_pan_not_channel_layouts() {
+        let g = audio_filter_graph(10.0, 16.0);
+        let tts = branch_of(&g, "[2:a]");
+        assert!(
+            tts.contains("pan=stereo|c0=c0|c1=c0"),
+            "TTS 这一路应用 pan 显式上混：{tts}"
+        );
+        assert!(
+            !tts.contains("channel_layouts=stereo"),
+            "TTS 这一路不得用 channel_layouts=stereo 上混——会静默衰减 3.01 dB：{tts}"
+        );
+        assert!(
+            tts.contains("sample_rates=48000"),
+            "TTS 这一路仍须自己声明 48kHz，不能只靠另外三路把协商拉上去：{tts}"
+        );
+    }
+
+    /// 取出某条输入支路的完整滤镜链（从流选择器到该支路的 `;` 为止）。
+    ///
+    /// 断言「某个片段出现在**这一路**里」而不是「出现在整张图里某处」——
+    /// 后者对四路之间的调包无感，本模块已经为此栽过两次（M11、修复轮 1）。
+    fn branch_of<'a>(graph: &'a str, selector: &str) -> &'a str {
+        let start = graph
+            .find(selector)
+            .unwrap_or_else(|| panic!("滤镜图里找不到 {selector}：{graph}"));
+        let rest = &graph[start..];
+        match rest.find(';') {
+            Some(end) => &rest[..end],
+            None => rest,
+        }
     }
 
     #[test]

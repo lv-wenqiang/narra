@@ -208,9 +208,20 @@ Task 0–8）端到端验收与终审修复波留下的账。
   `aformat=sample_rates=48000:channel_layouts=stereo`（**不是**在输出侧写
   `-ar`/`-ac`——实测那条路不会经 `amix` 反向传播，只会把 ffprobe 读数伪造成
   正确的）。复测见 `docs/ffmpeg-pipeline.md` §9.5：三路立体声落到规格字面值的
-  ±0.06 dB 内。**残留的一半仍在**，见下面「值得做」第 1 条。
+  ±0.06 dB 内。**残留的一半**（偏差移到单声道 TTS 上）随后由裁定 R-F9 修掉，
+  见下一条。
 - **`-stream_loop -1` 从未被真正触发过**（终审修复波 I2）。已用 200 秒静音把
   成片撑到 210 秒跨过两个循环点实测通过，见 `docs/ffmpeg-pipeline.md` §9.6。
+- **单声道 TTS 上混成立体声时被衰减 3.01 dB，`volume=1` 名不副实**（原「值得做」
+  第 1 条，裁定 R-F9）。**已修**：TTS 那一路从
+  `aformat=sample_rates=48000:channel_layouts=stereo` 改为
+  `aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0`——先只重采样（保持单声道），
+  再用 `pan` 以单位增益把 c0 复制到两个声道，绕开 swresample 的功率保持上混。
+  **保留 `sample_rates=48000` 是有意的**：只写 `pan` 也能跑通，但那一路就不再自己
+  声明采样率，I1 修的「协商被最低的一路拉走」就少一道明示的防线；实测这个滤镜的
+  代价为零（TTS 那一路只做一次 `mono 24k → mono 48k`，`amix` 仍是 48000/stereo，
+  BGM 依旧零转换）。复测见 `docs/ffmpeg-pipeline.md` §9.7：成片 TTS 窗对源的
+  `mean_volume`/`max_volume` 两个读数逐字相同（−24.1 / −4.4 dB），±0.00 dB。
 
 （另有两条本子系统自己发现并当场修掉、从未在本文件挂过账的：「写帧中途出错仍
 留下冻结帧 mp4」由 `cleanup_output_on_failure` + e2e 抽帧比对堵住；「临时目录名
@@ -219,30 +230,7 @@ Task 0–8）端到端验收与终审修复波留下的账。
 
 ### 值得做
 
-#### 1. 单声道 TTS 上混成立体声时被衰减 3.01 dB，`volume=1` 名不副实
-
-I1 修完之后，三路立体声支路落在规格 §9.3 字面值的 ±0.06 dB 内，**但 ±3 dB 的
-相对偏差整个移到了 TTS 上**：Edge TTS 产出的是 24kHz **单声道**，进 `amix` 前
-被上混成立体声，swresample 用的是和下混同一套功率保持系数。纯 PCM 实测（绕开
-aac，避免编码噪声）：
-
-| 变换 | 相对单声道原始电平 | 实测系数 |
-|---|---|---|
-| `-ac 2 -ar 48000` | −3.00 dB | 0.7079 |
-| `aformat=...:channel_layouts=stereo` | −3.00 dB | 0.7079 |
-| `pan=stereo\|c0=c0\|c1=c0` | **±0.00 dB** | **1.0000** |
-
-**TTS↔BGM 的相对关系没有变**（±3 dB 只是从「BGM 偏响」换成了「TTS 偏轻」），
-整条音轨比修复前低约 3 dB。「人声高出纯 BGM」的实测量修复前后基本重合
-（15.0 / 6.3 / 10.0 / 7.9 dB ↔ Task 8 的 15.0 / 5.3 / 10.1 / 8.1 dB）。
-
-**为什么可以推迟**：听感上的混音平衡没有变化，绝对电平由播放端的音量旋钮吸收，
-且没有削顶；而「功率保持上混」本身是否算错也不是自明的——单声道信号铺到两个
-喇叭上，保持总声功率是一种站得住的约定。**修法**：TTS 那一路把 `aformat` 换成
-`pan=stereo|c0=c0|c1=c0`（其余三路不动），改动一行，实测即回到 ±0.00 dB。
-**是否要改由裁定，不要顺手改数值。**
-
-#### 2. 族 A：清理代码写在可能被跳过的位置（三处同根因）
+#### 1. 族 A：清理代码写在可能被跳过的位置（三处同根因）
 
 - **生产代码**：`src/main.rs` 的 `compose_video_with_runner` 里，`create_dir_all`
   之后、`cleanup_tmp_and_propagate` 之前有两个 `?` 出口
@@ -258,7 +246,7 @@ aac，避免编码噪声）：
 **为什么可以推迟**：泄漏量小（约 120 KB/次）、只发生在已经失败的运行上，且
 `/tmp` 由系统清理；测试侧的两处只影响测试机的临时文件卫生。
 
-#### 3. 族 B：CLI / 环境变量层覆盖不足（两处）
+#### 2. 族 B：CLI / 环境变量层覆盖不足（两处）
 
 1. **四个素材路径函数的「空白视同未设置」语义无覆盖**：`bg_video_path` /
    `bgm_path` / `title_json_path` / `video_output_path` 都经 `non_empty_env`
@@ -273,7 +261,7 @@ aac，避免编码噪声）：
 既有的串行化环境变量夹具补四条；(2) 把 `Make` 分支体也提炼成一个可注入
 `run_tts` 的函数，或至少给 `tts_artifact_paths` 补一条独立断言。
 
-#### 4. 反预乘慢路径有 6× 优化空间
+#### 3. 反预乘慢路径有 6× 优化空间
 
 `src/render/frame.rs` 的 `unpremultiply_into` 逐像素调
 `PremultipliedColorU8::demultiply()`，而它**只对 `alpha == 255` 短路**；
@@ -286,7 +274,7 @@ aac，避免编码噪声）：
 tiny-skia 渲染与 libx264 编码并行吃掉约 3.8 个核）；受影响最明显的是
 `frame.rs` 里两条走全时间轴的单测。
 
-#### 5. `make` 在整条 TTS 跑完之后才校验素材存在
+#### 4. `make` 在整条 TTS 跑完之后才校验素材存在
 
 `check_render_inputs_exist` 在 `run_tts` 之后（它在 `compose_video_with_runner`
 里）。`panda make --bg` 打错一个字，要先付一整轮 Edge TTS 网络往返（实测约 10s，
@@ -295,7 +283,7 @@ tiny-skia 渲染与 libx264 编码并行吃掉约 3.8 个核）；受影响最�
 **修法**：把 bg/bgm 的存在性检查提到 `run_tts` 之前。**为什么可以推迟**：报错
 文案本身是对的，只是来得晚。
 
-#### 6. 取整口径不一致，且没有一条测试用非整秒的 `content_frames`
+#### 5. 取整口径不一致，且没有一条测试用非整秒的 `content_frames`
 
 `src/ffmpeg.rs` 里 `adelay` 的毫秒用 `.round() as i64`，`afade` 的 `st` 与 `-t`
 用 `{:.3}`。两者在整秒输入下结果相同，而**现有测试的 `content_frames` 全是
@@ -304,7 +292,7 @@ tiny-skia 渲染与 libx264 编码并行吃掉约 3.8 个核）；受影响最�
 **修法**：补一条 `content_frames` 非 30 倍数的用例（例如 `A = 10.01` →
 `content_frames = 361` → Outro 起点 `16.0333…s`），把口径钉死。
 
-#### 7. `run_render_does_not_panic_when_ffmpeg_exits_early` 经七次变异零响应
+#### 6. `run_render_does_not_panic_when_ffmpeg_exits_early` 经七次变异零响应
 
 实证零鉴别力的测试比没有测试更糟：占测试计数、给虚假信心、还要花时间起一个
 假 ffmpeg 子进程。**修法**：要么删，要么改成断言 broken-pipe 这一条具体路径。
