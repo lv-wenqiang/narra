@@ -31,7 +31,9 @@ pub struct Layout {
 
 /// 由音频时长（秒）算出各段帧数。对应规格 §8.2。
 pub fn layout(audio_secs: f64) -> Layout {
-    let content_frames = ((audio_secs + CONTENT_TAIL_SECS) * FPS as f64).ceil().max(0.0) as u32;
+    let content_frames = ((audio_secs + CONTENT_TAIL_SECS) * FPS as f64)
+        .ceil()
+        .max(0.0) as u32;
     Layout {
         content_frames,
         total_frames: COVER_FRAMES + INTRO_FRAMES + content_frames + OUTRO_FRAMES,

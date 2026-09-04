@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -331,13 +331,28 @@ mod tests {
         ));
         let out = std::process::Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                "-c:a", "libmp3lame", "-b:a", "48k", "-ar", "24000", "-ac", "1",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                "48k",
+                "-ar",
+                "24000",
+                "-ac",
+                "1",
                 &path.to_string_lossy(),
             ])
             .output()
             .expect("启动 ffmpeg 失败");
-        assert!(out.status.success(), "ffmpeg 生成测试音频失败：{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "ffmpeg 生成测试音频失败：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let bytes = std::fs::read(&path).expect("读取生成的测试音频失败");
         let _ = std::fs::remove_file(&path);
         bytes
@@ -381,8 +396,14 @@ mod tests {
 
         let mut behavior = HashMap::new();
         behavior.insert("A".to_string(), Behavior::AlwaysFail);
-        behavior.insert("B".to_string(), Behavior::SucceedAfter(Duration::from_secs(8)));
-        behavior.insert("C".to_string(), Behavior::SucceedAfter(Duration::from_secs(8)));
+        behavior.insert(
+            "B".to_string(),
+            Behavior::SucceedAfter(Duration::from_secs(8)),
+        );
+        behavior.insert(
+            "C".to_string(),
+            Behavior::SucceedAfter(Duration::from_secs(8)),
+        );
         let backend = Arc::new(FakeBackend { behavior });
 
         let lines = vec!["A".to_string(), "B".to_string(), "C".to_string()];
@@ -447,7 +468,10 @@ mod tests {
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
         let mut behavior = HashMap::new();
-        behavior.insert("S".to_string(), Behavior::SucceedAfter(Duration::from_secs(1)));
+        behavior.insert(
+            "S".to_string(),
+            Behavior::SucceedAfter(Duration::from_secs(1)),
+        );
         behavior.insert("F".to_string(), Behavior::AlwaysFail);
         let backend = Arc::new(FakeBackend { behavior });
 
@@ -484,7 +508,9 @@ mod tests {
 
         let audio_path = dir.join("audio.mp3");
         let previous_run_bytes = b"previous successful run's audio bytes".to_vec();
-        tokio::fs::write(&audio_path, &previous_run_bytes).await.unwrap();
+        tokio::fs::write(&audio_path, &previous_run_bytes)
+            .await
+            .unwrap();
 
         let mut behavior = HashMap::new();
         behavior.insert("F".to_string(), Behavior::AlwaysFail);
@@ -524,10 +550,15 @@ mod tests {
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
         // 让 audio.vtt 这个路径本身是个目录，逼 `tokio::fs::write` 失败。
-        tokio::fs::create_dir_all(dir.join("audio.vtt")).await.unwrap();
+        tokio::fs::create_dir_all(dir.join("audio.vtt"))
+            .await
+            .unwrap();
 
         let mut behavior = HashMap::new();
-        behavior.insert("S".to_string(), Behavior::SucceedWithAudio(tiny_valid_mp3_bytes()));
+        behavior.insert(
+            "S".to_string(),
+            Behavior::SucceedWithAudio(tiny_valid_mp3_bytes()),
+        );
         let backend = Arc::new(FakeBackend { behavior });
 
         let lines = vec!["S".to_string()];
@@ -578,6 +609,9 @@ mod tests {
             tokio::spawn(async move { process_narration_file(&missing_input, &dir, &opts).await });
 
         let result = handle.await.expect("spawn 出去的任务不应 panic 或被取消");
-        assert!(result.is_err(), "读取不存在的文稿应该报错，而不是 panic 或挂起");
+        assert!(
+            result.is_err(),
+            "读取不存在的文稿应该报错，而不是 panic 或挂起"
+        );
     }
 }

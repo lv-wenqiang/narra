@@ -4,13 +4,13 @@
 //! （由音频时长算出的分段边界）与字幕列表，`render(global_frame)` 每次只做
 //! `segment_at` 查表 + 建画布 + 分发到对应 `draw_*`，不重造任何昂贵对象。
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::Write;
 use tiny_skia::Pixmap;
 
 use crate::render::draw::Painter;
-use crate::render::timeline::{layout, segment_at, Layout, Segment, HEIGHT, WIDTH};
-use crate::vtt::{parse_vtt, Caption};
+use crate::render::timeline::{HEIGHT, Layout, Segment, WIDTH, layout, segment_at};
+use crate::vtt::{Caption, parse_vtt};
 
 pub struct FrameSource {
     painter: Painter,
@@ -53,13 +53,18 @@ impl FrameSource {
     /// 渲染一帧。Cover/Intro/Outro 为不透明白底，Content 为透明底。
     pub fn render(&mut self, global_frame: u32) -> Result<Pixmap> {
         let Some((seg, local)) = segment_at(&self.layout, global_frame) else {
-            bail!("帧号 {global_frame} 超出总时长 {}", self.layout.total_frames);
+            bail!(
+                "帧号 {global_frame} 超出总时长 {}",
+                self.layout.total_frames
+            );
         };
         let mut pixmap = Pixmap::new(WIDTH, HEIGHT).expect("画布尺寸应合法");
         match seg {
             Segment::Cover => self.painter.draw_cover(&mut pixmap, &self.title),
             Segment::Intro => self.painter.draw_intro(&mut pixmap, local, &self.title),
-            Segment::Content => self.painter.draw_content(&mut pixmap, local, &self.captions),
+            Segment::Content => self
+                .painter
+                .draw_content(&mut pixmap, local, &self.captions),
             Segment::Outro => self.painter.draw_outro(&mut pixmap, local),
         }
         Ok(pixmap)
@@ -181,7 +186,11 @@ mod tests {
         let got = fs.render(0).unwrap();
         let mut want = Pixmap::new(WIDTH, HEIGHT).unwrap();
         reference.draw_cover(&mut want, &title);
-        assert_eq!(got.data(), want.data(), "Cover 帧 0 应与直接调 draw_cover 一致");
+        assert_eq!(
+            got.data(),
+            want.data(),
+            "Cover 帧 0 应与直接调 draw_cover 一致"
+        );
 
         // Intro: global 15..120，段内帧号 = global - 15。选 100（段内 85）而不是
         // 随便一个早期帧：局部帧 85 在淡出区间 [90,104) 之前（不透明），而如果
@@ -428,7 +437,11 @@ mod tests {
         let mut w = CountingWriter { bytes: 0 };
         let n = fs.write_rgba_frames(&mut w).unwrap();
         assert_eq!(n, 300);
-        assert_eq!(w.bytes, 300 * 1280 * 720 * 4, "字节数必须精确等于 帧数×W×H×4");
+        assert_eq!(
+            w.bytes,
+            300 * 1280 * 720 * 4,
+            "字节数必须精确等于 帧数×W×H×4"
+        );
     }
 
     #[test]
@@ -447,7 +460,11 @@ mod tests {
         let cover = w.picked[&0];
         let content = w.picked[&150];
         assert_eq!(cover[3], 255, "Cover 帧左上角应不透明");
-        assert!(cover[0] > 240, "Cover 帧左上角应接近白色，实得 {}", cover[0]);
+        assert!(
+            cover[0] > 240,
+            "Cover 帧左上角应接近白色，实得 {}",
+            cover[0]
+        );
         assert_eq!(content[3], 0, "Content 帧左上角应全透明");
     }
 
@@ -531,7 +548,10 @@ mod tests {
         impl std::io::Write for FailAfter {
             fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
                 if self.0 == 0 {
-                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "管道已关闭"));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "管道已关闭",
+                    ));
                 }
                 self.0 -= 1;
                 Ok(b.len())

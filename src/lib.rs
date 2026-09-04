@@ -1,7 +1,7 @@
-pub mod vtt;
+pub mod assets;
+pub mod config;
 pub mod duration;
 pub mod ffmpeg;
-pub mod tts;
-pub mod config;
-pub mod assets;
 pub mod render;
+pub mod tts;
+pub mod vtt;

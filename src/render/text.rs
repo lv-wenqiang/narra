@@ -4,9 +4,11 @@
 //! 不是凭印象重写。三条必做项——禁用系统字体回退、合成粗体、先变换路径再描边——
 //! 的动机和实测证据都记录在那份文档里。
 
-use anyhow::{anyhow, Context, Result};
-use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
-use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
+use anyhow::{Context, Result, anyhow};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, fontdb};
+use tiny_skia::{
+    Color, FillRule, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
+};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 use crate::assets::FONT;
@@ -122,7 +124,11 @@ impl TextRenderer {
         db.load_font_data(FONT.to_vec());
         let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
 
-        Ok(Self { font_system, family, scratch: None })
+        Ok(Self {
+            font_system,
+            family,
+            scratch: None,
+        })
     }
 
     /// 排版一段文字：构造 `Metrics`/`Buffer`，设置换行宽度，套用字间距，跑完整形。
@@ -270,7 +276,9 @@ impl TextRenderer {
 
         // per-pass 颜色不再乘 opacity，只保留颜色自身的 alpha（见上方文档注释）。
         let fill_paint = solid_paint(style.color);
-        let stroke_paint_and_width = style.stroke.map(|(color, width)| (solid_paint(color), width));
+        let stroke_paint_and_width = style
+            .stroke
+            .map(|(color, width)| (solid_paint(color), width));
 
         let bold_w = style.size_px * BOLD_STROKE_RATIO;
 
@@ -455,7 +463,15 @@ mod tests {
     fn renders_cjk_and_latin_without_tofu() {
         let mut r = TextRenderer::new().unwrap();
         let mut p = blank(1280, 720);
-        r.draw_centered(&mut p, "熊猫智研社 Test 123", 640.0, 360.0, &style(70.0), 1.0, 1.0);
+        r.draw_centered(
+            &mut p,
+            "熊猫智研社 Test 123",
+            640.0,
+            360.0,
+            &style(70.0),
+            1.0,
+            1.0,
+        );
         let bbox = non_transparent_bbox(&p).expect("画布应有非透明像素");
         let w = bbox.2 - bbox.0;
         // 9 个字符 @70px，宽度应在合理量级；豆腐块也有宽度，故另用下面的测试排除
@@ -494,8 +510,12 @@ mod tests {
                     && c.alpha() > 200
                 {
                     let (r_, g_, b_) = (c.red(), c.green(), c.blue());
-                    if r_ > 240 && g_ > 240 && b_ > 240 { has_white = true; }
-                    if r_ < 30 && g_ < 30 && b_ < 30 { has_black = true; }
+                    if r_ > 240 && g_ > 240 && b_ > 240 {
+                        has_white = true;
+                    }
+                    if r_ < 30 && g_ < 30 && b_ < 30 {
+                        has_black = true;
+                    }
                 }
             }
         }
@@ -508,7 +528,10 @@ mod tests {
         let mut r = TextRenderer::new().unwrap();
         let mut p = blank(400, 200);
         r.draw_centered(&mut p, "隐形", 200.0, 100.0, &style(70.0), 0.0, 1.0);
-        assert!(non_transparent_bbox(&p).is_none(), "opacity=0 时不应画出任何东西");
+        assert!(
+            non_transparent_bbox(&p).is_none(),
+            "opacity=0 时不应画出任何东西"
+        );
     }
 
     /// C1 修复的回归测试：`opacity` 是整块文字的组透明度（等同 CSS `opacity`），
@@ -577,7 +600,15 @@ mod tests {
         let mut s = style(70.0);
         s.max_width_px = 400.0;
         let mut p = blank(1280, 720);
-        r.draw_centered(&mut p, "这是一段需要换行的比较长的中文文字内容", 640.0, 360.0, &s, 1.0, 1.0);
+        r.draw_centered(
+            &mut p,
+            "这是一段需要换行的比较长的中文文字内容",
+            640.0,
+            360.0,
+            &s,
+            1.0,
+            1.0,
+        );
         let (x0, y0, x1, y1) = non_transparent_bbox(&p).unwrap();
         assert!((x1 - x0) <= 400 + 24, "宽度超出 max_width：{}", x1 - x0);
         assert!((y1 - y0) > 80, "应该换了行，高度只有 {}", y1 - y0);
@@ -750,14 +781,21 @@ mod tests {
         if let Some(s0) = start {
             segments.push((s0, row_has_ink.len() - 1));
         }
-        assert_eq!(segments.len(), 2, "应正好渲染出两行，实际分段：{segments:?}");
+        assert_eq!(
+            segments.len(),
+            2,
+            "应正好渲染出两行，实际分段：{segments:?}"
+        );
 
         let (h0, h1) = (
             (segments[0].1 - segments[0].0) as f32,
             (segments[1].1 - segments[1].0) as f32,
         );
         let ratio = h0 / h1.max(1.0);
-        assert!(ratio > 0.6 && ratio < 1.6, "两行高度应大致相当：{h0} vs {h1}");
+        assert!(
+            ratio > 0.6 && ratio < 1.6,
+            "两行高度应大致相当：{h0} vs {h1}"
+        );
 
         let gap = segments[1].0 as isize - segments[0].1 as isize;
         assert!(gap > 0, "两行之间应有行距间隙，实际 gap={gap}");
@@ -809,13 +847,19 @@ mod tests {
         let text = "这是一段需要换行的比较长的中文文字内容";
         let (_, total_h) = r.measure(text, &s);
         let (last_w, top_rel, last_h) = r.last_line_metrics(text, &s).unwrap();
-        assert!(top_rel > 0.0, "多行时最后一行顶部相对偏移应 > 0，实得 {top_rel}");
+        assert!(
+            top_rel > 0.0,
+            "多行时最后一行顶部相对偏移应 > 0，实得 {top_rel}"
+        );
         assert!(
             (top_rel + last_h - total_h).abs() < 0.01,
             "top_rel+last_h 应等于 measure 的整体高度（最后一行的下边缘就是全文本块的下边缘）：{} vs {total_h}",
             top_rel + last_h
         );
-        assert!(last_w > 0.0 && last_w < 300.0 + 24.0, "最后一行宽度应在合理范围：{last_w}");
+        assert!(
+            last_w > 0.0 && last_w < 300.0 + 24.0,
+            "最后一行宽度应在合理范围：{last_w}"
+        );
     }
 
     /// I1 的核心场景：英文 word-wrap（挪到下一行的是整个单词，不是单个字符）。
@@ -836,7 +880,10 @@ mod tests {
         };
         let (_, total_h) = r.measure(text, &s);
         let (last_w, top_rel, last_h) = r.last_line_metrics(text, &s).unwrap();
-        assert!(top_rel > 0.0, "word-wrap 应产生多行，top_rel 应 > 0，实得 {top_rel}");
+        assert!(
+            top_rel > 0.0,
+            "word-wrap 应产生多行，top_rel 应 > 0，实得 {top_rel}"
+        );
         assert!(
             (top_rel + last_h - total_h).abs() < 0.01,
             "top_rel+last_h 应等于 measure 的整体高度：{} vs {total_h}",
@@ -928,7 +975,10 @@ mod tests {
         // "AAAA" / "BBBB" 两行，断行点唯一、可预知。
         let style = base_style(first_word_w + 8.0);
         let (last_w, top_rel, _) = r.last_line_metrics("AAAA BBBB", &style).unwrap();
-        assert!(top_rel > 0.0, "本用例的构造前提是必须发生换行，实测未换行（top_rel={top_rel}）");
+        assert!(
+            top_rel > 0.0,
+            "本用例的构造前提是必须发生换行，实测未换行（top_rel={top_rel}）"
+        );
 
         let (expected_w, _) = r.measure("BBBB", &style);
         assert!(

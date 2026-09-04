@@ -3,7 +3,7 @@
 // 协议细节已对照 2026-09 时点的 edge-tts (Python, rany2/edge-tts@master)
 // 源码核实，而非照抄 brief 里未经验证的假设。差异见 docs/edge-protocol.md。
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::Message;

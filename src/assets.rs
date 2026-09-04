@@ -21,8 +21,7 @@ pub fn github_mark_rgba(size: u32) -> Result<(Vec<u8>, u32, u32)> {
     let tree = resvg::usvg::Tree::from_data(GITHUB_MARK_SVG, &opt)
         .context("解析内嵌 github-mark.svg 失败")?;
 
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)
-        .context("创建图标画布失败")?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).context("创建图标画布失败")?;
 
     let svg_size = tree.size();
     let transform = resvg::tiny_skia::Transform::from_scale(
@@ -58,8 +57,16 @@ mod tests {
     #[test]
     fn embedded_assets_are_non_empty() {
         assert!(FONT.len() > 1_000_000, "字体过小：{} 字节", FONT.len());
-        assert!(LOGO_PNG.len() > 100_000, "logo 过小：{} 字节", LOGO_PNG.len());
-        assert!(GITHUB_MARK_SVG.len() > 500, "svg 过小：{} 字节", GITHUB_MARK_SVG.len());
+        assert!(
+            LOGO_PNG.len() > 100_000,
+            "logo 过小：{} 字节",
+            LOGO_PNG.len()
+        );
+        assert!(
+            GITHUB_MARK_SVG.len() > 500,
+            "svg 过小：{} 字节",
+            GITHUB_MARK_SVG.len()
+        );
     }
 
     #[test]
@@ -89,7 +96,11 @@ mod tests {
     fn embedded_audio_is_non_empty_mp3() {
         // ID3v2 头是 "ID3"，裸 MPEG 帧头是 0xFF 0xFB/0xF3/0xF2。两者都算合法 mp3 开头。
         for (name, bytes) in [("intro", INTRO_MP3), ("typewriter", INTRO_TYPEWRITER_MP3)] {
-            assert!(bytes.len() > 10_000, "{name} 太小，可能没复制成功：{}", bytes.len());
+            assert!(
+                bytes.len() > 10_000,
+                "{name} 太小，可能没复制成功：{}",
+                bytes.len()
+            );
             let ok = bytes.starts_with(b"ID3") || (bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0);
             assert!(ok, "{name} 开头不像 mp3：{:02X?}", &bytes[..4]);
         }
@@ -101,7 +112,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (intro, typewriter) = write_embedded_audio(&dir).unwrap();
 
-        assert_eq!(std::fs::read(&intro).unwrap(), INTRO_MP3, "写出的内容应与内嵌字节一致");
+        assert_eq!(
+            std::fs::read(&intro).unwrap(),
+            INTRO_MP3,
+            "写出的内容应与内嵌字节一致"
+        );
         assert_eq!(std::fs::read(&typewriter).unwrap(), INTRO_TYPEWRITER_MP3);
         assert_ne!(intro, typewriter, "两个文件不能是同一个路径");
 
@@ -131,10 +146,17 @@ mod tests {
     fn each_constant_holds_the_file_it_claims_to_come_from() {
         let intro_on_disk =
             std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/intro.mp3")).unwrap();
-        let typewriter_on_disk =
-            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/intro_typewriter.mp3")).unwrap();
+        let typewriter_on_disk = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/intro_typewriter.mp3"
+        ))
+        .unwrap();
 
-        assert_eq!(INTRO_MP3, intro_on_disk.as_slice(), "INTRO_MP3 应内嵌 assets/intro.mp3");
+        assert_eq!(
+            INTRO_MP3,
+            intro_on_disk.as_slice(),
+            "INTRO_MP3 应内嵌 assets/intro.mp3"
+        );
         assert_eq!(
             INTRO_TYPEWRITER_MP3,
             typewriter_on_disk.as_slice(),

@@ -24,9 +24,12 @@ async fn synthesizes_a_short_chinese_line() {
 
     let path = std::env::temp_dir().join("panda_edge_smoke_short.mp3");
     std::fs::write(&path, &r.audio).unwrap();
-    let secs = mp3_duration_seconds_strict(&path)
-        .expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
-    assert!(secs > 1.0, "落盘后应能解出 > 1 秒的可播放 mp3，实际 {secs}s");
+    let secs =
+        mp3_duration_seconds_strict(&path).expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
+    assert!(
+        secs > 1.0,
+        "落盘后应能解出 > 1 秒的可播放 mp3，实际 {secs}s"
+    );
 }
 
 #[tokio::test]
@@ -44,12 +47,16 @@ async fn synthesizes_a_long_chinese_paragraph() {
 
     let b = EdgeBackend::new("zh-CN-YunjianNeural", Duration::from_secs(120));
     let r = b.synth(text).await.unwrap();
-    assert!(r.audio.len() > 20_000, "长文本音频过小：{} 字节", r.audio.len());
+    assert!(
+        r.audio.len() > 20_000,
+        "长文本音频过小：{} 字节",
+        r.audio.len()
+    );
 
     let path = std::env::temp_dir().join("panda_edge_smoke_long.mp3");
     std::fs::write(&path, &r.audio).unwrap();
-    let secs = mp3_duration_seconds_strict(&path)
-        .expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
+    let secs =
+        mp3_duration_seconds_strict(&path).expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
     assert!(secs > 10.0, "长文本落盘后应能解出较长时长，实际 {secs}s");
 
     let timings = r.timings.expect("长文本应收到 WordBoundary 元数据");
@@ -74,8 +81,11 @@ async fn synthesizes_with_a_different_voice() {
 
     let path = std::env::temp_dir().join("panda_edge_smoke_xiaoxiao.mp3");
     std::fs::write(&path, &r.audio).unwrap();
-    let secs = mp3_duration_seconds_strict(&path)
-        .expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
-    assert!(secs > 1.0, "落盘后应能解出 > 1 秒的可播放 mp3，实际 {secs}s");
+    let secs =
+        mp3_duration_seconds_strict(&path).expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
+    assert!(
+        secs > 1.0,
+        "落盘后应能解出 > 1 秒的可播放 mp3，实际 {secs}s"
+    );
     eprintln!("[xiaoxiao] 音频 {} 字节，时长 {secs}s", r.audio.len());
 }

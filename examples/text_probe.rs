@@ -7,8 +7,8 @@
 // crate 版本（见 Cargo.lock）：cosmic-text 0.19.0、ttf-parser 0.25.1、
 // tiny-skia 0.12.0、image 0.25.10。
 
-use anyhow::{anyhow, Context, Result};
-use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
+use anyhow::{Context, Result, anyhow};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, fontdb};
 use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
@@ -395,7 +395,9 @@ fn main() -> Result<()> {
     } else if stats_a.near_black == 0 || stats_b.near_black == 0 {
         println!("  [FAIL] 至少一张图没有黑色描边像素，取轮廓可能失败了");
     } else {
-        println!("  [PASS] 两张图像素分布不同，且都有黑/白像素——CJK 字形取到了各自正确的轮廓，不是豆腐块");
+        println!(
+            "  [PASS] 两张图像素分布不同，且都有黑/白像素——CJK 字形取到了各自正确的轮廓，不是豆腐块"
+        );
     }
 
     // ------------------------------------------------------------------

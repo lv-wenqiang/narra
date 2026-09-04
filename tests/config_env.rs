@@ -103,7 +103,10 @@ fn each_material_env_var_is_wired_to_exactly_one_function() {
     assert_eq!(after_title.2, "/tmp/custom_title.json");
     assert_eq!(after_title.0, defaults.0, "BG_VIDEO 不该受 TITLE_JSON 影响");
     assert_eq!(after_title.1, defaults.1, "BGM_FILE 不该受 TITLE_JSON 影响");
-    assert_eq!(after_title.3, defaults.3, "VIDEO_OUTPUT 不该受 TITLE_JSON 影响");
+    assert_eq!(
+        after_title.3, defaults.3,
+        "VIDEO_OUTPUT 不该受 TITLE_JSON 影响"
+    );
     clear_all();
 
     // 设置 VIDEO_OUTPUT：只有 video_output_path() 应该变。
@@ -112,7 +115,10 @@ fn each_material_env_var_is_wired_to_exactly_one_function() {
     assert_eq!(after_out.3, "/tmp/custom_out.mp4");
     assert_eq!(after_out.0, defaults.0, "BG_VIDEO 不该受 VIDEO_OUTPUT 影响");
     assert_eq!(after_out.1, defaults.1, "BGM_FILE 不该受 VIDEO_OUTPUT 影响");
-    assert_eq!(after_out.2, defaults.2, "TITLE_JSON 不该受 VIDEO_OUTPUT 影响");
+    assert_eq!(
+        after_out.2, defaults.2,
+        "TITLE_JSON 不该受 VIDEO_OUTPUT 影响"
+    );
     clear_all();
 }
 
@@ -149,10 +155,18 @@ fn env_backed_paths_read_the_environment_and_fall_back() {
 
     // 空白值等同于未设置
     unsafe { std::env::set_var("TTS_OUTPUT_DIR", "   ") };
-    assert_eq!(panda::config::tts_output_dir(), "output/tts", "全空白应回落默认值");
+    assert_eq!(
+        panda::config::tts_output_dir(),
+        "output/tts",
+        "全空白应回落默认值"
+    );
 
     unsafe { std::env::set_var("TTS_INPUT_FILE", "/tmp/x.txt") };
-    assert_eq!(panda::config::tts_input_file(), "/tmp/x.txt", "显式设置应优先于推导");
+    assert_eq!(
+        panda::config::tts_input_file(),
+        "/tmp/x.txt",
+        "显式设置应优先于推导"
+    );
 
     unsafe {
         std::env::remove_var("SPIDER_OUTPUT_DIR");

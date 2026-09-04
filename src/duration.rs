@@ -12,7 +12,9 @@ pub fn mp3_duration_seconds(path: &Path) -> f64 {
     if let Some(d) = mp3_duration_seconds_strict(path) {
         return d;
     }
-    std::fs::metadata(path).map(|m| m.len() as f64 / 16000.0).unwrap_or(0.0)
+    std::fs::metadata(path)
+        .map(|m| m.len() as f64 / 16000.0)
+        .unwrap_or(0.0)
 }
 
 /// 严格版：只有真正解码出音频时长才返回 `Some`，解析失败（包括非 mp3 内容、
@@ -30,7 +32,12 @@ pub fn mp3_duration_seconds_strict(path: &Path) -> Option<f64> {
     hint.with_extension("mp3");
 
     let mut format = symphonia::default::get_probe()
-        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
         .ok()?;
 
     let track = format.default_track(TrackType::Audio)?;

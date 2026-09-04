@@ -19,7 +19,9 @@ fn clamp_or_default(n: Option<usize>) -> usize {
 /// 解析并发数：非法或 <1 回落默认 3，超过 8 钳制为 8。
 pub fn resolve_batch_size(raw: Option<&str>) -> usize {
     clamp_or_default(
-        raw.map(str::trim).filter(|s| !s.is_empty()).and_then(|s| s.parse::<usize>().ok()),
+        raw.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse::<usize>().ok()),
     )
 }
 
@@ -33,7 +35,11 @@ pub fn resolve_batch_size_from_value(n: Option<usize>) -> usize {
 
 /// 解析单段超时：非法或低于下限 15000 时回落默认 120000。
 pub fn resolve_timeout_ms(raw: Option<&str>) -> u64 {
-    match raw.map(str::trim).filter(|s| !s.is_empty()).and_then(|s| s.parse::<u64>().ok()) {
+    match raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
         Some(n) if n >= MIN_TIMEOUT_MS => n,
         _ => DEFAULT_TIMEOUT_MS,
     }
@@ -55,7 +61,10 @@ pub fn tts_input_file() -> String {
 }
 
 fn non_empty_env(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// 标题的最终兜底值（规格 §6 的三级兜底最后一级）。
@@ -92,8 +101,11 @@ pub fn resolve_title(cli: Option<&str>, json_text: Option<&str>) -> String {
     }
     if let Some(text) = json_text
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(text)
-        && let Some(t) =
-            v.get("title").and_then(|t| t.as_str()).map(str::trim).filter(|s| !s.is_empty())
+        && let Some(t) = v
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     {
         return t.to_string();
     }
@@ -168,11 +180,17 @@ mod tests {
         assert_eq!(resolve_title(None, Some("不是 JSON")), DEFAULT_TITLE);
         assert_eq!(resolve_title(None, Some(r#"{"other": 1}"#)), DEFAULT_TITLE);
         assert_eq!(resolve_title(None, Some(r#"{"title": ""}"#)), DEFAULT_TITLE);
-        assert_eq!(resolve_title(None, Some(r#"{"title": "  "}"#)), DEFAULT_TITLE);
+        assert_eq!(
+            resolve_title(None, Some(r#"{"title": "  "}"#)),
+            DEFAULT_TITLE
+        );
     }
 
     #[test]
     fn title_from_json_is_trimmed() {
-        assert_eq!(resolve_title(None, Some(r#"{"title": "  带空格  "}"#)), "带空格");
+        assert_eq!(
+            resolve_title(None, Some(r#"{"title": "  带空格  "}"#)),
+            "带空格"
+        );
     }
 }

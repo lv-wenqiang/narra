@@ -56,7 +56,11 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
 
     assert!(out.exists(), "成片应存在");
     let meta = std::fs::metadata(&out).unwrap();
-    assert!(meta.len() > 50_000, "成片太小，可能是空壳：{} 字节", meta.len());
+    assert!(
+        meta.len() > 50_000,
+        "成片太小，可能是空壳：{} 字节",
+        meta.len()
+    );
 
     let probe = std::process::Command::new("ffprobe")
         .args([

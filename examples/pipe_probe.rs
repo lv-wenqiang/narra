@@ -26,16 +26,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Command::new("ffmpeg")
         .args([
             "-y",
-            "-stream_loop", "-1", "-i", bg,
-            "-f", "rawvideo", "-pix_fmt", "rgba",
-            "-s", "1280x720", "-r", "30", "-i", "-",
+            "-stream_loop",
+            "-1",
+            "-i",
+            bg,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            "1280x720",
+            "-r",
+            "30",
+            "-i",
+            "-",
             "-filter_complex",
             "[0:v]scale=1280:720:force_original_aspect_ratio=increase,\
              crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
              [bg][1:v]overlay=shortest=0[v]",
-            "-map", "[v]",
-            "-t", "3",
-            "-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-map",
+            "[v]",
+            "-t",
+            "3",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
             out,
         ])
         .stdin(Stdio::piped())
@@ -54,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for x in 0..W {
                 let i = (y * W + x) * 4;
                 if x < W / 2 {
-                    frame[i] = 255;     // R
+                    frame[i] = 255; // R
                     frame[i + 3] = 255; // A
                 }
             }
@@ -77,11 +95,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("--- 退出状态: {status}");
     println!("--- 写帧结果: {write_result:?}");
-    println!("--- 耗时: {elapsed:?}（{} 帧 → {:.1} fps）",
-             FRAMES, FRAMES as f64 / elapsed.as_secs_f64());
-    println!("--- stderr 末尾 ---\n{}",
-             stderr.lines().rev().take(15).collect::<Vec<_>>()
-                   .into_iter().rev().collect::<Vec<_>>().join("\n"));
+    println!(
+        "--- 耗时: {elapsed:?}（{} 帧 → {:.1} fps）",
+        FRAMES,
+        FRAMES as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "--- stderr 末尾 ---\n{}",
+        stderr
+            .lines()
+            .rev()
+            .take(15)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     let _ = FPS;
     Ok(())
 }

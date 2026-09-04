@@ -28,7 +28,9 @@ pub fn split_text_for_vtt(text: &str, max_length: usize) -> Vec<String> {
     while remaining.len() > max_length {
         // 1. 在前 max_length 个字符内从后往前找句末标点
         let upper = max_length.min(remaining.len());
-        let back = (0..upper).rev().find(|&i| SENTENCE_ENDINGS.contains(&remaining[i]));
+        let back = (0..upper)
+            .rev()
+            .find(|&i| SENTENCE_ENDINGS.contains(&remaining[i]));
 
         if let Some(i) = back {
             remaining = cut(&mut segments, remaining, i + 1);
@@ -37,13 +39,12 @@ pub fn split_text_for_vtt(text: &str, max_length: usize) -> Vec<String> {
 
         // 2. 向后在 [max_length, max_length*2) 内找
         let lookahead = (max_length * 2).min(remaining.len());
-        let mut found = (max_length..lookahead)
-            .find(|&i| SENTENCE_ENDINGS.contains(&remaining[i]));
+        let mut found = (max_length..lookahead).find(|&i| SENTENCE_ENDINGS.contains(&remaining[i]));
 
         // 3. 仍未找到则扫描剩余全文
         if found.is_none() {
-            found = (max_length..remaining.len())
-                .find(|&i| SENTENCE_ENDINGS.contains(&remaining[i]));
+            found =
+                (max_length..remaining.len()).find(|&i| SENTENCE_ENDINGS.contains(&remaining[i]));
         }
 
         match found {
@@ -133,14 +134,19 @@ pub fn parse_vtt(text: &str) -> Vec<Caption> {
     let mut pending: Option<(u64, u64)> = None;
     let mut buf: Vec<String> = Vec::new();
 
-    let flush = |out: &mut Vec<Caption>, pending: &mut Option<(u64, u64)>, buf: &mut Vec<String>| {
-        if let Some((start_ms, end_ms)) = pending.take()
-            && !buf.is_empty()
-        {
-            out.push(Caption { text: buf.join("\n"), start_ms, end_ms });
-        }
-        buf.clear();
-    };
+    let flush =
+        |out: &mut Vec<Caption>, pending: &mut Option<(u64, u64)>, buf: &mut Vec<String>| {
+            if let Some((start_ms, end_ms)) = pending.take()
+                && !buf.is_empty()
+            {
+                out.push(Caption {
+                    text: buf.join("\n"),
+                    start_ms,
+                    end_ms,
+                });
+            }
+            buf.clear();
+        };
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -216,7 +222,10 @@ mod tests {
 
     #[test]
     fn split_short_text_returns_whole() {
-        assert_eq!(split_text_for_vtt("很短的一句话。", 30), vec!["很短的一句话。"]);
+        assert_eq!(
+            split_text_for_vtt("很短的一句话。", 30),
+            vec!["很短的一句话。"]
+        );
     }
 
     #[test]
@@ -282,7 +291,12 @@ mod tests {
         let lines = vec![text.to_string()];
         let out = generate_vtt(&lines, &[10.0], 30);
         let cues: Vec<&str> = out.lines().filter(|l| l.contains("-->")).collect();
-        assert_eq!(cues.len(), 2, "期望切成 2 条 cue，实得 {}：{out}", cues.len());
+        assert_eq!(
+            cues.len(),
+            2,
+            "期望切成 2 条 cue，实得 {}：{out}",
+            cues.len()
+        );
         // 切片文本不丢字
         assert!(out.contains("第一句话写得比较长一点用来触发切分。"));
         assert!(out.contains("第二句话也在这里继续往后写。"));
@@ -354,7 +368,11 @@ mod tests {
         // 函数文档承诺「失败返回 None」，这里必须返回 None 而不是 panic。
         assert_eq!(parse_ts_ms("00:00:01.éé"), None);
         assert_eq!(parse_ts_ms("00:00:01.é"), None);
-        assert_eq!(parse_ts_ms("00:00:01.１２３"), None, "全角数字不是 ASCII 数字");
+        assert_eq!(
+            parse_ts_ms("00:00:01.１２３"),
+            None,
+            "全角数字不是 ASCII 数字"
+        );
         // 合法输入不受影响
         assert_eq!(parse_ts_ms("00:00:01.500"), Some(1500));
         assert_eq!(parse_ts_ms("00:00:01.5"), Some(1500));

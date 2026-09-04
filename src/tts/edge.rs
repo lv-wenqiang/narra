@@ -33,13 +33,13 @@ pub fn normalize_voice_for_edge(voice_raw: &str) -> String {
 }
 
 use crate::tts::backend::{Synthesized, TtsBackend, WordTiming};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 /// 来自 edge-tts (`rany2/edge-tts`) `constants.py`，2026-09-01 核实值。
 /// 见 docs/edge-protocol.md ——brief 里的 `1-130.0.2849.68` 已过时，实测应为此值。
@@ -114,7 +114,9 @@ fn sec_ms_gec(unix_secs: u64) -> String {
 
 /// SSML 是 XML，文本中的这三个字符必须转义，否则服务端会拒绝整条消息。
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// 转义会被插入单引号包裹的 XML 属性值（如 `<voice name='{}'>`）的字符。
@@ -140,7 +142,11 @@ pub struct EdgeBackend {
 impl EdgeBackend {
     pub fn new(voice: &str, timeout: Duration) -> Self {
         let voice = normalize_voice_for_edge(voice);
-        Self { voice, timeout, endpoint: WSS.to_string() }
+        Self {
+            voice,
+            timeout,
+            endpoint: WSS.to_string(),
+        }
     }
 
     fn build_url(&self) -> String {
@@ -218,8 +224,8 @@ impl EdgeBackend {
     async fn synth_inner(&self, text: &str) -> Result<Synthesized> {
         let mut ws = self.connect().await?;
 
-        let ts = chrono::Utc::now()
-            .format("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)");
+        let ts =
+            chrono::Utc::now().format("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)");
 
         ws.send(Message::Text(
             format!(
@@ -288,7 +294,11 @@ impl EdgeBackend {
         }
         Ok(Synthesized {
             audio,
-            timings: if timings.is_empty() { None } else { Some(timings) },
+            timings: if timings.is_empty() {
+                None
+            } else {
+                Some(timings)
+            },
         })
     }
 }
@@ -422,9 +432,7 @@ mod tests {
     /// 环境固定为 `WSS` 的 `new()`，指向这个本地服务端——不需要额外的公开 API。
     async fn spawn_mock_server<F, Fut>(handler: F) -> String
     where
-        F: FnOnce(
-                tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-            ) -> Fut
+        F: FnOnce(tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Fut
             + Send
             + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,

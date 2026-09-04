@@ -1,5 +1,5 @@
 use crate::render::timeline::{COVER_FRAMES, FPS, HEIGHT, INTRO_FRAMES, WIDTH};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -46,10 +46,20 @@ pub fn merge_mp3_with_speed(inputs: &[PathBuf], output: &Path, speed: f64) -> Re
 
     let result = Command::new("ffmpeg")
         .args([
-            "-y", "-f", "concat", "-safe", "0",
-            "-i", &list_path.to_string_lossy(),
-            "-vn", "-filter:a", &format!("atempo={speed}"),
-            "-c:a", "libmp3lame", "-q:a", "2",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            &list_path.to_string_lossy(),
+            "-vn",
+            "-filter:a",
+            &format!("atempo={speed}"),
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
             &output.to_string_lossy(),
         ])
         .output();
@@ -190,8 +200,7 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
     // （比如改成 121）不会编译失败，只会让 Outro 音效错位几十毫秒——听感
     // 上未必能察觉，但确实是错的。这里从 CONTENT_START_SECS 反推，让两处
     // 共享同一个真相源。
-    let outro_start_secs =
-        (CONTENT_START_SECS * FPS as f64 + i.content_frames as f64) / FPS as f64;
+    let outro_start_secs = (CONTENT_START_SECS * FPS as f64 + i.content_frames as f64) / FPS as f64;
     let total_secs = i.total_frames as f64 / FPS as f64;
 
     let filter = format!(
@@ -381,7 +390,10 @@ mod tests {
     fn audio_graph_delays_each_source_to_its_segment_start() {
         // TTS 与 BGM 起点 4.0s；打字机 0.5s；片尾音效 = outro_start。
         let g = audio_filter_graph(10.0, 16.0);
-        assert!(g.contains("adelay=4000:all=1"), "TTS/BGM 应延迟 4000ms：{g}");
+        assert!(
+            g.contains("adelay=4000:all=1"),
+            "TTS/BGM 应延迟 4000ms：{g}"
+        );
         assert!(g.contains("adelay=500:all=1"), "打字机应延迟 500ms：{g}");
         assert!(
             g.contains("adelay=16000:all=1"),
@@ -425,7 +437,7 @@ mod tests {
     /// 模块之间的**关系**：段落边界怎么改都行，改完两边必须还对得上。
     #[test]
     fn segment_starts_match_the_audio_delays_in_the_filter_graph() {
-        use crate::render::timeline::{layout, segment_at, Segment};
+        use crate::render::timeline::{Segment, layout, segment_at};
 
         let audio_secs = 10.0;
         let l = layout(audio_secs);
@@ -475,7 +487,10 @@ mod tests {
             g.contains("afade=t=out:st=12.000:d=2"),
             "淡出应从绝对时间 12s 开始：{g}"
         );
-        assert!(!g.contains("st=8"), "st=8 说明漏掉了 Content 起点的 +4.0 偏移：{g}");
+        assert!(
+            !g.contains("st=8"),
+            "st=8 说明漏掉了 Content 起点的 +4.0 偏移：{g}"
+        );
     }
 
     #[test]
@@ -497,7 +512,11 @@ mod tests {
     #[test]
     fn sound_effects_use_zero_point_six_and_tts_is_unattenuated() {
         let g = audio_filter_graph(10.0, 16.0);
-        assert_eq!(g.matches("volume=0.6").count(), 2, "两段音效都应是 0.6：{g}");
+        assert_eq!(
+            g.matches("volume=0.6").count(),
+            2,
+            "两段音效都应是 0.6：{g}"
+        );
         assert!(g.contains("volume=1"), "TTS 不衰减：{g}");
     }
 
@@ -547,7 +566,10 @@ mod tests {
         // 只补出问题的那一对。
         let g = audio_filter_graph(10.0, 16.0);
         for (label, chain) in [
-            ("TTS", format!("[2:a]{MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]")),
+            (
+                "TTS",
+                format!("[2:a]{MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"),
+            ),
             (
                 "BGM",
                 format!(
@@ -555,8 +577,14 @@ mod tests {
                      afade=t=out:st=12.000:d=2[a_bgm]"
                 ),
             ),
-            ("打字机", format!("[4:a]{MIX_FORMAT},adelay=500:all=1,volume=0.6[a_type]")),
-            ("片尾音效", format!("[5:a]{MIX_FORMAT},adelay=16000:all=1,volume=0.6[a_intro]")),
+            (
+                "打字机",
+                format!("[4:a]{MIX_FORMAT},adelay=500:all=1,volume=0.6[a_type]"),
+            ),
+            (
+                "片尾音效",
+                format!("[5:a]{MIX_FORMAT},adelay=16000:all=1,volume=0.6[a_intro]"),
+            ),
         ] {
             assert!(
                 g.contains(&chain),
@@ -857,7 +885,11 @@ mod tests {
             .filter(|(f, _)| *f == "-pix_fmt")
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(pix, vec!["rgba", "yuv420p"], "输入 rgba、输出 yuv420p：{pix:?}");
+        assert_eq!(
+            pix,
+            vec!["rgba", "yuv420p"],
+            "输入 rgba、输出 yuv420p：{pix:?}"
+        );
         assert_eq!(
             args.last().map(String::as_str),
             Some("/m/out.mp4"),
@@ -932,8 +964,14 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(pix_positions.len(), 2);
-        assert!(pix_positions[0] < last_i_pos, "输入 -pix_fmt 应在最后一个 -i 之前");
-        assert!(pix_positions[1] > last_i_pos, "输出 -pix_fmt 应在最后一个 -i 之后");
+        assert!(
+            pix_positions[0] < last_i_pos,
+            "输入 -pix_fmt 应在最后一个 -i 之前"
+        );
+        assert!(
+            pix_positions[1] > last_i_pos,
+            "输出 -pix_fmt 应在最后一个 -i 之后"
+        );
     }
 
     #[test]
@@ -1022,10 +1060,8 @@ mod tests {
     #[cfg(unix)]
     fn write_fake_ffmpeg(name: &str, script: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir().join(format!(
-            "panda_fake_ffmpeg_{name}_{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("panda_fake_ffmpeg_{name}_{}", std::process::id()));
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
@@ -1207,10 +1243,8 @@ mod tests {
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         // 特意让输出的父目录（两层，逼 create_dir_all 而不是单层 mkdir）
         // 在测试开始前不存在。
-        let out_dir = std::env::temp_dir().join(format!(
-            "panda_create_dir_test_{}",
-            std::process::id()
-        ));
+        let out_dir =
+            std::env::temp_dir().join(format!("panda_create_dir_test_{}", std::process::id()));
         std::fs::remove_dir_all(&out_dir).ok();
         let out = out_dir.join("nested").join("out.mp4");
         let total_frames = fs.total_frames();
@@ -1238,7 +1272,10 @@ mod tests {
             result.is_ok(),
             "输出目录应已被建好，假 ffmpeg 应能顺利在那里创建文件并退出 0：{result:?}"
         );
-        assert!(out.exists(), "假 ffmpeg 应已在正确路径创建了文件，说明目录确实建好了");
+        assert!(
+            out.exists(),
+            "假 ffmpeg 应已在正确路径创建了文件，说明目录确实建好了"
+        );
 
         std::fs::remove_dir_all(&out_dir).ok();
         std::fs::remove_file(&script).ok();

@@ -131,7 +131,9 @@ mod tests {
         // 过阻尼弹簧必须「先快后慢」。若误把 duration 当成时间跨度直接映射，
         // 只会取到自然曲线最前面约 22% 的一段，归一化后是近似匀速直线
         // （首末增量比约 1.07），本测试会失败。
-        let v: Vec<f64> = (0..=15).map(|f| spring(f as f64, 30.0, 15.0, 0.0)).collect();
+        let v: Vec<f64> = (0..=15)
+            .map(|f| spring(f as f64, 30.0, 15.0, 0.0))
+            .collect();
         assert!(v[7] > 0.85, "半程应已完成大部分行程，实得 {}", v[7]);
         let first = v[1] - v[0];
         let last = v[15] - v[14];
@@ -148,7 +150,10 @@ mod tests {
             for f in 0..=(dur as u32) {
                 let v = spring(f as f64, 30.0, dur, 0.0);
                 assert!(v.is_finite(), "duration={dur} frame={f} 得到非有限值 {v}");
-                assert!((0.0..=1.0).contains(&v), "duration={dur} frame={f} 越界 {v}");
+                assert!(
+                    (0.0..=1.0).contains(&v),
+                    "duration={dur} frame={f} 越界 {v}"
+                );
             }
         }
     }
