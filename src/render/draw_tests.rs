@@ -994,8 +994,14 @@ fn cover_row_and_title_ink_heights(painter: &mut Painter, title: &str, p: &Pixma
 #[test]
 fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
     let mut renderer = TextRenderer::new().unwrap();
-    let prepared =
-        prepare_watermark(&mut renderer, None, &cover_watermark_preset(TEST_COVER_WM)).unwrap();
+    let m = Metrics::for_canvas(Canvas::BASE);
+    let prepared = prepare_watermark(
+        &mut renderer,
+        None,
+        &cover_watermark_preset(TEST_COVER_WM, m.cover_watermark_center_y),
+        m.no_wrap_width,
+    )
+    .unwrap();
     let (x0, y0, x1, y1) = non_transparent_bbox(&prepared.pixmap).expect("cover 水印应有墨迹");
     let canvas_x0 = prepared.origin_x + x0 as i32;
     let canvas_x1 = prepared.origin_x + x1 as i32;
@@ -1042,8 +1048,14 @@ fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
 #[test]
 fn separator_segment_is_drawn_at_reduced_opacity() {
     let mut renderer = TextRenderer::new().unwrap();
-    let prepared =
-        prepare_watermark(&mut renderer, None, &cover_watermark_preset(WATERMARK_SEP)).unwrap();
+    let m = Metrics::for_canvas(Canvas::BASE);
+    let prepared = prepare_watermark(
+        &mut renderer,
+        None,
+        &cover_watermark_preset(WATERMARK_SEP, m.cover_watermark_center_y),
+        m.no_wrap_width,
+    )
+    .unwrap();
     let max_alpha = max_alpha_of(&prepared.pixmap);
     assert!(
         (max_alpha as i32 - 77).abs() <= 3,
@@ -1056,7 +1068,14 @@ fn separator_segment_is_drawn_at_reduced_opacity() {
 #[test]
 fn non_separator_text_is_drawn_at_full_opacity() {
     let mut renderer = TextRenderer::new().unwrap();
-    let prepared = prepare_watermark(&mut renderer, None, &cover_watermark_preset("测试")).unwrap();
+    let m = Metrics::for_canvas(Canvas::BASE);
+    let prepared = prepare_watermark(
+        &mut renderer,
+        None,
+        &cover_watermark_preset("测试", m.cover_watermark_center_y),
+        m.no_wrap_width,
+    )
+    .unwrap();
     assert_eq!(
         max_alpha_of(&prepared.pixmap),
         102,
@@ -1156,11 +1175,13 @@ fn watermark_without_an_icon_starts_at_the_text() {
         .unwrap();
 
     let mut renderer = TextRenderer::new().unwrap();
-    let preset = cover_watermark_preset(TEST_COVER_WM);
+    let m = Metrics::for_canvas(Canvas::BASE);
+    let preset = cover_watermark_preset(TEST_COVER_WM, m.cover_watermark_center_y);
     let icon = load_scaled_icon(&png, preset.icon_size_px).unwrap();
 
-    let bare = prepare_watermark(&mut renderer, None, &preset).unwrap();
-    let with_icon = prepare_watermark(&mut renderer, Some(&icon), &preset).unwrap();
+    let bare = prepare_watermark(&mut renderer, None, &preset, m.no_wrap_width).unwrap();
+    let with_icon =
+        prepare_watermark(&mut renderer, Some(&icon), &preset, m.no_wrap_width).unwrap();
 
     // 图标虽是不透明的纯蓝，进水印后必须吃到预设的整体不透明度（cover =
     // 102/255），与同一行的文字浓淡一致。少了这条，「图标按原样 100% 不透明
@@ -2279,4 +2300,50 @@ fn outro_logo_and_ring_scale_with_width_not_height() {
         }
     }
     assert!(failures.is_empty(), "{:?}", failures);
+}
+
+/// **陷阱 3 回归**（规格 §3）：「不换行哨兵」必须显著大于画布宽度。
+///
+/// 重构前是写死的 `2000.0`：1280 宽下是画布的 1.56 倍（安全），1920 宽下
+/// 只比画布宽 4.2%——一个长品牌名配 1.5 倍放大的字号真的可能触发换行。
+/// 语义是「远大于画布宽」，就该随画布走。
+#[test]
+fn no_wrap_sentinel_stays_far_wider_than_the_canvas() {
+    for c in [
+        Canvas::BASE,
+        Canvas { w: 1920, h: 1080 },
+        Canvas { w: 1080, h: 1920 },
+    ] {
+        let m = Metrics::for_canvas(c);
+        assert!(
+            m.no_wrap_width >= c.w_f32() * 1.5,
+            "{}x{}: 不换行哨兵应至少为画布宽的 1.5 倍，实得 {} (画布宽 {})",
+            c.w,
+            c.h,
+            m.no_wrap_width,
+            c.w
+        );
+    }
+}
+
+/// Cover 水印的垂直中心是画布高度的 80%，不是写死的 576。
+///
+/// `576 = 0.8 × 720`，在 BASE 上两种写法同值。
+#[test]
+fn cover_watermark_center_y_is_eighty_percent_of_height() {
+    assert_eq!(
+        Metrics::for_canvas(Canvas::BASE).cover_watermark_center_y,
+        576.0,
+        "BASE 上应与重构前的写死值一致"
+    );
+    for c in [Canvas { w: 1920, h: 1080 }, Canvas { w: 1080, h: 1920 }] {
+        let m = Metrics::for_canvas(c);
+        assert_eq!(
+            m.cover_watermark_center_y,
+            c.h_f32() * 0.8,
+            "{}x{}: Cover 水印中心应在 0.8h",
+            c.w,
+            c.h
+        );
+    }
 }

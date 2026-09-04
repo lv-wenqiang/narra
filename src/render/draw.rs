@@ -69,15 +69,12 @@ const WATERMARK_FONT_SIZE_PX: f32 = 24.0;
 /// `draw_centered` 的 `opacity` 参数固定传 `1.0`——两者是两件事（brief 提醒 1）。
 const WATERMARK_COLOR: [u8; 4] = [255, 255, 255, 69];
 const WATERMARK_LETTER_SPACING_EM: f32 = 0.01;
-/// 水印只有一行，换行宽度给一个远大于画布宽度的值以避免意外换行。
-const WATERMARK_MAX_WIDTH_PX: f32 = 2000.0;
 /// 正文水印图标的尺寸与它到文字的间距（规格 §8.6）。
 const WATERMARK_ICON_SIZE_PX: u32 = 28;
 const WATERMARK_ICON_GAP_PX: f32 = 10.0;
 
 /// `cover` 段水印（规格 §8.6，Task 6）：`rgba(23,23,23,0.4)`，垂直中心见
-/// `cover_watermark_preset` 文档注释（`576`，不是规格字面的 `432`）。
-const COVER_WATERMARK_CENTER_Y_PX: f32 = 576.0;
+/// `cover_watermark_preset` 文档注释（重构前写死 `576 = 0.8 × 720`，现由 Metrics 计算）。
 const COVER_WATERMARK_FONT_SIZE_PX: f32 = 28.0;
 const COVER_WATERMARK_COLOR: [u8; 4] = [23, 23, 23, 102];
 /// 封面/片尾水印图标的尺寸与它到文字的间距（规格 §8.6）。
@@ -120,8 +117,6 @@ const COVER_ROW_TEXT_LEFT_PX: f32 =
     COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX + COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX;
 const COVER_ROW_TEXT_FONT_SIZE_PX: f32 = 38.0;
 const COVER_ROW_OPACITY: f32 = 0.30;
-/// 上排文字不会换行，给一个远大于画布宽度的值以避免意外换行。
-const COVER_ROW_TEXT_MAX_WIDTH_PX: f32 = 2000.0;
 
 /// 主标题：100px 粗体，左右 padding 40px（`max_width = 1024 - 80 = 944`），
 /// 水平居中于 x=640。
@@ -189,9 +184,8 @@ const OUTRO_LOGO_SCALE_RANGE: [f64; 2] = [0.2, 1.0];
 /// 品牌名（`Painter::brand`，默认「墨风」）：70px 粗体黑色，紧随 logo 淡入之后（`[24, 39]` 帧）
 /// 淡入 + 上移 50px 归位。TS 原版 `whiteSpace: nowrap`（不换行）——沿用既有
 /// 代码里表达「不换行」的惯例，给一个远大于画布宽度的 `max_width_px`
-/// （见 `WATERMARK_MAX_WIDTH_PX`/`COVER_ROW_TEXT_MAX_WIDTH_PX` 的同款注释）。
+/// （现由 Metrics 计算，见陷阱 3）。
 const OUTRO_TITLE_FONT_SIZE_PX: f32 = 70.0;
-const OUTRO_TITLE_MAX_WIDTH_PX: f32 = 2000.0;
 /// logo（未缩放的原生 216px 布局盒）与标题之间的纵向间距（TS `marginTop:40px`）。
 /// **CSS `transform: scale()` 不改变布局盒尺寸**：logo 的缩放动画只在其自身
 /// 中心原地放大/缩小，纵向组的布局高度按 logo 的 216px 原尺寸计算，标题位置
@@ -403,14 +397,14 @@ fn content_watermark_preset(text: &str) -> WatermarkPreset {
     }
 }
 
-/// `cover` 预设（规格 §8.4/§8.6，Task 6）：水平居中、垂直中心 `y=576`。
+/// `cover` 预设（规格 §8.4/§8.6，Task 6）：水平居中、垂直中心由参数指定。
 ///
-/// **`576` 的由来**（协调者交接，不是规格字面值）：规格写「自顶部偏移
+/// **垂直中心的由来**（协调者交接，不是规格字面值）：规格写「自顶部偏移
 /// 432px」，那是从 TS 版 `marginTop:'432px'`（配合 `inset:0` 的居中 flex
 /// 容器）原样搬来的，语义是「在 y=432 以下的剩余区域里垂直居中」，即
-/// `432 + (720-432)/2 = 576`，不是把水印中心直接放在 y=432（那样会压进
-/// Cover 主标题）。
-fn cover_watermark_preset(text: &str) -> WatermarkPreset {
+/// `432 + (H-432)/2 = 0.8H`，不是把水印中心直接放在 y=432（那样会压进
+/// Cover 主标题）。重构前写死 `576 = 0.8 × 720`，现由 Metrics 计算。
+fn cover_watermark_preset(text: &str, center_y_px: f32) -> WatermarkPreset {
     WatermarkPreset {
         icon_size_px: COVER_WATERMARK_ICON_SIZE_PX,
         icon_gap_px: COVER_WATERMARK_ICON_GAP_PX,
@@ -418,9 +412,7 @@ fn cover_watermark_preset(text: &str) -> WatermarkPreset {
         color: COVER_WATERMARK_COLOR,
         letter_spacing_px: 0.0,
         segments: split_on_separator(text),
-        anchor: WatermarkAnchor::Centered {
-            center_y_px: COVER_WATERMARK_CENTER_Y_PX,
-        },
+        anchor: WatermarkAnchor::Centered { center_y_px },
     }
 }
 
@@ -439,13 +431,14 @@ fn layout_and_draw_watermark(
     pixmap: &mut Pixmap,
     icon: Option<&Pixmap>,
     preset: &WatermarkPreset,
+    max_width_px: f32,
 ) {
     let style = TextStyle {
         size_px: preset.font_size_px,
         color: preset.color,
         stroke: None,
         letter_spacing_px: preset.letter_spacing_px,
-        max_width_px: WATERMARK_MAX_WIDTH_PX,
+        max_width_px,
         line_height: DEFAULT_LINE_HEIGHT,
         bold: false,
     };
@@ -538,10 +531,11 @@ fn prepare_watermark(
     renderer: &mut TextRenderer,
     icon: Option<&Pixmap>,
     preset: &WatermarkPreset,
+    max_width_px: f32,
 ) -> anyhow::Result<PreparedWatermark> {
     let mut scratch =
         Pixmap::new(CANVAS_W as u32, CANVAS_H as u32).context("水印预渲染暂存画布分配失败")?;
-    layout_and_draw_watermark(renderer, &mut scratch, icon, preset);
+    layout_and_draw_watermark(renderer, &mut scratch, icon, preset, max_width_px);
 
     let Some((x0, y0, x1, y1)) = non_transparent_bbox(&scratch) else {
         // 预设没有画出任何东西（理论上不会发生，防御性兜底）：1x1 透明占位，
@@ -650,6 +644,7 @@ impl Painter {
                     &mut renderer,
                     content_icon.as_ref(),
                     &content_watermark_preset(t),
+                    m.no_wrap_width,
                 )
             })
             .transpose()?;
@@ -660,7 +655,8 @@ impl Painter {
                 prepare_watermark(
                     &mut renderer,
                     cover_icon.as_ref(),
-                    &cover_watermark_preset(t),
+                    &cover_watermark_preset(t, m.cover_watermark_center_y),
+                    m.no_wrap_width,
                 )
             })
             .transpose()?;
@@ -748,6 +744,7 @@ impl Painter {
     /// （logo 36px + 上下 margin 各 8px），主标题紧随其后，容器总高
     /// = 52 + 主标题排版高度，容器顶 = 360 - 总高/2。
     pub fn draw_cover(&mut self, pixmap: &mut Pixmap, title: &str) {
+        let m = Metrics::for_canvas(Canvas::BASE);
         pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
 
         let title_style = TextStyle {
@@ -789,7 +786,7 @@ impl Painter {
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: COVER_ROW_TEXT_MAX_WIDTH_PX,
+            max_width_px: m.no_wrap_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
@@ -967,7 +964,7 @@ impl Painter {
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: OUTRO_TITLE_MAX_WIDTH_PX,
+            max_width_px: m.no_wrap_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };

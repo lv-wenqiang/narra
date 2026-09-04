@@ -63,6 +63,14 @@ pub struct Metrics {
     pub outro_title_font_size: f32,
     pub outro_title_gap: f32,
     pub outro_title_translate_y_from: f32,
+
+    // —— 不换行哨兵与垂直锚点（陷阱 3 + V 类）——
+    /// 「不换行」的哨兵宽度：喂给排版器当最大宽度，语义是「远大于画布宽，
+    /// 使单行文本不会意外换行」。**随画布走**，不是写死的字面量——重构前
+    /// 三处都写 `2000.0`，那个数在 1920 宽下只比画布宽 4.2%，已经不安全。
+    pub no_wrap_width: f32,
+    /// Cover 水印的垂直中心 = 画布高度的 80%（重构前写死 576 = 0.8 × 720）。
+    pub cover_watermark_center_y: f32,
 }
 
 impl Metrics {
@@ -71,6 +79,8 @@ impl Metrics {
         // 四舍五入到整数像素的辅助：图标与 logo 是位图，尺寸必须是整数。
         // `f32::round()` 将 .5 舍入远离零，所以半像素恰好落在 .5 时（如 28.0 * 1.125 = 31.5）
         // 会一致地向上舍入。
+        // **重要**：本闭包用 `round()` 而非重构前的截断（`as u32`），两者在 BASE（s=1.0）给出同值，
+        // 但非 BASE 尺寸下会因舍入而差 1px；抽象画布参数化后，位图缩放规则应明确选择。
         let px = |v: f32| (v * s).round() as u32;
         Self {
             canvas,
@@ -101,6 +111,8 @@ impl Metrics {
             outro_title_font_size: 70.0 * s,
             outro_title_gap: 40.0 * s,
             outro_title_translate_y_from: -50.0 * s,
+            no_wrap_width: canvas.w_f32() * 2.0,
+            cover_watermark_center_y: canvas.h_f32() * 0.8,
         }
     }
 }
@@ -144,6 +156,8 @@ mod tests {
         assert_eq!(m.outro_title_font_size, 70.0);
         assert_eq!(m.outro_title_gap, 40.0);
         assert_eq!(m.outro_title_translate_y_from, -50.0);
+        assert_eq!(m.no_wrap_width, 2560.0, "BASE 上不换行哨兵应为 1280 * 2.0");
+        assert_eq!(m.cover_watermark_center_y, 576.0, "BASE 上应为 720 * 0.8");
     }
 
     /// 长度量纲一律随 `scale` 线性放缩，且**「动画」小节里那三个像素位移
