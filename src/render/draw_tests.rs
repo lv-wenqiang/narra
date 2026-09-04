@@ -37,6 +37,7 @@ fn branding_with(content: Option<&str>, cover: Option<&str>) -> Branding {
         watermark: content.map(str::to_string),
         watermark_cover: cover.map(str::to_string),
         watermark_icon: None,
+        logo: None,
     }
 }
 
@@ -1116,6 +1117,7 @@ fn watermark_icon_is_drawn_and_keeps_its_own_colors() {
         watermark: None,
         watermark_cover: Some(TEST_COVER_WM.to_string()),
         watermark_icon: Some(png.to_string_lossy().into_owned()),
+        logo: None,
     };
     let mut painter = Painter::new(&branding).unwrap();
     let mut p = Pixmap::new(1280, 720).unwrap();
@@ -1365,6 +1367,58 @@ fn cover_row_and_outro_title_render_the_configured_brand() {
         outro_b.data(),
         "Outro 大字应随品牌名变化，而不是写死的字符串"
     );
+}
+
+/// 配了 `--logo` 时 Cover 上排与 Outro 画的是**那张**图，不是内嵌的熊猫。
+///
+/// 判据是「换 logo 后那两段的像素必须变」。用一张纯红方块——它与内嵌 logo
+/// （黑白线稿）在任何一处都不可能逐字节相同；同时顺带断言红色确实出现在
+/// 画面上，堵住「读了文件但画的还是内嵌那张」这种半吊子实现。
+#[test]
+fn cover_and_outro_use_the_configured_logo() {
+    let dir = std::env::temp_dir().join(format!("panda_logo_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("logo.png");
+    image::RgbaImage::from_pixel(64, 64, image::Rgba([0xff, 0, 0, 0xff]))
+        .save(&png)
+        .unwrap();
+
+    let mut embedded = Painter::new(&test_branding()).unwrap();
+    let mut custom = Painter::new(&Branding {
+        logo: Some(png.to_string_lossy().into_owned()),
+        ..test_branding()
+    })
+    .unwrap();
+
+    let mut cover_a = Pixmap::new(1280, 720).unwrap();
+    let mut cover_b = Pixmap::new(1280, 720).unwrap();
+    embedded.draw_cover(&mut cover_a, "同一个标题");
+    custom.draw_cover(&mut cover_b, "同一个标题");
+    assert_ne!(
+        cover_a.data(),
+        cover_b.data(),
+        "Cover 上排应换成配置的 logo"
+    );
+
+    let mut outro_a = Pixmap::new(1280, 720).unwrap();
+    let mut outro_b = Pixmap::new(1280, 720).unwrap();
+    embedded.draw_outro(&mut outro_a, 60);
+    custom.draw_outro(&mut outro_b, 60);
+    assert_ne!(outro_a.data(), outro_b.data(), "Outro 应换成配置的 logo");
+
+    // 红色必须真的出现在 Outro 的 logo 区——只断言「像素变了」的话，
+    // 「读了文件但仍画内嵌那张、只是别处偶然有差异」会蒙混过去。
+    let has_red = (0..1280).any(|x| {
+        (100..450).any(|y| {
+            outro_b
+                .pixel(x, y)
+                .map(|c| c.red() as i32 - c.green() as i32 > 60)
+                .unwrap_or(false)
+        })
+    });
+    assert!(has_red, "Outro 的 logo 区应出现配置那张图的红色");
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// 打字机字符数：用一个不会换行的短标题（6 字），断言 frame 5/15/30 的墨宽

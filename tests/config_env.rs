@@ -23,6 +23,7 @@
 //!    `remove_var` 清空，把这个前提变成确定性的，而不是寄望于运行测试的
 //!    环境恰好没设这些变量。
 
+use std::path::Path;
 use std::sync::Mutex;
 
 /// 本文件所有测试共享同一个环境变量命名空间，互相之间必须串行，
@@ -189,6 +190,9 @@ fn brand_and_watermarks_have_the_documented_defaults() {
         std::env::remove_var("WATERMARK");
         std::env::remove_var("WATERMARK_COVER");
         std::env::remove_var("WATERMARK_ICON");
+        std::env::remove_var("LOGO_FILE");
+        std::env::remove_var("SFX_INTRO");
+        std::env::remove_var("SFX_TYPEWRITER");
     }
     assert_eq!(panda::config::brand(), "墨风");
     assert_eq!(panda::config::watermark(), None, "未配置时不画正文水印");
@@ -198,6 +202,13 @@ fn brand_and_watermarks_have_the_documented_defaults() {
         "未配置时不画封面/片尾水印"
     );
     assert_eq!(panda::config::watermark_icon(), None, "未配置时不画图标");
+    assert_eq!(panda::config::logo_path(), None, "未配置时用内嵌 logo");
+    assert_eq!(panda::config::sfx_intro(), None, "未配置时用内嵌片尾音效");
+    assert_eq!(
+        panda::config::sfx_typewriter(),
+        None,
+        "未配置时用内嵌打字机音效"
+    );
 }
 
 /// 鉴别性测试：三个变量各自只驱动一个函数。
@@ -270,6 +281,9 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         std::env::set_var("WATERMARK", "\t \n");
         std::env::set_var("WATERMARK_COVER", "  ");
         std::env::set_var("WATERMARK_ICON", " \t ");
+        std::env::set_var("LOGO_FILE", "   ");
+        std::env::set_var("SFX_INTRO", " ");
+        std::env::set_var("SFX_TYPEWRITER", "\t");
     }
     assert_eq!(
         panda::config::brand(),
@@ -291,6 +305,21 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         None,
         "全空白的 WATERMARK_ICON 应视同未配置"
     );
+    assert_eq!(
+        panda::config::logo_path(),
+        None,
+        "全空白的 LOGO_FILE 应视同未配置"
+    );
+    assert_eq!(
+        panda::config::sfx_intro(),
+        None,
+        "全空白的 SFX_INTRO 应视同未配置"
+    );
+    assert_eq!(
+        panda::config::sfx_typewriter(),
+        None,
+        "全空白的 SFX_TYPEWRITER 应视同未配置"
+    );
 
     // SAFETY: 同上。
     unsafe {
@@ -298,6 +327,9 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         std::env::remove_var("WATERMARK");
         std::env::remove_var("WATERMARK_COVER");
         std::env::remove_var("WATERMARK_ICON");
+        std::env::remove_var("LOGO_FILE");
+        std::env::remove_var("SFX_INTRO");
+        std::env::remove_var("SFX_TYPEWRITER");
     }
 }
 
@@ -323,11 +355,12 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         std::env::remove_var("WATERMARK");
         std::env::remove_var("WATERMARK_COVER");
         std::env::remove_var("WATERMARK_ICON");
+        std::env::remove_var("LOGO_FILE");
     };
 
     clear();
     assert_eq!(
-        Branding::resolve(None, None, None, None),
+        Branding::resolve(None, None, None, None, None),
         Branding::plain("墨风"),
         "四项都没给时应是「默认品牌 + 两处水印与图标都不画」"
     );
@@ -338,12 +371,14 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         std::env::set_var("WATERMARK", "环境正文水印");
         std::env::set_var("WATERMARK_COVER", "环境封面水印");
         std::env::set_var("WATERMARK_ICON", "/env/mark.svg");
+        std::env::set_var("LOGO_FILE", "/env/logo.png");
     }
-    let from_env = Branding::resolve(None, None, None, None);
+    let from_env = Branding::resolve(None, None, None, None, None);
     assert_eq!(from_env.brand, "环境品牌");
     assert_eq!(from_env.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(from_env.watermark_cover.as_deref(), Some("环境封面水印"));
     assert_eq!(from_env.watermark_icon.as_deref(), Some("/env/mark.svg"));
+    assert_eq!(from_env.logo.as_deref(), Some("/env/logo.png"));
 
     // 命令行优先于环境变量，且三个参数各落各的字段。
     let from_cli = Branding::resolve(
@@ -351,34 +386,43 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         Some("命令行正文水印".into()),
         Some("命令行封面水印".into()),
         Some("/cli/mark.png".into()),
+        Some("/cli/logo.svg".into()),
     );
     assert_eq!(from_cli.brand, "命令行品牌");
     assert_eq!(from_cli.watermark.as_deref(), Some("命令行正文水印"));
     assert_eq!(from_cli.watermark_cover.as_deref(), Some("命令行封面水印"));
     assert_eq!(from_cli.watermark_icon.as_deref(), Some("/cli/mark.png"));
+    assert_eq!(from_cli.logo.as_deref(), Some("/cli/logo.svg"));
 
     // 只给一个：另外两个必须仍来自环境变量，不能被这一个带偏。
-    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None, None);
+    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None, None, None);
     assert_eq!(only_brand.brand, "只给品牌");
     assert_eq!(only_brand.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(only_brand.watermark_cover.as_deref(), Some("环境封面水印"));
     assert_eq!(only_brand.watermark_icon.as_deref(), Some("/env/mark.svg"));
+    assert_eq!(only_brand.logo.as_deref(), Some("/env/logo.png"));
 
-    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None, None);
+    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None, None, None);
     assert_eq!(only_wm.watermark.as_deref(), Some("只给正文水印"));
     assert_eq!(only_wm.brand, "环境品牌");
     assert_eq!(only_wm.watermark_cover.as_deref(), Some("环境封面水印"));
 
-    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()), None);
+    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()), None, None);
     assert_eq!(only_cover.watermark_cover.as_deref(), Some("只给封面水印"));
     assert_eq!(only_cover.brand, "环境品牌");
     assert_eq!(only_cover.watermark.as_deref(), Some("环境正文水印"));
 
-    let only_icon = Branding::resolve(None, None, None, Some("/只给图标.png".into()));
+    let only_icon = Branding::resolve(None, None, None, Some("/只给图标.png".into()), None);
     assert_eq!(only_icon.watermark_icon.as_deref(), Some("/只给图标.png"));
     assert_eq!(only_icon.brand, "环境品牌");
     assert_eq!(only_icon.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(only_icon.watermark_cover.as_deref(), Some("环境封面水印"));
+    assert_eq!(only_icon.logo.as_deref(), Some("/env/logo.png"));
+
+    let only_logo = Branding::resolve(None, None, None, None, Some("/只给logo.png".into()));
+    assert_eq!(only_logo.logo.as_deref(), Some("/只给logo.png"));
+    assert_eq!(only_logo.brand, "环境品牌");
+    assert_eq!(only_logo.watermark_icon.as_deref(), Some("/env/mark.svg"));
 
     // 全空白的命令行参数视同没给，继续往下兜底到环境变量。
     let blank = Branding::resolve(
@@ -386,6 +430,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         Some("\t".into()),
         Some("  \n".into()),
         Some(" ".into()),
+        Some("\t\t".into()),
     );
     assert_eq!(
         blank, from_env,
@@ -400,8 +445,79 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
             Some("  ".into()),
             Some("  ".into()),
             Some("  ".into()),
+            Some("  ".into()),
         ),
         Branding::plain("墨风"),
         "全空白 + 无环境变量应一路兜底到默认值"
     );
+}
+
+/// `SfxSources::resolve` 的三级兜底：`--sfx-*` > 环境变量 > 内嵌那段。
+///
+/// 与 `branding_resolve_prefers_cli_over_env_over_default` 同一套写法与同一个
+/// 理由——两个入参同为 `Option<PathBuf>`，对调既不编译失败也不在运行时报错，
+/// 只会让打字机音效在片尾响、片尾音效在片头响。
+#[test]
+fn sfx_resolve_prefers_cli_over_env_over_embedded() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    use panda::config::SfxSources;
+    use std::path::PathBuf;
+    // SAFETY: 持有 ENV_LOCK，本文件内串行。
+    let clear = || unsafe {
+        std::env::remove_var("SFX_INTRO");
+        std::env::remove_var("SFX_TYPEWRITER");
+    };
+
+    clear();
+    assert_eq!(
+        SfxSources::resolve(None, None),
+        SfxSources::default(),
+        "都没给时两段都走内嵌"
+    );
+
+    unsafe {
+        std::env::set_var("SFX_INTRO", "/env/intro.mp3");
+        std::env::set_var("SFX_TYPEWRITER", "/env/typewriter.mp3");
+    }
+    let from_env = SfxSources::resolve(None, None);
+    assert_eq!(from_env.intro.as_deref(), Some(Path::new("/env/intro.mp3")));
+    assert_eq!(
+        from_env.typewriter.as_deref(),
+        Some(Path::new("/env/typewriter.mp3"))
+    );
+
+    // 命令行优先，且两个参数各落各的字段。
+    let from_cli = SfxSources::resolve(
+        Some(PathBuf::from("/cli/intro.mp3")),
+        Some(PathBuf::from("/cli/typewriter.mp3")),
+    );
+    assert_eq!(from_cli.intro.as_deref(), Some(Path::new("/cli/intro.mp3")));
+    assert_eq!(
+        from_cli.typewriter.as_deref(),
+        Some(Path::new("/cli/typewriter.mp3"))
+    );
+
+    // 只给一个：另一个必须仍来自环境变量，不能被这一个带偏。
+    let only_intro = SfxSources::resolve(Some(PathBuf::from("/cli/intro.mp3")), None);
+    assert_eq!(
+        only_intro.intro.as_deref(),
+        Some(Path::new("/cli/intro.mp3"))
+    );
+    assert_eq!(
+        only_intro.typewriter.as_deref(),
+        Some(Path::new("/env/typewriter.mp3")),
+        "只给片尾音效不应把打字机音效也带走"
+    );
+
+    let only_typewriter = SfxSources::resolve(None, Some(PathBuf::from("/cli/typewriter.mp3")));
+    assert_eq!(
+        only_typewriter.typewriter.as_deref(),
+        Some(Path::new("/cli/typewriter.mp3"))
+    );
+    assert_eq!(
+        only_typewriter.intro.as_deref(),
+        Some(Path::new("/env/intro.mp3"))
+    );
+
+    clear();
 }

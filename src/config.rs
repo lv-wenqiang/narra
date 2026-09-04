@@ -67,14 +67,14 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// 一条片子的品牌装备：品牌名与两处水印文案，整片恒定。
+/// 一条片子的品牌装备：品牌名、两处水印文案、水印图标与 logo，整片恒定。
 ///
-/// **为什么是一个结构体而不是三个平行参数**：三者同为 `String`/`Option<String>`，
+/// **为什么是一个结构体而不是一串平行参数**：五者同为 `String`/`Option<String>`，
 /// 平行传参时相邻两个对调不会编译失败，只会让成片上的字串默默换了位置——
 /// 本仓库为同一类风险写过 `each_material_env_var_is_wired_to_exactly_one_function`。
 /// 具名字段让构造处和使用处都由名字而非位置决定。
 ///
-/// 三级兜底（`--flag` > 环境变量 > 默认值）在 `main.rs` 的构造处装配，与
+/// 三级兜底（`--flag` > 环境变量 > 默认值）由 [`Branding::resolve`] 装配，与
 /// `ResolvedRenderPaths` 的四条素材路径同一套写法。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branding {
@@ -86,44 +86,50 @@ pub struct Branding {
     pub watermark_cover: Option<String>,
     /// 水印文字左侧的图标文件路径，两处共用，`None` = 不画图标。
     pub watermark_icon: Option<String>,
+    /// Cover 上排与 Outro 的 logo 文件路径，`None` = 用内嵌的那张。
+    pub logo: Option<String>,
 }
 
 impl Branding {
-    /// 三级兜底：`--flag` > 环境变量 > 默认值，三项各自独立地走一遍。
+    /// 三级兜底：`--flag` > 环境变量 > 默认值，每一项各自独立地走一遍。
     ///
-    /// **住在 config 里而不是 `main.rs`**：它组合的三个函数（[`brand`]、
-    /// [`watermark`]、[`watermark_cover`]）都在这里，装配逻辑跟着它们走才
+    /// **住在 config 里而不是 `main.rs`**：它组合的那几个函数（[`brand`]、
+    /// [`watermark`]、[`watermark_cover`]、[`watermark_icon`]、[`logo_path`]）
+    /// 都在这里，装配逻辑跟着它们走才
     /// 测得到——放在 `main.rs`（bin crate）里，`tests/` 下的环境变量夹具
     /// 够不着它，「哪个参数落进哪个字段」就成了零覆盖的装配层。
     /// `docs/follow-ups.md`「ffmpeg 合成 · 值得做」里记过同一类缺口。
     ///
-    /// 三个入参同为 `Option<String>`，位置传参时相邻两个对调既不编译失败也
-    /// 不在任何一次运行里报错，只会让文案默默画到另一处去——构造处用具名
+    /// 入参全是 `Option<String>`，位置传参时相邻两个对调既不编译失败也不在
+    /// 任何一次运行里报错，只会让文案/文件默默用到另一处去——构造处用具名
     /// 字段，测试用「设一个、断言只有对应那个变」的写法，两头一起堵。
     pub fn resolve(
         brand: Option<String>,
         watermark: Option<String>,
         watermark_cover: Option<String>,
         watermark_icon: Option<String>,
+        logo: Option<String>,
     ) -> Self {
         Self {
             brand: non_blank(brand).unwrap_or_else(self::brand),
             watermark: non_blank(watermark).or_else(self::watermark),
             watermark_cover: non_blank(watermark_cover).or_else(self::watermark_cover),
             watermark_icon: non_blank(watermark_icon).or_else(self::watermark_icon),
+            logo: non_blank(logo).or_else(self::logo_path),
         }
     }
 
     /// 只有品牌名、两处水印都不画的装备——也就是用户什么都没配时的形态。
     ///
-    /// 生产路径上由 `main.rs` 的 `resolve_branding` 装配；这个构造子是给
-    /// 「只关心品牌名、不关心水印」的调用方（含大量测试）用的短写法。
+    /// 生产路径上由 [`Branding::resolve`] 装配；这个构造子是给「只关心品牌名、
+    /// 其余一律用默认」的调用方（含大量测试）用的短写法。
     pub fn plain(brand: &str) -> Self {
         Self {
             brand: brand.to_string(),
             watermark: None,
             watermark_cover: None,
             watermark_icon: None,
+            logo: None,
         }
     }
 }
@@ -155,6 +161,25 @@ pub fn watermark() -> Option<String> {
     non_empty_env("WATERMARK")
 }
 
+/// Cover 上排与 Outro 的 logo 文件（`.svg` 或 `.png`），默认用内嵌的那张
+/// （`--logo` 覆盖）。
+///
+/// 与水印图标不同，这里的默认值**不是「不画」而是「用内嵌的」**：Cover 上排
+/// 与 Outro 的版式里 logo 是承重的，没有它那两段会空一块。
+pub fn logo_path() -> Option<String> {
+    non_empty_env("LOGO_FILE")
+}
+
+/// 片尾音效，默认用内嵌的 `intro.mp3`（`--sfx-intro` 覆盖）。
+pub fn sfx_intro() -> Option<String> {
+    non_empty_env("SFX_INTRO")
+}
+
+/// 打字机音效，默认用内嵌的 `intro_typewriter.mp3`（`--sfx-typewriter` 覆盖）。
+pub fn sfx_typewriter() -> Option<String> {
+    non_empty_env("SFX_TYPEWRITER")
+}
+
 /// 水印文字左侧的图标文件（`.svg` 或 `.png`），默认**不画**
 /// （`--watermark-icon` 覆盖）。
 ///
@@ -171,6 +196,33 @@ pub fn watermark_icon() -> Option<String> {
 /// 27%、24px、左下角；封面/片尾是深色 40%、28px、水平居中），文案也各配各的。
 pub fn watermark_cover() -> Option<String> {
     non_empty_env("WATERMARK_COVER")
+}
+
+/// 两段音效各自的来源：`Some` = 用户自备的文件，`None` = 用内嵌的那段。
+///
+/// 与 `ResolvedRenderPaths` 分开，是因为语义不同：那四条**必然有路径**
+/// （不给就用默认路径，缺文件直接报错），这两段**不给就走内嵌**，根本不存在
+/// 「默认路径」这回事。合进同一个结构体会让 `Option` 的含义在字段之间不一致。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SfxSources {
+    pub intro: Option<std::path::PathBuf>,
+    pub typewriter: Option<std::path::PathBuf>,
+}
+
+impl SfxSources {
+    /// 三级兜底：`--sfx-*` > 环境变量 > 内嵌那段。
+    ///
+    /// **与 [`Branding::resolve`] 同样住在 config 里**，理由也一样：它组合的
+    /// 两个函数在这里，放到 bin crate 会让「哪个参数落进哪个字段」零覆盖。
+    pub fn resolve(
+        intro: Option<std::path::PathBuf>,
+        typewriter: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            intro: intro.or_else(|| sfx_intro().map(std::path::PathBuf::from)),
+            typewriter: typewriter.or_else(|| sfx_typewriter().map(std::path::PathBuf::from)),
+        }
+    }
 }
 
 /// 背景视频，默认 `public/video/0.mp4`（`--bg` 覆盖）。

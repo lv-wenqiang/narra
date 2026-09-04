@@ -237,11 +237,36 @@ fn premultiply_in_place(rgba: &mut [u8]) {
 /// 实打实的开销，每帧重做不划算。Task 7 需要 216px 的 outro 版本时，对同一份
 /// `logo_rgba()` 结果再调一次本函数、存进 `Painter` 的新字段即可，不需要改
 /// 这个函数本身（`size_px` 已经是参数）。
-fn scaled_logo(size_px: u32) -> anyhow::Result<Pixmap> {
-    let (mut raw, w, h) = logo_rgba()?;
-    premultiply_in_place(&mut raw);
-    let img =
-        image::RgbaImage::from_raw(w, h, raw).context("logo 像素数据长度与声明的宽高不匹配")?;
+/// 解码好、已预乘的 logo 源位图，供多次缩放复用。
+///
+/// **解一次、缩两次**（销 `docs/follow-ups.md`「帧渲染 · 值得做」的 logo
+/// 条目）：`Painter::new` 要 36px 与 216px 两个尺寸，此前每次都重新解码一遍
+/// 2048² 的 PNG，实测单次 18ms、两次 36ms，占 `new()` 总耗时 132ms 的四分之
+/// 一还多。
+struct LogoSource {
+    rgba: Vec<u8>,
+    w: u32,
+    h: u32,
+}
+
+/// 加载 logo 源：给了路径就用用户那份，没给就用内嵌的。
+///
+/// 用户那份走 [`crate::assets::load_icon`] 的同一条分流（`.svg` → resvg，
+/// `.png` → image）。**按最大的目标尺寸光栅化**：两个目标里 Outro 的 216px
+/// 更大，先出 216px 再缩到 36px，比反过来清晰。
+fn load_logo_source(path: Option<&Path>) -> anyhow::Result<LogoSource> {
+    let (mut rgba, w, h) = match path {
+        Some(p) => crate::assets::load_icon(p, OUTRO_LOGO_SIZE_PX)?,
+        None => logo_rgba()?,
+    };
+    premultiply_in_place(&mut rgba);
+    Ok(LogoSource { rgba, w, h })
+}
+
+/// 把 logo 源缩到目标尺寸。
+fn scaled_logo(src: &LogoSource, size_px: u32) -> anyhow::Result<Pixmap> {
+    let img = image::RgbaImage::from_raw(src.w, src.h, src.rgba.clone())
+        .context("logo 像素数据长度与声明的宽高不匹配")?;
     let resized = image::imageops::resize(
         &img,
         size_px,
@@ -633,8 +658,9 @@ impl Painter {
                 )
             })
             .transpose()?;
-        let logo_36 = scaled_logo(COVER_LOGO_SIZE_PX)?;
-        let logo_216 = scaled_logo(OUTRO_LOGO_SIZE_PX)?;
+        let logo_src = load_logo_source(branding.logo.as_deref().map(Path::new))?;
+        let logo_36 = scaled_logo(&logo_src, COVER_LOGO_SIZE_PX)?;
+        let logo_216 = scaled_logo(&logo_src, OUTRO_LOGO_SIZE_PX)?;
         Ok(Self {
             renderer,
             brand: branding.brand.clone(),

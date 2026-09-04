@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use panda::config;
-use panda::config::Branding;
+use panda::config::{Branding, SfxSources};
 use panda::render::frame::FrameSource;
 use panda::render::timeline::FPS;
 use panda::tts::pipeline::{ProcessOptions, process_narration_file};
@@ -51,6 +51,9 @@ enum Commands {
         /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
         #[arg(long)]
         watermark_icon: Option<String>,
+        /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
+        #[arg(long)]
+        logo: Option<String>,
         /// 输出目录
         #[arg(short, long)]
         out: PathBuf,
@@ -81,6 +84,9 @@ enum Commands {
         /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
         #[arg(long)]
         watermark_icon: Option<String>,
+        /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
+        #[arg(long)]
+        logo: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -90,6 +96,12 @@ enum Commands {
         /// 背景音乐，默认 public/bgm/0.mp3
         #[arg(long)]
         bgm: Option<PathBuf>,
+        /// 片尾音效 mp3；不给则取 $SFX_INTRO，再不给用内嵌的那段
+        #[arg(long)]
+        sfx_intro: Option<PathBuf>,
+        /// 打字机音效 mp3；不给则取 $SFX_TYPEWRITER，再不给用内嵌的那段
+        #[arg(long)]
+        sfx_typewriter: Option<PathBuf>,
         /// 成片输出，默认 output/video/video.mp4
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -113,6 +125,9 @@ enum Commands {
         /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
         #[arg(long)]
         watermark_icon: Option<String>,
+        /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
+        #[arg(long)]
+        logo: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -122,6 +137,12 @@ enum Commands {
         /// 背景音乐，默认 public/bgm/0.mp3
         #[arg(long)]
         bgm: Option<PathBuf>,
+        /// 片尾音效 mp3；不给则取 $SFX_INTRO，再不给用内嵌的那段
+        #[arg(long)]
+        sfx_intro: Option<PathBuf>,
+        /// 打字机音效 mp3；不给则取 $SFX_TYPEWRITER，再不给用内嵌的那段
+        #[arg(long)]
+        sfx_typewriter: Option<PathBuf>,
         /// 成片输出，默认 output/video/video.mp4
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -256,6 +277,32 @@ struct ResolvedRenderPaths {
     bg: PathBuf,
     bgm: PathBuf,
     out: PathBuf,
+}
+
+/// 落实两段音效的最终路径：自备的直接用（先校验存在），没自备的才把内嵌那份
+/// 写进临时目录。
+///
+/// **两段都自备时完全不落盘**：内嵌音效落到临时目录只是为了给 ffmpeg 一个
+/// 文件路径（stdin 已被帧流占用），用户自备时那一步没有意义。
+///
+/// **自备文件的存在性在这里报错而不是留给 ffmpeg**：ffmpeg 对缺失输入的报错
+/// 混在一大段滤镜图日志里，且要等整条管道起来才发生；这里点名哪一段缺失。
+fn resolve_sfx_paths(sfx: &SfxSources, tmp_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    for (label, p) in [("片尾音效", &sfx.intro), ("打字机音效", &sfx.typewriter)] {
+        if let Some(p) = p
+            && !p.exists()
+        {
+            anyhow::bail!("{label}文件不存在：{}", p.display());
+        }
+    }
+    if let (Some(i), Some(t)) = (&sfx.intro, &sfx.typewriter) {
+        return Ok((i.clone(), t.clone()));
+    }
+    let (intro, typewriter) = write_embedded_audio_checked(tmp_dir)?;
+    Ok((
+        sfx.intro.clone().unwrap_or(intro),
+        sfx.typewriter.clone().unwrap_or(typewriter),
+    ))
 }
 
 fn resolve_render_paths(
@@ -395,6 +442,7 @@ struct ComposeVideoInputs<'a> {
     vtt: &'a Path,
     title: Option<&'a str>,
     branding: &'a Branding,
+    sfx: &'a SfxSources,
     title_json: &'a Path,
     bg: &'a Path,
     bgm: &'a Path,
@@ -413,6 +461,7 @@ fn compose_inputs<'a>(
     vtt: &'a Path,
     title: Option<&'a str>,
     branding: &'a Branding,
+    sfx: &'a SfxSources,
     paths: &'a ResolvedRenderPaths,
 ) -> ComposeVideoInputs<'a> {
     ComposeVideoInputs {
@@ -420,6 +469,7 @@ fn compose_inputs<'a>(
         vtt,
         title,
         branding,
+        sfx,
         title_json: &paths.title_json,
         bg: &paths.bg,
         bgm: &paths.bgm,
@@ -456,6 +506,7 @@ fn compose_video_with_runner(
         vtt,
         title,
         branding,
+        sfx,
         title_json,
         bg,
         bgm,
@@ -473,7 +524,7 @@ fn compose_video_with_runner(
     let tmp = unique_tmp_audio_dir();
     std::fs::create_dir_all(&tmp)
         .with_context(|| format!("创建临时目录失败：{}", tmp.display()))?;
-    let (intro, typewriter) = write_embedded_audio_checked(&tmp)?;
+    let (intro, typewriter) = resolve_sfx_paths(sfx, &tmp)?;
 
     let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding)?;
 
@@ -521,12 +572,13 @@ async fn main() -> Result<()> {
             watermark,
             watermark_cover,
             watermark_icon,
+            logo,
             out,
             frames,
         } => run_debug_frames(
             vtt,
             title,
-            Branding::resolve(brand, watermark, watermark_cover, watermark_icon),
+            Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo),
             out,
             frames,
         ),
@@ -538,18 +590,24 @@ async fn main() -> Result<()> {
             watermark,
             watermark_cover,
             watermark_icon,
+            logo,
             title_json,
             bg,
             bgm,
+            sfx_intro,
+            sfx_typewriter,
             out,
         } => {
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            let branding = Branding::resolve(brand, watermark, watermark_cover, watermark_icon);
+            let branding =
+                Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo);
+            let sfx = SfxSources::resolve(sfx_intro, sfx_typewriter);
             compose_video(&compose_inputs(
                 &audio,
                 &vtt,
                 title.as_deref(),
                 &branding,
+                &sfx,
                 &paths,
             ))
         }
@@ -560,9 +618,12 @@ async fn main() -> Result<()> {
             watermark,
             watermark_cover,
             watermark_icon,
+            logo,
             title_json,
             bg,
             bgm,
+            sfx_intro,
+            sfx_typewriter,
             out,
         } => {
             // TTS 的输出目录不走命令行：`make` 的 TTS 产物是中间物，位置由
@@ -571,12 +632,15 @@ async fn main() -> Result<()> {
             let outdir = run_tts(input, None, None, None).await?;
             let (audio, vtt) = tts_artifact_paths(&outdir);
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            let branding = Branding::resolve(brand, watermark, watermark_cover, watermark_icon);
+            let branding =
+                Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo);
+            let sfx = SfxSources::resolve(sfx_intro, sfx_typewriter);
             compose_video(&compose_inputs(
                 &audio,
                 &vtt,
                 title.as_deref(),
                 &branding,
+                &sfx,
                 &paths,
             ))
         }
@@ -645,6 +709,97 @@ mod tests {
     /// 变异实验：`--bg` 默认值接成 `config::bgm_path()`（两个默认值对调）。
     /// 直接和 `config` 里对应的函数各自比对，而不是硬编码字符串字面量——
     /// 硬编码的话，把两个默认值调换后再把断言也跟着抄错，测试依然会绿。
+    /// 两段音效的来源解析：自备优先、缺失点名、两段都自备时完全不落盘。
+    ///
+    /// 「不落盘」这一条是有意断言的：内嵌音效写进临时目录只是为了给 ffmpeg
+    /// 一个文件路径（stdin 已被帧流占用），两段都自备时那一步没有意义。把
+    /// `resolve_sfx_paths` 写成「无条件先写内嵌再覆盖路径」的变异，只看返回
+    /// 值是察觉不到的——这里直接断言临时目录里没有多出文件。
+    #[test]
+    fn sfx_prefers_user_files_and_only_writes_the_embedded_ones_when_needed() {
+        let dir =
+            std::env::temp_dir().join(format!("panda_sfx_{}_{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mine_a = dir.join("mine_a.mp3");
+        let mine_b = dir.join("mine_b.mp3");
+        std::fs::write(&mine_a, b"fake").unwrap();
+        std::fs::write(&mine_b, b"fake").unwrap();
+
+        let tmp = dir.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // 两段都自备：原样返回，且临时目录仍是空的。
+        let both = SfxSources {
+            intro: Some(mine_a.clone()),
+            typewriter: Some(mine_b.clone()),
+        };
+        let (i, t) = resolve_sfx_paths(&both, &tmp).unwrap();
+        assert_eq!((i, t), (mine_a.clone(), mine_b.clone()));
+        assert_eq!(
+            std::fs::read_dir(&tmp).unwrap().count(),
+            0,
+            "两段都自备时不应把内嵌音效写进临时目录"
+        );
+
+        // 只自备片尾音效：打字机回落内嵌，且自备那段没被换掉。
+        let only_intro = SfxSources {
+            intro: Some(mine_a.clone()),
+            typewriter: None,
+        };
+        let (i, t) = resolve_sfx_paths(&only_intro, &tmp).unwrap();
+        assert_eq!(i, mine_a, "自备的片尾音效应原样保留");
+        assert_eq!(
+            t.file_name().and_then(|f| f.to_str()),
+            Some("intro_typewriter.mp3"),
+            "没自备的打字机音效应回落到内嵌那份"
+        );
+
+        // 两段都不自备：都走内嵌。
+        let (i, t) = resolve_sfx_paths(&SfxSources::default(), &tmp).unwrap();
+        assert_eq!(i.file_name().and_then(|f| f.to_str()), Some("intro.mp3"));
+        assert_eq!(
+            t.file_name().and_then(|f| f.to_str()),
+            Some("intro_typewriter.mp3")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 自备的音效文件不存在时在这里报错并点名是哪一段，而不是留给 ffmpeg。
+    #[test]
+    fn missing_user_supplied_sfx_is_reported_by_name() {
+        let tmp = std::env::temp_dir().join(format!("panda_sfx_missing_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let err = resolve_sfx_paths(
+            &SfxSources {
+                intro: Some(PathBuf::from("/nonexistent-intro-xyz.mp3")),
+                typewriter: None,
+            },
+            &tmp,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("片尾音效"), "应点名是片尾音效：{err}");
+        assert!(
+            err.contains("nonexistent-intro-xyz.mp3"),
+            "应点名文件：{err}"
+        );
+
+        let err = resolve_sfx_paths(
+            &SfxSources {
+                intro: None,
+                typewriter: Some(PathBuf::from("/nonexistent-typewriter-xyz.mp3")),
+            },
+            &tmp,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("打字机音效"), "应点名是打字机音效：{err}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn resolve_render_paths_defaults_match_the_documented_config_functions() {
         let r = resolve_render_paths(None, None, None, None);
@@ -870,8 +1025,10 @@ mod tests {
         std::fs::write(&vtt, RENDER_TEST_VTT).unwrap();
 
         let branding = Branding::plain(TEST_BRAND);
+        let sfx = SfxSources::default();
         let inputs = ComposeVideoInputs {
             branding: &branding,
+            sfx: &sfx,
             audio: &audio,
             vtt: &vtt,
             title: Some("测试标题"),
@@ -948,8 +1105,10 @@ mod tests {
         // 场景一：只有 audio 缺失，vtt/bg/bgm 都存在。
         std::fs::write(&vtt, RENDER_TEST_VTT).unwrap();
         let branding = Branding::plain(TEST_BRAND);
+        let sfx = SfxSources::default();
         let inputs = ComposeVideoInputs {
             branding: &branding,
+            sfx: &sfx,
             audio: &audio,
             vtt: &vtt,
             title: Some("t"),
@@ -974,8 +1133,10 @@ mod tests {
         std::fs::write(&audio, "audio").unwrap();
         std::fs::remove_file(&vtt).unwrap();
         let branding = Branding::plain(TEST_BRAND);
+        let sfx = SfxSources::default();
         let inputs = ComposeVideoInputs {
             branding: &branding,
+            sfx: &sfx,
             audio: &audio,
             vtt: &vtt,
             title: Some("t"),
@@ -1024,7 +1185,8 @@ mod tests {
         let vtt = PathBuf::from("/given/audio.vtt");
 
         let branding = Branding::plain(TEST_BRAND);
-        let inputs = compose_inputs(&audio, &vtt, Some("标题"), &branding, &paths);
+        let sfx = SfxSources::default();
+        let inputs = compose_inputs(&audio, &vtt, Some("标题"), &branding, &sfx, &paths);
 
         assert_eq!(inputs.audio, audio.as_path());
         assert_eq!(inputs.vtt, vtt.as_path());
@@ -1047,7 +1209,8 @@ mod tests {
         let paths = resolve_render_paths(None, None, None, None);
 
         let branding = Branding::plain(TEST_BRAND);
-        let inputs = compose_inputs(&audio, &vtt, None, &branding, &paths);
+        let sfx = SfxSources::default();
+        let inputs = compose_inputs(&audio, &vtt, None, &branding, &sfx, &paths);
 
         assert_eq!(
             inputs.audio,
