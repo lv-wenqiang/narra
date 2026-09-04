@@ -172,13 +172,6 @@ fn run_debug_frames(
     Ok(())
 }
 
-/// TTS 流水线的两个产物在输出目录下的固定文件名（见
-/// `tts::pipeline::process_narration_file` 里的 `output_dir.join(..)`）。
-/// `make` 靠这个约定把 TTS 的输出接到合成的输入上。
-fn tts_artifact_paths(outdir: &Path) -> (PathBuf, PathBuf) {
-    (outdir.join("audio.mp3"), outdir.join("audio.vtt"))
-}
-
 /// 跑一遍 TTS 流水线，返回**实际使用的输出目录**——`make` 需要它来定位
 /// `audio.mp3`/`audio.vtt`，所以兜底后的目录必须由本函数交回调用方，而不是
 /// 让调用方各自再算一遍（两处各算一次就是两个真相源）。
@@ -1086,16 +1079,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn make_defaults_the_tts_output_paths_under_the_output_dir() {
-        // make 把 TTS 的产物喂给合成，两者的路径约定必须一致：
-        // audio.mp3 与 audio.vtt 都在 TTS 输出目录下。
-        let dir = std::path::Path::new("/tmp/some-tts-out");
-        let (a, v) = tts_artifact_paths(dir);
-        assert_eq!(a, std::path::Path::new("/tmp/some-tts-out/audio.mp3"));
-        assert_eq!(v, std::path::Path::new("/tmp/some-tts-out/audio.vtt"));
-    }
-
     /// 变异实验：`compose_inputs` 里把 `audio`/`vtt`、`bg`/`bgm` 或
     /// `title_json`/`out` 任意一对填反。这是 `render` 与 `make` 唯一的合成
     /// 输入装配点，一条测试同时守住两个分支。
@@ -1123,15 +1106,17 @@ mod tests {
         assert_eq!(inputs.out, paths.out.as_path());
     }
 
-    /// `make` 侧的接线：TTS 跑完之后，喂给合成的 `audio`/`vtt` 必须正是
-    /// `tts_artifact_paths` 约定的那两个文件，且顺序没有对调（mp3 进
-    /// `audio`、vtt 进 `vtt`）——两者都是 `&Path`，编译器分不出来。
-    /// 素材与输出路径则和 `render` 完全同源（同一个 `ResolvedRenderPaths`），
-    /// 这就是「两个子命令一条合成路径」在测试里的体现。
+    /// 一条龙侧的接线：TTS 跑完之后，喂给合成的 `audio`/`vtt` 必须正是
+    /// `pipeline` 那两个常量约定的文件，且顺序没有对调（mp3 进 `audio`、
+    /// vtt 进 `vtt`）——两者都是 `&Path`，编译器分不出来。
+    ///
+    /// 编排本身现在在 `justfile` 里，但这条接线约定仍是 Rust 侧的事：
+    /// `justfile` 拼路径靠的就是这两个常量（见 `tests/justfile_defaults.rs`）。
     #[test]
-    fn make_feeds_the_tts_artifacts_into_the_shared_compose_inputs() {
+    fn tts_artifacts_feed_into_the_shared_compose_inputs() {
         let outdir = PathBuf::from("/tmp/panda-make-tts-out");
-        let (audio, vtt) = tts_artifact_paths(&outdir);
+        let audio = outdir.join(panda::tts::pipeline::AUDIO_FILE_NAME);
+        let vtt = outdir.join(panda::tts::pipeline::VTT_FILE_NAME);
         let paths = resolve_render_paths(None, None, None, None);
 
         let branding = Branding::plain(TEST_BRAND);

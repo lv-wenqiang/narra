@@ -58,6 +58,15 @@ async fn synth_with_retry<B: TtsBackend + ?Sized>(backend: &B, text: &str) -> Re
     Err(last.unwrap_or_else(|| anyhow::anyhow!("合成失败且无错误记录")))
 }
 
+/// TTS 流水线两个产物的固定文件名。
+///
+/// **唯一真相源**：下面写文件的两处、`tests/justfile_defaults.rs`（`justfile`
+/// 的 `make` 配方要靠它拼出喂给 `panda render` 的路径）都对着这两个常量。
+/// 此前 `main.rs` 另有一份 `tts_artifact_paths` 把同样的字面量抄了一遍，
+/// `panda make` 移到 justfile 之后它成了死代码，一并删掉。
+pub const AUDIO_FILE_NAME: &str = "audio.mp3";
+pub const VTT_FILE_NAME: &str = "audio.vtt";
+
 /// 读文稿 → 并发合成 → 合并加速 → 写 audio.mp3 与 audio.vtt → 清理中间文件。
 pub async fn process_narration_file(
     input: &Path,
@@ -186,7 +195,7 @@ where
     let temp_paths: Vec<PathBuf> = rows.iter().map(|r| r.1.clone()).collect();
     let durations: Vec<f64> = rows.iter().map(|r| r.2).collect();
 
-    let merged = output_dir.join("audio.mp3");
+    let merged = output_dir.join(AUDIO_FILE_NAME);
     println!(
         "🔗 合并并以 atempo {} 加速 → {}",
         opts.speed_factor,
@@ -201,7 +210,7 @@ where
 
     let adjusted: Vec<f64> = durations.iter().map(|d| d / opts.speed_factor).collect();
 
-    let vtt_path = output_dir.join("audio.vtt");
+    let vtt_path = output_dir.join(VTT_FILE_NAME);
     if let Err(e) = tokio::fs::write(&vtt_path, generate_vtt(&lines, &adjusted, 30)).await {
         // 合并已经成功，audio.mp3 是本次运行刚写出的半成品：传 `true`，
         // 必须清理掉，否则会留下一个没有对应 VTT 的孤儿音频文件。

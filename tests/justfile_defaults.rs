@@ -51,6 +51,27 @@ fn justfile_mirrors_the_config_defaults() {
     }
 }
 
+/// `justfile` 拼 TTS 产物路径用的两个文件名，必须与 `pipeline` 的常量一致。
+///
+/// 配方把 `--audio {{tts_outdir}}/audio.mp3` 直接写在命令行上；那两个名字的
+/// 真相源是 `tts::pipeline::{AUDIO_FILE_NAME, VTT_FILE_NAME}`（流水线写文件
+/// 时用的就是它们）。改了常量却没改 justfile，`just make` 会在 TTS 明明跑完
+/// 的情况下报「音频文件不存在」——错误完全不指向真正的原因。
+#[test]
+fn justfile_mirrors_the_tts_artifact_file_names() {
+    for (label, name) in [
+        ("音频", panda::tts::pipeline::AUDIO_FILE_NAME),
+        ("字幕", panda::tts::pipeline::VTT_FILE_NAME),
+    ] {
+        let want = format!("{{{{ tts_outdir }}}}/{name}");
+        assert!(
+            JUSTFILE.contains(&want),
+            "justfile 应当用 `{want}` 拼{label}产物路径；\n\
+             改了 tts::pipeline 的文件名常量就要同步改 justfile。"
+        );
+    }
+}
+
 /// `justfile` 里出现的每个 `panda` 子命令都必须真的存在。
 ///
 /// `panda make` 被移除时，`justfile` 的配方名仍叫 `make`——那是 just 的配方名，
