@@ -589,8 +589,8 @@ ffmpeg -y \
   -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - \
   -i output/tts/audio.mp3 \
   -stream_loop -1 -i ../panda-video-ts/public/bgm/0.mp3 \
-  -i assets/intro_typewriter.mp3 \
-  -i assets/intro.mp3 \
+  -i /tmp/panda_render_{pid}_{uuid}/intro_typewriter.mp3 \
+  -i /tmp/panda_render_{pid}_{uuid}/intro.mp3 \
   -filter_complex "\
 [0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
 [bg][1:v]overlay=shortest=0[v];\
@@ -605,6 +605,15 @@ ffmpeg -y \
   -c:a aac -b:a 192k \
   /tmp/final.mp4
 ```
+
+**`4`/`5` 号输入不是仓库里的 `assets/` 文件**：`intro_typewriter.mp3` /
+`intro.mp3` 的字节由 `src/assets.rs` 的 `include_bytes!` 内嵌进二进制，
+运行时由 `write_embedded_audio` 落到 `unique_tmp_audio_dir()`（`src/main.rs`）
+建的一次性临时目录——`std::env::temp_dir().join("panda_render_{pid}_{uuid
+v4}")`，每次运行的 `{pid}`/`{uuid}` 都不同，合成结束后随 `cleanup_tmp_and_
+propagate` 一并删除。上面两行是这条真实路径的**形态**，不是可以照抄复现
+的字面路径；仓库里的 `assets/intro.mp3` / `assets/intro_typewriter.mp3`
+只是内嵌的源文件，ffmpeg 从来不会直接读它们。
 
 三个关键数字的来源（都能从这次真实运行的 `A`/帧数反推出来）：
 
