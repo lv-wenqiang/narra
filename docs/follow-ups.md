@@ -17,6 +17,21 @@
 
 ## TTS 子系统
 
+### 已销账
+
+- **画布尺寸与帧率同时存在于两个文件、互不引用**（原「值得做」第 3 条，
+  帧渲染子系统补充部分）。`docs/superpowers/plans/2026-09-04-canvas-metrics-refactor.md`
+  收敛为单一的值类型 `render::canvas::Canvas`（`BASE`/`scale()`/`w_f32()`/
+  `h_f32()`），`Metrics::for_canvas` 接管全部 44 个宽/高派生量，`Painter` /
+  `FrameSource` / `RenderInputs` 都改成显式持有 `Canvas`。中间步骤曾让
+  `timeline::WIDTH`/`HEIGHT` 从 `Canvas::BASE` 派生（而不是直接删除）作为
+  过渡；等到 `draw.rs` 的 `CANVAS_W`/`CANVAS_H` 也全部改用 `Metrics` 之后，
+  这两个 `pub` 重导出在 `src/` 与 `tests/` 里已经没有任何读者，只是靠 `pub`
+  躲过了 `dead_code` 检查——发现后直接删除，见
+  `src/render/timeline.rs` 的删除记录。变异验证：把 `Canvas::BASE` 改错一格
+  （`1280`→`1281`），`render::canvas::tests::base_matches_the_pre_refactor_hardcoded_size`
+  与 `cargo test --test canvas_baseline` 两侧同时变红。
+
 ### 值得做
 
 #### 1. `merge_mp3_with_speed` 用 `-y` 直写目标路径，非原子
@@ -44,13 +59,7 @@
 
 它们在实施计划的 Global Constraints 里本是并列的一批可调参数。渲染子系统会再加一批（画布尺寸、帧率、各段时长、字号…），现在定个统一位置成本最低。
 
-**帧渲染子系统补充（这一批已经落地，而且落成了两份真相源）**：画布尺寸与帧率
-**同时存在于两个文件**且互不引用——`src/render/timeline.rs` 有 `WIDTH` / `HEIGHT` /
-`FPS`（`u32`，用于分段计算），`src/render/draw.rs` 另有 `CANVAS_W` / `CANVAS_H` /
-`FPS`（`f32`/`f64`，用于排版）。`frame.rs` 按 timeline 的尺寸建 `Pixmap`，四个
-`draw_*` 却按 draw.rs 的常量排版：**两边一旦不一致，结果是画面静默错位，而不是
-编译失败**。修法是让一边从另一边推导，例如
-`const CANVAS_W: f32 = crate::render::timeline::WIDTH as f32;`。
+（画布尺寸/帧率的双真相源部分已销账，见上面「已销账」。）
 
 #### 4. `ffmpeg.rs` 的两处同步 `Command::output()`
 
@@ -94,7 +103,10 @@
   36px 与 216px 两个尺寸各从它缩一次。原实测单次解码 18ms、两次 36ms，占
   `new()` 总耗时 132ms 的四分之一还多。**条目里附带的「换 256px 预缩版省
   1.3MB 二进制」没做**：内嵌那张现在只是默认值，用户可以给自己的文件，把
-  默认图换小是独立的一件事。
+  默认图换小是独立的一件事。**这条建议现在确定不做**：计划 B 的 1920×1080
+  横版模式需要一枚 324px 的 Outro logo，256px 的预缩版不够用；内嵌原图
+  2048² 在 BASE（36px/216px）与计划 B（324px）两档尺寸下都够缩，换成更小
+  的预缩版反而会在计划 B 落地时不够用。
 
 ### 值得做
 

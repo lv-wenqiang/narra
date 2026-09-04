@@ -204,7 +204,7 @@ TS 原版的时、分由 `Math.floor` 独立计算，秒由 `seconds % 60` 得�
 
 ### 8.1 画布参数
 
-`1280 × 720`，`30 fps`，H.264，`crf 23`。
+`Canvas::BASE`（`1280 × 720`）是版式常量的调优基准与命令行默认值，**不是写死的产品尺寸**——实际渲染画布由 `Canvas` 参数决定，见 §8.3。`30 fps`，H.264，`crf 23`。
 
 ### 8.2 时间轴布局
 
@@ -223,7 +223,9 @@ TS 原版的时、分由 `Math.floor` 独立计算，秒由 `seconds % 60` 得�
 
 ### 8.3 覆盖层策略
 
-Rust 每帧输出一张 `1280×720` RGBA 位图：
+**画布尺寸由 `render::canvas::Canvas` 参数决定**，不是写死的 1280×720——`Canvas::BASE` 只是版式常量的调优基准（§8.1）。下面 §8.4/§8.6 列出的像素值都是在 `Canvas::BASE` 上的取值，`Metrics::for_canvas` 按 `Canvas::scale()`（= 画布宽度 / 1280）把它们换算到实际画布。
+
+Rust 每帧输出一张与画布同尺寸的 RGBA 位图：
 
 - **Cover / Intro / Outro**：不透明白底铺满（alpha = 255），直接盖住背景视频
 - **Content**：完全透明底，只画字幕和水印
@@ -232,22 +234,37 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 
 ### 8.4 各段视觉规格
 
+> 下面的像素值都是 **`Canvas::BASE`（1280×720）上的取值**，全部来自
+> `render::metrics::Metrics::for_canvas` 的对应字段。除百分比（宽度 80% 一类）
+> 天然与画布无关外，每个长度量纲的值实际渲染时都乘以 `Canvas::scale()`
+> （= 画布宽度 / 1280），标注为「BASE `field_name`」。
+
 **Cover（0.5s）**
 - 白底 `#FFFFFF`
-- 居中容器：画面正中，宽度 80%，内容居中对齐
-  - **上排**（整体 `opacity 0.30`，左偏移 40px，水平排列、垂直居中）：
-    - `logo.png`，36px（`min(1280,720) * 0.1 / 2`），四周 margin 8px
-    - 紧邻的**品牌名**（默认「墨风」，`--brand`/`$BRAND` 可改）：38px 粗体，`dingliesongtypeface`，行高 1.2
-  - **主标题**：100px 粗体，`dingliesongtypeface`，左右 padding 40px，行高 1.2，支持换行（`pre-line` + 长词断行）
+- 居中容器：画面正中，宽度 80%（`cover_container_width = w * 0.8`），内容居中对齐
+  - **上排**（整体 `opacity 0.30`，左偏移 40px——BASE `cover_row_margin_left`，
+    水平排列、垂直居中）：
+    - `logo.png`，36px（BASE `cover_logo_size`，取整到整数像素：
+      `round(36 × scale)`；旧公式 `min(1280,720) * 0.1 / 2` 只是在 BASE 上恰好
+      等于 36，现在的真相源是 `cover_logo_size`），四周 margin 8px（BASE
+      `cover_logo_margin`）
+    - 紧邻的**品牌名**（默认「墨风」，`--brand`/`$BRAND` 可改）：38px 粗体
+      （BASE `cover_row_text_font_size`），`dingliesongtypeface`，行高 1.2
+  - **主标题**：100px 粗体（BASE `cover_title_font_size`），
+    `dingliesongtypeface`，左右 padding 40px（BASE `cover_title_padding`，
+    容器宽度减去两侧 padding 得到 `cover_title_max_width`），行高 1.2，
+    支持换行（`pre-line` + 长词断行）
 - 水印（`cover` 预设）——**仅在配置了 `--watermark-cover` 时**
 
 **Intro（3.5s）— 打字机**
 - 白底
-- 标题字号 70px，粗体，`dingliesongtypeface`，居中，宽度 80%，左右 padding 40px，支持换行
+- 标题字号 70px（BASE `intro_title_font_size`），粗体，`dingliesongtypeface`，
+  居中，宽度 80% 左右 padding 40px 各一次（合并进 `intro_title_max_width
+  = w * 0.8 - 80 × scale`），支持换行
 - 打字机：2 秒内打完全部字符
   - `chars_per_sec = title.chars().count() / 2`
   - `visible = min(floor(frame * chars_per_sec / fps), len)`
-- 光标 `|`：打字未完成时显示，2 次/秒闪烁，左边距 4px
+- 光标 `|`：打字未完成时显示，2 次/秒闪烁，左边距 4px（BASE `intro_cursor_gap`）
   - `opacity = interpolate(frame % (fps/2), [0, fps/4, fps/2], [1, 1, 0], clamp)`
 - 3.0s → 3.5s 线性淡出：`interpolate(frame, [90, 104], [1, 0], clamp)`
 - 无水印
@@ -255,26 +272,42 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 **Content（A + 2s）— 字幕**
 - 透明底
 - 当前字幕 = VTT 中满足 `start <= t < end` 的第一条
-- 字号：去除所有空白后字符数 > 50 → 52px，否则 80px
-- 粗体，`dingliesongtypeface`，居中于画面中心，宽度 80%，padding 20px/40px，保留换行
-- **描边**：先用 6px 黑色 `#000000` 描边（居中描边，即向外 3px），再填充白色 `#FFFFFF`
+- 字号：去除所有空白后字符数 > 50 → 52px（BASE `caption_font_size_long`），
+  否则 80px（BASE `caption_font_size_short`）
+- 粗体，`dingliesongtypeface`，居中于画面中心，宽度 80%，padding 20px/40px
+  （水平 40px 即 BASE `caption_padding_x`，两侧共减去 `2 × caption_padding_x`
+  得到 `caption_max_width`；垂直 20px 只是 CSS 盒模型的历史残留，Rust 版按
+  中心点垂直居中，不参与任何布局计算，故不随画布缩放），保留换行
+- **描边**：先用 6px 黑色 `#000000` 描边（BASE `caption_stroke_width`，居中
+  描边，即向外 3px），再填充白色 `#FFFFFF`
 - 入场动画，持续 `min(500ms, 字幕时长 * 0.3)`：
   - `p = spring(frame, fps, damping = 200, duration_frames)`
   - `scale`：`1.2 → 1.0`
   - `opacity`：`0 → 1`
-  - `translate_x`：`100 → 0`（像素）
-  - `letter_spacing`：`8 → 0`（像素）
+  - `translate_x`：`100 → 0`（像素，BASE 值即 `entrance_translate_x_from`）
+  - `letter_spacing`：`8 → 0`（像素，BASE 值即 `entrance_letter_spacing_from`）
 - 左下角水印（`content` 预设）——**仅在配置了 `--watermark` 时**
 
 **Outro（4s）**
 - 白底（由 Content 之后的段落提供）
-- 同心圆环：5 个白色实心圆，半径 `720 * 0.3 * i`（i = 0..4，倒序绘制），整体 `scale = 1 / (1 - out_progress)`
+- 同心圆环：5 个白色实心圆，半径步长 216px × i（i = 0..4，倒序绘制），整体
+  `scale = 1 / (1 - out_progress)`
+  - **半径步长的推导已改**（规格 §3 陷阱 2）：旧写法 `720 * 0.3` 按**高度**
+    推导，在任意 16:9 画布上与按宽度推导的 `1280 * 0.16875` 同值（`H = W ×
+    0.5625`），这个巧合曾掩盖过一次按高度推导的错误。真相源是
+    `Metrics::outro_ring_radius_step = 216 × scale`（`scale` 以宽度为基准），
+    BASE 上取值仍是 216，9:16 等非 16:9 画布下会与旧公式分道扬镳。
   - `out_progress = spring(frame, fps, damping = 200, duration = 0.5s, delay = 1s)`
   - **边界**：`out_progress → 1` 时 scale 发散，需钳制上限避免数值溢出
-- Logo：`logo.png`，尺寸 `min(1280, 720) * 0.3 = 216px`，`scale = interpolate(frame, [0, 24], [0.2, 1.0], clamp)`
-- **品牌名**（默认「墨风」，同 Cover 上排取自同一个配置项）：70px 粗体黑色，logo 下方 40px
+- Logo：`logo.png`，尺寸 216px（BASE `outro_logo_size`，取整到整数像素：
+  `round(216 × scale)`；旧公式 `min(1280, 720) * 0.3` 同样是按高度推导，
+  与半径步长是同一个陷阱、同一次修正），`scale = interpolate(frame, [0,
+  24], [0.2, 1.0], clamp)`
+- **品牌名**（默认「墨风」，同 Cover 上排取自同一个配置项）：70px 粗体黑色
+  （BASE `outro_title_font_size`），logo 下方 40px（BASE `outro_title_gap`）
   - `opacity = interpolate(frame, [24, 39], [0, 1], clamp)`
-  - `translate_y = interpolate(frame, [24, 39], [-50, 0], clamp)`
+  - `translate_y = interpolate(frame, [24, 39], [-50, 0], clamp)`（像素，
+    BASE 值即 `outro_title_translate_y_from`）
 - 整体淡出：`interpolate(frame, [105, 119], [1, 0], clamp)`
 - 水印（`cover` 预设）——**仅在配置了 `--watermark-cover` 时**
 
@@ -303,13 +336,13 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 |---|---|---|
 | 文案来源 | `--watermark-cover` / `$WATERMARK_COVER` | `--watermark` / `$WATERMARK` |
 | 未配置时 | 不画 | 不画 |
-| 位置 | 画面水平居中，**垂直中心 576px** | 左下角，距左 40px、距下 40px |
-| 字号 | 28px | 24px |
+| 位置 | 画面水平居中，**垂直中心 = 画布高度的 80%**（BASE 576px = 0.8 × 720，`Metrics::cover_watermark_center_y = h * 0.8`；本节其余长度量都乘的是**宽度比** `Canvas::scale()`，只有这一个量随**高度**走，两者在 16:9 上恰好同步缩放，看不出区别） | 左下角，距左 40px（BASE `watermark_margin_left`）、距下 40px（BASE `watermark_margin_bottom`） |
+| 字号 | 28px（BASE `cover_watermark_font_size`） | 24px（BASE `watermark_font_size`） |
 | 颜色 | `rgba(23, 23, 23, 0.4)` | `rgba(255, 255, 255, 0.27)` |
 | 字重 | 400 | 500（实现豁免，见下第 3 条） |
 | 字距 | 默认 | `0.01em` |
-| 图标尺寸 | 32px | 28px |
-| 图标与文字间距 | 12px | 10px |
+| 图标尺寸 | 32px（BASE `cover_watermark_icon_size`，取整到整数像素） | 28px（BASE `watermark_icon_size`，取整到整数像素） |
+| 图标与文字间距 | 12px（BASE `cover_watermark_icon_gap`） | 10px（BASE `watermark_icon_gap`） |
 | 分隔点 `·` | 单独降到 0.75 不透明度 | 同左 |
 
 **图标由 `--watermark-icon` / `$WATERMARK_ICON` 提供，两处共用、默认不画。**
@@ -327,8 +360,12 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 > 元素处在 `inset: 0` + `alignItems: center` 的居中容器里，盒高 288px，`marginTop`
 > 把盒子推下去之后**居中点**才是 `432 + (720 - 432) / 2 = 576`。规格与计划早先
 > 写的「自顶部偏移 432px」是把 margin 值当成了最终位置，会把水印怼进主标题里；
-> 代码（`src/render/draw.rs` 的 `COVER_WATERMARK_CENTER_Y_PX`）用的 576 是对的，
-> 导出帧上水印墨迹也确实落在 y≈576。
+> `432/720 = 0.6`、`576/720 = 0.8`，换算成比例就是「盒子顶部在 60% 高度处，
+> 居中点在 80% 高度处」——**画布参数化重构（2026-09-04）之后，代码里已经不是
+> 写死的 576，而是 `render::metrics::Metrics::cover_watermark_center_y =
+> canvas.h_f32() * 0.8`**（旧常量名 `COVER_WATERMARK_CENTER_Y_PX` 已随那次
+> 重构删除）。BASE（720 高）上取值仍是 576，导出帧上水印墨迹也确实落在
+> y≈576；非 720 高的画布上会按 80% 等比例走，不再是这个字面量。
 
 **实现决策**（TS 原版行为与 Rust 实现的取舍）：
 
