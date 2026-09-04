@@ -1,4 +1,4 @@
-use crate::render::timeline::{FPS, HEIGHT, WIDTH};
+use crate::render::timeline::{COVER_FRAMES, FPS, HEIGHT, INTRO_FRAMES, WIDTH};
 use anyhow::{bail, Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -9,9 +9,7 @@ pub fn assert_available() -> Result<()> {
     let out = Command::new("ffmpeg").arg("-version").output();
     match out {
         Ok(o) if o.status.success() => Ok(()),
-        _ => bail!(
-            "TTS 的合并与变速步骤需要 ffmpeg。请安装 ffmpeg 并确保它在 PATH 上。"
-        ),
+        _ => bail!("本步骤需要 ffmpeg。请安装 ffmpeg 并确保它在 PATH 上。"),
     }
 }
 
@@ -69,10 +67,45 @@ pub fn merge_mp3_with_speed(inputs: &[PathBuf], output: &Path, speed: f64) -> Re
     Ok(())
 }
 
-/// Content 段起点（秒）：Cover 15 帧 + Intro 105 帧 = 120 帧 = 4.0s。
-const CONTENT_START_SECS: f64 = 4.0;
-/// Intro 段起点（秒）：Cover 15 帧 = 0.5s。
-const INTRO_START_SECS: f64 = 0.5;
+/// Content 段起点（秒）= Cover + Intro 帧数 ÷ FPS（15 + 105 = 120 帧 = 4.0s）。
+///
+/// **必须由 `timeline.rs` 的段落常量推导，不能写字面量 `4.0`**：段落边界是
+/// `timeline::layout`/`segment_at` 与本模块的滤镜图共用的同一件事实，写两份
+/// 时改一份不改另一份既不会编译失败、也不会有任何测试变红（`timeline.rs`
+/// 的测试断言 15/105 的字面量，本模块的测试断言 `adelay=4000` 的字面量），
+/// 结果是成片里音效相对画面段落整体错位、而成片照样能播。
+const CONTENT_START_SECS: f64 = (COVER_FRAMES + INTRO_FRAMES) as f64 / FPS as f64;
+/// Intro 段起点（秒）= Cover 帧数 ÷ FPS（15 帧 = 0.5s）。理由同上。
+const INTRO_START_SECS: f64 = COVER_FRAMES as f64 / FPS as f64;
+/// 混音格式：**每一路在进 `amix` 之前都要先过它**。
+///
+/// 四路输入的采样率与声道数各不相同（TTS 24kHz 单声道、BGM 48kHz 立体声、
+/// 打字机 24kHz 立体声、片尾音效 44.1kHz 立体声），而 `amix` 要求所有输入
+/// 格式一致，libavfilter 会自行协商出一个公共格式并插入重采样。**不干预时
+/// 协商结果被最低的那一路拉到 24kHz 单声道**：三路立体声素材被砍掉 12kHz
+/// 以上的全部频段、丢掉立体声像，且下混用的是功率保持系数（每声道 ≈0.707
+/// 而非算术平均 0.5），使 BGM 与音效比规格 §9.3 的 `volume=0.15`/`0.6` 字面
+/// 值响约 3dB——而**成片照样能播、ffmpeg 也不报任何警告**。
+///
+/// **为什么不是在输出侧写 `-ar 48000 -ac 2`**：那条路实测**无效且会掩盖
+/// 问题**。`ffmpeg -v verbose` 打出的自动插入点显示，`-ar`/`-ac` 不会经
+/// `amix` 反向传播到它的四路输入上，转换发生在 `amix` **之后**：
+///
+/// ```text
+/// [auto_aresample_0] ch:2 chl:stereo r:48000Hz -> ch:1 chl:mono r:24000Hz
+/// [Parsed_amix]      inputs:4 fmt:fltp srate:24000 cl:mono
+/// [auto_aresample_3] ch:1 chl:mono r:24000Hz -> ch:2 chl:stereo r:48000Hz
+/// ```
+///
+/// 产物的 `ffprobe` 会显示 `sample_rate=48000 channels=2`，而它只是一份
+/// 24kHz 单声道混音的升采样：12kHz 以上依然空无一物，两个声道逐样本相同
+/// （实测 L−R 差信号 = −91.0 dB 数字静音）。**它把唯一能发现问题的信号
+/// （ffprobe 读数）伪造成了正确的**，所以这里不写 `-ar`/`-ac`：让产物的
+/// 采样率与声道数如实反映滤镜图真正协商出的格式。
+///
+/// 每路前置 `aformat` 后，`amix` 实际运行在 `srate:48000 cl:stereo`，BGM
+/// 一路零转换，两段音效只升采样、保住立体声，只有单声道 TTS 被上混。
+const MIX_FORMAT: &str = "aformat=sample_rates=48000:channel_layouts=stereo";
 /// BGM 淡出时长（秒），规格 §9.3。
 const BGM_FADE_SECS: f64 = 2.0;
 /// BGM 在 TTS 之下的基准音量，规格 §9.3。
@@ -99,6 +132,12 @@ const SFX_VOLUME: f64 = 0.6;
 /// **`[N:a]` 而非 `[N]`**：BGM 文件带内嵌 mjpeg 封面图，是第二条流；不显式
 /// 选音频流会把封面图当视频流拉进来。
 ///
+/// **每一路都以 `MIX_FORMAT` 开头**（私有常量，故意不做 intra-doc 链接：链到
+/// 私有项会让 `cargo rustdoc` 报 `private_intra_doc_links` 告警）：四路素材的
+/// 采样率/声道数各不相同，不
+/// 显式统一时 `amix` 的格式协商会把整条混音链拉到 24kHz 单声道。理由与
+/// 「为什么不能改在输出侧写 `-ar`/`-ac`」的实测证据见该常量自己的文档。
+///
 /// **`st` 固定三位小数**：`fade_start` 由浮点减法得来，`audio_secs` 又源自
 /// VTT 时间戳的累加，实测某些取值（如 `9.999999999999998`）会让 `f64` 的
 /// 默认 `Display` 吐出十几位小数（如 `st=11.999999999999998`）。虽然 ffmpeg
@@ -111,11 +150,11 @@ pub fn audio_filter_graph(audio_secs: f64, outro_start_secs: f64) -> String {
     let fade_start = CONTENT_START_SECS + audio_secs - BGM_FADE_SECS;
 
     format!(
-        "[2:a]adelay={content_ms}:all=1,volume=1[a_tts];\
-         [3:a]adelay={content_ms}:all=1,volume={BGM_VOLUME},\
+        "[2:a]{MIX_FORMAT},adelay={content_ms}:all=1,volume=1[a_tts];\
+         [3:a]{MIX_FORMAT},adelay={content_ms}:all=1,volume={BGM_VOLUME},\
          afade=t=out:st={fade_start:.3}:d={BGM_FADE_SECS}[a_bgm];\
-         [4:a]adelay={intro_ms}:all=1,volume={SFX_VOLUME}[a_type];\
-         [5:a]adelay={outro_ms}:all=1,volume={SFX_VOLUME}[a_intro];\
+         [4:a]{MIX_FORMAT},adelay={intro_ms}:all=1,volume={SFX_VOLUME}[a_type];\
+         [5:a]{MIX_FORMAT},adelay={outro_ms}:all=1,volume={SFX_VOLUME}[a_intro];\
          [a_tts][a_bgm][a_type][a_intro]amix=inputs=4:normalize=0:duration=longest[a]"
     )
 }
@@ -201,8 +240,12 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
         "[v]".into(),
         "-map".into(),
         "[a]".into(),
+        // `{:.3}`（毫秒精度）而非默认 `Display`：`total_frames` 不是 30 的
+        // 倍数时 `total_frames / 30.0` 会吐出 `20.033333333333335` 这样的
+        // 十几位小数——ffmpeg 能接受，但难读也难断言。与同一条命令行里
+        // `afade` 的 `st` 统一口径。
         "-t".into(),
-        format!("{total_secs}"),
+        format!("{total_secs:.3}"),
         "-c:v".into(),
         "libx264".into(),
         "-crf".into(),
@@ -219,7 +262,9 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
 
 /// 起 ffmpeg 子进程，另开线程并发读它的 stderr，主线程把帧流写进它的
 /// stdin，最后等待结束。真实的可执行文件名固定是 `"ffmpeg"`；测试用
-/// [`run_render_with_ffmpeg_binary`] 注入假进程验证编排细节。
+/// `run_render_with_ffmpeg_binary`（私有，故意不做 intra-doc 链接：链到私有
+/// 项会让 `cargo rustdoc` 报 `private_intra_doc_links` 告警）注入假进程验证
+/// 编排细节。
 pub fn run_render(
     source: &mut crate::render::frame::FrameSource,
     inputs: &RenderInputs,
@@ -344,6 +389,81 @@ mod tests {
         );
     }
 
+    /// 从滤镜图里取出某条输入支路的 `adelay` 毫秒数。
+    ///
+    /// 只认「流选择器紧跟 `adelay=`」这个形状——本模块生成的滤镜图里每条支路
+    /// 都以它开头；形状变了这里会 panic 而不是悄悄返回一个错的数字。
+    fn delay_ms_of(graph: &str, selector: &str) -> u64 {
+        let after = graph
+            .split(selector)
+            .nth(1)
+            .unwrap_or_else(|| panic!("滤镜图里找不到 {selector}：{graph}"));
+        let after = after
+            .strip_prefix(MIX_FORMAT)
+            .and_then(|r| r.strip_prefix(","))
+            .and_then(|r| r.strip_prefix("adelay="))
+            .unwrap_or_else(|| panic!("{selector} 之后不是 {MIX_FORMAT},adelay=：{graph}"));
+        after
+            .split(':')
+            .next()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{selector} 的 adelay 值不是整数：{graph}"))
+    }
+
+    /// **跨模块一致性测试**：`timeline` 报出的段落起始帧，换算成毫秒后必须
+    /// 逐一等于滤镜图里对应支路的 `adelay`。
+    ///
+    /// 为什么需要单独一条：段落边界在两个模块里各有用途——`timeline.rs` 的
+    /// `COVER_FRAMES`/`INTRO_FRAMES` 决定画面在第几帧切段，`ffmpeg.rs` 的
+    /// `INTRO_START_SECS`/`CONTENT_START_SECS` 决定音效延迟多少毫秒进来。修复
+    /// 前两边各写一份字面量，本模块的测试断言 `adelay=500`/`adelay=4000`、
+    /// `timeline` 的测试断言 15/105，**没有任何一条测试把两者摆在一起比**：把
+    /// `COVER_FRAMES` 改成 30（Cover 段变成 1 秒）而 `INTRO_START_SECS` 仍是
+    /// 0.5，结果是打字机音效落在 Intro 段开始之前 0.5 秒，而成片照样能播。
+    ///
+    /// 本测试不断言任何字面量（15/105/500/4000 一个都不出现），断言的是两个
+    /// 模块之间的**关系**：段落边界怎么改都行，改完两边必须还对得上。
+    #[test]
+    fn segment_starts_match_the_audio_delays_in_the_filter_graph() {
+        use crate::render::timeline::{layout, segment_at, Segment};
+
+        let audio_secs = 10.0;
+        let l = layout(audio_secs);
+        let first_frame_of = |want: Segment| -> u32 {
+            (0..l.total_frames)
+                .find(|f| segment_at(&l, *f).map(|(seg, _)| seg) == Some(want))
+                .unwrap_or_else(|| panic!("时间轴里应至少有一帧属于 {want:?}"))
+        };
+
+        let intro_start = first_frame_of(Segment::Intro);
+        let content_start = first_frame_of(Segment::Content);
+        let outro_start = first_frame_of(Segment::Outro);
+
+        let g = audio_filter_graph(audio_secs, outro_start as f64 / FPS as f64);
+        let ms_of_frame = |f: u32| u64::from(f) * 1000 / u64::from(FPS);
+
+        assert_eq!(
+            delay_ms_of(&g, "[4:a]"),
+            ms_of_frame(intro_start),
+            "打字机音效的 adelay 必须等于 Intro 段起始帧（{intro_start}）换算的毫秒：{g}"
+        );
+        assert_eq!(
+            delay_ms_of(&g, "[2:a]"),
+            ms_of_frame(content_start),
+            "TTS 的 adelay 必须等于 Content 段起始帧（{content_start}）换算的毫秒：{g}"
+        );
+        assert_eq!(
+            delay_ms_of(&g, "[3:a]"),
+            ms_of_frame(content_start),
+            "BGM 的 adelay 必须等于 Content 段起始帧（{content_start}）换算的毫秒：{g}"
+        );
+        assert_eq!(
+            delay_ms_of(&g, "[5:a]"),
+            ms_of_frame(outro_start),
+            "片尾音效的 adelay 必须等于 Outro 段起始帧（{outro_start}）换算的毫秒：{g}"
+        );
+    }
+
     #[test]
     fn bgm_fade_starts_two_seconds_before_audio_end_in_absolute_time() {
         // 这是本计划最容易写错的一条（裁定 R2）：
@@ -391,19 +511,19 @@ mod tests {
         // 「流选择器 + adelay」的连续子串，把配对关系钉死。
         let g = audio_filter_graph(10.0, 16.0);
         assert!(
-            g.contains("[2:a]adelay=4000:all=1"),
+            g.contains(&format!("[2:a]{MIX_FORMAT},adelay=4000:all=1")),
             "TTS 应在 [2:a] 上应用 4000ms 延迟：{g}"
         );
         assert!(
-            g.contains("[3:a]adelay=4000:all=1"),
+            g.contains(&format!("[3:a]{MIX_FORMAT},adelay=4000:all=1")),
             "BGM 应在 [3:a] 上应用 4000ms 延迟：{g}"
         );
         assert!(
-            g.contains("[4:a]adelay=500:all=1"),
+            g.contains(&format!("[4:a]{MIX_FORMAT},adelay=500:all=1")),
             "打字机应在 [4:a] 上应用 500ms 延迟，而非接到片尾音效的延迟：{g}"
         );
         assert!(
-            g.contains("[5:a]adelay=16000:all=1"),
+            g.contains(&format!("[5:a]{MIX_FORMAT},adelay=16000:all=1")),
             "片尾音效应在 [5:a] 上应用 16000ms 延迟，而非接到打字机的延迟：{g}"
         );
     }
@@ -427,19 +547,56 @@ mod tests {
         // 只补出问题的那一对。
         let g = audio_filter_graph(10.0, 16.0);
         for (label, chain) in [
-            ("TTS", "[2:a]adelay=4000:all=1,volume=1[a_tts]"),
+            ("TTS", format!("[2:a]{MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]")),
             (
                 "BGM",
-                "[3:a]adelay=4000:all=1,volume=0.15,afade=t=out:st=12.000:d=2[a_bgm]",
+                format!(
+                    "[3:a]{MIX_FORMAT},adelay=4000:all=1,volume=0.15,\
+                     afade=t=out:st=12.000:d=2[a_bgm]"
+                ),
             ),
-            ("打字机", "[4:a]adelay=500:all=1,volume=0.6[a_type]"),
-            ("片尾音效", "[5:a]adelay=16000:all=1,volume=0.6[a_intro]"),
+            ("打字机", format!("[4:a]{MIX_FORMAT},adelay=500:all=1,volume=0.6[a_type]")),
+            ("片尾音效", format!("[5:a]{MIX_FORMAT},adelay=16000:all=1,volume=0.6[a_intro]")),
         ] {
             assert!(
-                g.contains(chain),
+                g.contains(&chain),
                 "{label} 这一路的完整链应原样出现：\n期望 {chain}\n实得 {g}"
             );
         }
+    }
+
+    /// 四路都必须在 `amix` **之前**统一到 48kHz 立体声。
+    ///
+    /// 不统一时 `amix` 的格式协商会被最低的那一路（TTS 24kHz 单声道）拉着
+    /// 走，实测 `amix` 会运行在 `srate:24000 cl:mono`：三路立体声素材被砍掉
+    /// 12kHz 以上的全部频段、丢掉立体声像，且下混用功率保持系数（≈0.707）
+    /// 让 BGM/音效比规格 §9.3 的 volume 字面值响约 3dB。成片照样能播、
+    /// ffmpeg 一句警告也没有——只能靠 ffprobe 看采样率才发现。
+    ///
+    /// 断言「每一路的流选择器紧跟 `aformat`」而不是「图里有 4 个 aformat」：
+    /// 后者对「漏掉某一路、另一路写了两遍」无感，而漏掉的那一路正是会把整条
+    /// 混音链拉回 24kHz 单声道的那一路。
+    #[test]
+    fn every_branch_is_normalized_to_the_mix_format_before_amix() {
+        let g = audio_filter_graph(10.0, 16.0);
+        for sel in ["[2:a]", "[3:a]", "[4:a]", "[5:a]"] {
+            assert!(
+                g.contains(&format!("{sel}{MIX_FORMAT},")),
+                "{sel} 这一路必须先过 {MIX_FORMAT} 再进 amix：{g}"
+            );
+        }
+        assert_eq!(
+            g.matches(MIX_FORMAT).count(),
+            4,
+            "四路各一次，不多不少：{g}"
+        );
+        // aformat 必须在 amix 之前——写在 amix 之后只是给混完的结果补一次
+        // 升采样，改不了混音本身的格式。
+        let amix_pos = g.find("amix=").expect("应有 amix");
+        assert!(
+            g.rfind(MIX_FORMAT).unwrap() < amix_pos,
+            "所有 aformat 都必须出现在 amix 之前：{g}"
+        );
     }
 
     #[test]
@@ -667,8 +824,8 @@ mod tests {
         let args = sample_args();
         assert_eq!(
             value_after(&args, "-t").as_deref(),
-            Some("20"),
-            "600 帧 / 30fps = 20 秒"
+            Some("20.000"),
+            "600 帧 / 30fps = 20 秒（毫秒精度定长格式）"
         );
     }
 
@@ -680,6 +837,18 @@ mod tests {
         assert!(
             args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"),
             "mp4 容器需要 aac 音频：{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "-b:a" && w[1] == "192k"),
+            "音频码率 192k：{args:?}"
+        );
+        // 输出侧**不得**出现 -ar/-ac：它们不会经 amix 反向传播（实测见
+        // MIX_FORMAT 的文档），只会在 amix 之后补一次升采样，把一份 24kHz
+        // 单声道混音包装成"ffprobe 看起来是 48kHz 立体声"的产物——恰恰把
+        // 唯一能发现问题的读数伪造成正确的。混音格式由每路的 aformat 决定。
+        assert!(
+            !args.iter().any(|a| a == "-ar" || a == "-ac"),
+            "混音格式必须由每路前置的 aformat 决定，输出侧写 -ar/-ac 只会掩盖协商结果：{args:?}"
         );
         // 输出的像素格式是 yuv420p（与输入帧流的 rgba 是两回事）
         let pix: Vec<&String> = args

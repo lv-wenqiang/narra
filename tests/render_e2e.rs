@@ -13,10 +13,16 @@ use std::path::Path;
 fn produces_a_playable_mp4_with_video_and_audio_streams() {
     let bg = Path::new("../panda-video-ts/public/video/0.mp4");
     let bgm = Path::new("../panda-video-ts/public/bgm/0.mp3");
-    if !bg.exists() || !bgm.exists() {
-        eprintln!("跳过：素材不存在");
-        return;
-    }
+    // 素材缺失时必须 panic 而不是 `eprintln!` + `return`：本测试是计划「完成
+    // 标准」逐字点名的验收命令（`cargo test --test render_e2e -- --ignored`），
+    // 静默跳过意味着素材一旦被移动/改名，门禁会在**什么都没合成**的情况下
+    // 报绿——比没有这道门禁更糟，因为它还给出了「已验收」的假信号。
+    assert!(
+        bg.exists() && bgm.exists(),
+        "端到端验收所需的素材不存在：{} / {}。本测试是显式 --ignored 的，跑到这里说明是有意执行的验收，不能静默跳过。",
+        bg.display(),
+        bgm.display()
+    );
 
     let tmp = std::env::temp_dir().join(format!("panda_e2e_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -57,7 +63,7 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_type,codec_name",
+            "stream=codec_type,codec_name,sample_rate,channels",
             "-show_entries",
             "format=duration",
             "-of",
@@ -71,6 +77,24 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
     assert!(info.contains("codec_type=audio"), "应有音频流：{info}");
     assert!(info.contains("codec_name=h264"), "视频应是 h264：{info}");
     assert!(info.contains("codec_name=aac"), "音频应是 aac：{info}");
+
+    // 音轨的采样率/声道数是这条管道**唯一**能在产物上读出的混音格式证据：
+    // 四路素材格式各异，`amix` 之前不统一时格式协商会被最低的那一路（TTS
+    // 24kHz 单声道）拉着走，成片变成 24kHz 单声道——三路立体声素材被砍掉
+    // 12kHz 以上的全部频段、丢掉声像，而成片照样能播、ffmpeg 也不报警告。
+    // 命令行层的 `every_branch_is_normalized_to_the_mix_format_before_amix`
+    // 只能断言参数里写了 aformat，断不了 ffmpeg 真的照它协商；这一条断的是
+    // 真实产物。（正因为要让这条读数如实反映协商结果，`build_render_args`
+    // 才**不**在输出侧写 `-ar`/`-ac`：那会把读数伪造成正确的，见
+    // `src/ffmpeg.rs` 里 `MIX_FORMAT` 的文档。）
+    assert!(
+        info.contains("sample_rate=48000"),
+        "成片音轨应是 48kHz——24000 说明四路在 amix 之前没被统一格式：{info}"
+    );
+    assert!(
+        info.contains("channels=2"),
+        "成片音轨应是立体声——1 说明三路立体声素材在 amix 前被下混成了单声道：{info}"
+    );
 
     // 总帧数 = 240 + ceil((6+2)*30) = 240 + 240 = 480 帧 = 16.0 秒
     let dur: f64 = info

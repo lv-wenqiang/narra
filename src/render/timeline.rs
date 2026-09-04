@@ -2,8 +2,16 @@ pub const FPS: u32 = 30;
 pub const WIDTH: u32 = 1280;
 pub const HEIGHT: u32 = 720;
 
-const COVER_FRAMES: u32 = 15;
-const INTRO_FRAMES: u32 = 105;
+/// Cover 段帧数。**`ffmpeg.rs` 的 `INTRO_START_SECS` 由它推导**——打字机音效
+/// 的起点就是 Intro 段的起点，两处必须是同一个真相源：写成两份字面量时，
+/// 改了这里而没改那里，`timeline.rs` 的测试（断言 15/105）与 `ffmpeg.rs` 的
+/// 测试（断言 `adelay=500`/`adelay=4000`）会各自照旧全绿，成片里音效却和画面
+/// 段落错位。跨模块一致性由 `ffmpeg.rs` 的
+/// `segment_starts_match_the_audio_delays_in_the_filter_graph` 钉住。
+pub const COVER_FRAMES: u32 = 15;
+/// Intro 段帧数。`ffmpeg.rs` 的 `CONTENT_START_SECS` 由
+/// `(COVER_FRAMES + INTRO_FRAMES) / FPS` 推导，理由同上。
+pub const INTRO_FRAMES: u32 = 105;
 const OUTRO_FRAMES: u32 = 120;
 const CONTENT_TAIL_SECS: f64 = 2.0;
 
