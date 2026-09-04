@@ -2253,7 +2253,7 @@ fn cover_container_center_y_is_half_the_canvas_height() {
     ] {
         let actual = cover_container_center_y(c);
         let expected = c.h_f32() / 2.0;
-        if (actual - expected).abs() > 1e-6 {
+        if actual != expected {
             failures.push(format!(
                 "{}x{}: Cover 容器应垂直居中于画布；写死 360 时会偏上（期望 {expected}，实得 {actual}）",
                 c.w, c.h
@@ -2285,6 +2285,8 @@ fn outro_logo_and_ring_scale_with_width_not_height() {
         let logo_ratio = m.outro_logo_size as f32 / c.w_f32();
         let ring_ratio = m.outro_ring_radius_step / c.w_f32();
 
+        // 容差 1e-3 是必要的：logo_size 和 ring_radius_step 都通过 px() 闭包的 round()
+        // 计算，整数舍入差异会在除以浮点宽度后产生可观的误差。
         if (logo_ratio - base_logo_ratio).abs() >= 1e-3 {
             failures.push(format!(
                 "{}x{}: logo 占宽比应与 BASE 一致（{base_logo_ratio}），实得 {logo_ratio}；\
@@ -2343,7 +2345,7 @@ fn cover_watermark_center_y_is_eighty_percent_of_height() {
     for c in [Canvas { w: 1920, h: 1080 }, Canvas { w: 1080, h: 1920 }] {
         let m = Metrics::for_canvas(c);
         let expected = c.h_f32() * 0.8;
-        if (m.cover_watermark_center_y - expected).abs() > 1e-6 {
+        if m.cover_watermark_center_y != expected {
             failures.push(format!(
                 "{}x{}: Cover 水印中心应在 0.8h = {}，实得 {}",
                 c.w, c.h, expected, m.cover_watermark_center_y
