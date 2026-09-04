@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 画布 **1280 × 720**，**30 fps**，成片编码 **libx264 / CRF 23 / yuv420p**。
-- 段落布局（`A` = 音频时长秒数 = VTT 最后一条字幕的结束时间）：Cover 帧 **0..15**；Intro **15..120**；Content **120..120+content_frames**，`content_frames = ceil((A+2)*30)`；Outro 最后 **120** 帧。总帧数 `240 + content_frames`。
+- 段落布局（`A` = 音频时长秒数 = VTT **所有字幕结束时间的最大值**——不是「文件里最后一条字幕」的结束时间，VTT 不保证按结束时间单调排列；`src/render/frame.rs` 的 `audio_secs_uses_the_max_end_time_not_the_last_caption_in_file_order` 明令禁止后一种实现）：Cover 帧 **0..15**；Intro **15..120**；Content **120..120+content_frames**，`content_frames = ceil((A+2)*30)`；Outro 最后 **120** 帧。总帧数 `240 + content_frames`。
 - **成片总时长** = `total_frames / 30` 秒。
 - 四路音频的起点与音量（规格 §9.3，逐字）：TTS `audio.mp3` 起点 **4.0s** 音量 **1.0**；BGM 起点 **4.0s** 音量 **0.15** 并在 **`[A-2, A]`（Content 段内时间）** 线性降到 0、之后保持 0；`intro_typewriter.mp3` 起点 **0.5s** 音量 **0.6**；`intro.mp3` 起点 **Outro 起点** 音量 **0.6**。
 - **`amix` 必须设 `normalize=0`**，否则自动归一化会改变各路相对音量。

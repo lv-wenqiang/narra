@@ -76,7 +76,7 @@ panda-video-rs/
       anim.rs                  spring / interpolate
       text.rs                  cosmic-text 排版 + 描边
       draw.rs                  封面 / 片头 / 字幕 / 片尾 / 水印
-      frames.rs                逐帧生成 → 写管道
+      frame.rs                 帧分派（Cover/Intro/Content/Outro）+ 逐帧生成 → 写管道
     ffmpeg.rs                  命令构造 + 进程管理
 ```
 
@@ -104,15 +104,21 @@ panda make   [INPUT] [--title <s>] [--bg <mp4>] [--bgm <mp3>] -o <out.mp4>
 | `EDGE_TTS_VOICE` | `zh-CN-YunjianNeural` |
 | `EDGE_TTS_BATCH_SIZE` | `3`（上限 8） |
 | `EDGE_TTS_TIMEOUT_MS` | `120000`（下限 15000） |
+| `BG_VIDEO` | `public/video/0.mp4` |
+| `BGM_FILE` | `public/bgm/0.mp3` |
+| `TITLE_JSON` | `public/video/title.json` |
+| `VIDEO_OUTPUT` | `output/video/video.mp4` |
+
+后四个是 `render` / `make` 的素材与产物路径（实现见 `src/config.rs` 的 `bg_video_path` / `bgm_path` / `title_json_path` / `video_output_path`）。四个都按「空白视同未设置」处理：`BG_VIDEO="  "` 与不设置等价，继续回落到默认值。
 
 素材与产物的默认路径：
 
 | 项 | 默认 | 覆盖方式 |
 |---|---|---|
-| 背景视频 | `public/video/0.mp4` | `--bg` |
-| BGM | `public/bgm/0.mp3` | `--bgm` |
-| 标题 JSON | `public/video/title.json` | `--title-json` |
-| 成片输出 | `output/video/video.mp4` | `-o` |
+| 背景视频 | `public/video/0.mp4` | `--bg` > `BG_VIDEO` |
+| BGM | `public/bgm/0.mp3` | `--bgm` > `BGM_FILE` |
+| 标题 JSON | `public/video/title.json` | `--title-json` > `TITLE_JSON` |
+| 成片输出 | `output/video/video.mp4` | `-o` > `VIDEO_OUTPUT` |
 
 背景视频与 BGM **保持为外部文件**（不内嵌），因为现有流程本来就在用 `shuffle:bg-video` / `shuffle:bgm` 替换它们。
 
@@ -342,6 +348,8 @@ ffmpeg -y
 | `intro.mp3` | Outro 起点 | 0.6 |
 
 BGM 音量包络用 `volume` 滤镜的时间表达式实现，`amix` 时需设 `normalize=0` 以免自动归一化改变各路相对音量。
+
+上表的音量是**混音格式统一之后**的相对量。四路素材的采样率与声道数各不相同（TTS 24kHz 单声道、BGM 48kHz 立体声、打字机 24kHz 立体声、片尾音效 44.1kHz 立体声），必须在进 `amix` 之前各自过一次 `aformat=sample_rates=48000:channel_layouts=stereo`：不统一时 `amix` 的格式协商会被最低的那一路拉到 24kHz 单声道，三路立体声素材被砍掉 12kHz 以上的全部频段、丢掉立体声像，且下混用的功率保持系数（每声道 ≈0.707）让它们比上表的数值响约 3dB——而成片照样能播、ffmpeg 不报任何警告。成片音轨因此是 **48kHz 立体声**。
 
 ### 9.4 进程管理
 

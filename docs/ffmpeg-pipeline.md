@@ -594,10 +594,10 @@ ffmpeg -y \
   -filter_complex "\
 [0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
 [bg][1:v]overlay=shortest=0[v];\
-[2:a]adelay=4000:all=1,volume=1[a_tts];\
-[3:a]adelay=4000:all=1,volume=0.15,afade=t=out:st=18.276:d=2[a_bgm];\
-[4:a]adelay=500:all=1,volume=0.6[a_type];\
-[5:a]adelay=22300:all=1,volume=0.6[a_intro];\
+[2:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=4000:all=1,volume=1[a_tts];\
+[3:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=4000:all=1,volume=0.15,afade=t=out:st=18.276:d=2[a_bgm];\
+[4:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=500:all=1,volume=0.6[a_type];\
+[5:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=22300:all=1,volume=0.6[a_intro];\
 [a_tts][a_bgm][a_type][a_intro]amix=inputs=4:normalize=0:duration=longest[a]" \
   -map "[v]" -map "[a]" \
   -t 26.3 \
@@ -609,9 +609,10 @@ ffmpeg -y \
 **`4`/`5` 号输入不是仓库里的 `assets/` 文件**：`intro_typewriter.mp3` /
 `intro.mp3` 的字节由 `src/assets.rs` 的 `include_bytes!` 内嵌进二进制，
 运行时由 `write_embedded_audio` 落到 `unique_tmp_audio_dir()`（`src/main.rs`）
-建的一次性临时目录——`std::env::temp_dir().join("panda_render_{pid}_{uuid
-v4}")`，每次运行的 `{pid}`/`{uuid}` 都不同，合成结束后随 `cleanup_tmp_and_
-propagate` 一并删除。上面两行是这条真实路径的**形态**，不是可以照抄复现
+建的一次性临时目录——
+`std::env::temp_dir().join("panda_render_{pid}_{uuid v4}")`，
+每次运行的 `{pid}`/`{uuid}` 都不同，合成结束后随
+`cleanup_tmp_and_propagate` 一并删除。上面两行是这条真实路径的**形态**，不是可以照抄复现
 的字面路径；仓库里的 `assets/intro.mp3` / `assets/intro_typewriter.mp3`
 只是内嵌的源文件，ffmpeg 从来不会直接读它们。
 
@@ -623,17 +624,46 @@ propagate` 一并删除。上面两行是这条真实路径的**形态**，不�
 - **`adelay=22300`**（片尾音效延迟到 Outro 起点）：
   `content_frames = ceil((16.276+2)×30) = 549`，
   `Outro 起点 = (120 + 549) / 30 = 22.300s → 22300ms`。
-- **`-t 26.3`**：`total_frames(789) / 30 = 26.300`。
+- **`-t 26.3`**：`total_frames(789) / 30 = 26.300`（代码里格式化成 `26.300`，
+  毫秒精度定长，与 `afade` 的 `st` 同口径——帧数不是 30 的倍数时默认 `Display`
+  会吐出 `20.033333333333335` 这样的十几位小数）。
+
+**四路各自前置的 `aformat` 是承重的，不是装饰**（终审修复波 I1）：四路素材的
+采样率/声道数各不相同（TTS 24kHz 单声道、BGM 48kHz 立体声、打字机 24kHz 立体声、
+片尾音效 44.1kHz 立体声），`amix` 要求所有输入格式一致。不干预时格式协商被最低
+的那一路拉走，`ffmpeg -v verbose` 实测：
+
+```
+[auto_aresample_0] ch:2 chl:stereo r:48000Hz -> ch:1 chl:mono r:24000Hz
+[Parsed_amix]      inputs:4 fmt:fltp srate:24000 cl:mono
+```
+
+后果是三路立体声素材被砍掉 12kHz 以上的全部频段、丢掉立体声像，且下混用功率
+保持系数（每声道 ≈0.707 而非算术平均 0.5），让 BGM/音效比规格 §9.3 的
+`volume` 字面值响约 3dB——而成片照样能播、ffmpeg 一句警告也没有。
+
+**在输出侧写 `-ar 48000 -ac 2` 解决不了这件事，还会把问题藏起来**（实测）：
+`-ar`/`-ac` **不会**经 `amix` 反向传播，转换发生在 `amix` 之后
+（`[auto_aresample_3] ch:1 chl:mono r:24000Hz -> ch:2 chl:stereo r:48000Hz`）。
+产物的 `ffprobe` 会显示 `sample_rate=48000 channels=2`，而它只是一份 24kHz
+单声道混音的升采样：12.5kHz 以上依然空无一物（相对全带 −48.9 dB，与未修复版
+逐位相同），两个声道逐样本相同（L−R 差信号 = −91.0 dB 数字静音）。所以
+`build_render_args` **不写** `-ar`/`-ac`，让产物的采样率/声道数如实反映滤镜图
+真正协商出的格式；`tests/render_e2e.rs` 直接对这两个读数下断言。
 
 ### 9.3 产物规格（`ffprobe` 实测）
 
 ```
-$ ffprobe -v error -show_format -show_streams /tmp/final.mp4
+$ ffprobe -v error -show_format -show_streams /tmp/final-review.mp4
 codec_name=h264  width=1280  height=720  pix_fmt=yuv420p  r_frame_rate=30/1
 nb_frames=789    duration=26.300000
-codec_name=aac   sample_rate=24000  channels=1  duration=26.300000
-size=3771709
+codec_name=aac   sample_rate=48000  channels=2  channel_layout=stereo
+size=4038257
 ```
+
+> 音轨的 `sample_rate=48000 / channels=2` 是终审修复波 I1 之后的规格。修复前
+> 是 `sample_rate=24000 / channels=1`——四路在 `amix` 前没统一格式，协商被
+> TTS（Edge TTS 产出 24kHz 单声道）拉走的结果。
 
 段落切分（帧号 / 全局绝对时间，`content_frames=549` 代入段落公式后的结果）：
 
@@ -658,3 +688,150 @@ tiny-skia 渲染与 ffmpeg 编码并行、吃了约 3.8 个核。
 `memcpy`（无真实渲染），本次是「tiny-skia 逐帧真实渲染 + 反预乘 + 写入
 stdin」与编码并行，与第 5.3 节当时的预判——「Task 5 真实管道每帧要先跑一遍
 tiny-skia 渲染，挂钟耗时会明显拉长」——一致，不是回归。
+
+### 9.5 混音格式与分窗电平复测（终审修复波 I1，2026-09-04）
+
+四路在 `amix` 前统一到 48kHz 立体声之后的复测。真实 Edge TTS 一次跑通
+（`A = 16.276s`、Outro 起点 `22.300s`、总长 `26.300s`，与 §9.2 同一组数字），
+BGM 用「把 TTS 换成同时长静音 mp3、走同一份 VTT 跑 `panda render`」隔离：
+
+```
+$ ffmpeg -y -f lavfi -i "anullsrc=r=24000:cl=mono" -t 16.257 -c:a libmp3lame -q:a 2 /tmp/sil.mp3
+$ panda render --audio /tmp/sil.mp3 --vtt output/tts/audio.vtt --title "终审修复波验收" \
+    --bg ../panda-video-ts/public/video/0.mp4 --bgm ../panda-video-ts/public/bgm/0.mp3 \
+    -o /tmp/bgmonly.mp4
+$ ffmpeg -hide_banner -nostats -ss <起点> -t <时长> -i <文件> -map 0:a -af volumedetect -f null -
+```
+
+**四路起点**（起点前 0.1s / 起点后 0.1s，`-91.0 dB` 是 `volumedetect` 的数字静音下限）：
+
+| 源 | 起点 | 前 0.1s | 后 0.1s |
+|---|---|---|---|
+| `intro_typewriter.mp3` | 0.500 | −91.0 dB | −31.0 dB |
+| TTS `audio.mp3` | 4.000 | −91.0 dB | −74.2 dB |
+| BGM（隔离片） | 4.000 | −91.0 dB | −74.3 dB |
+| `intro.mp3` | 22.300（= Outro 起点） | −91.0 dB | −90.3 dB |
+
+**相对音量**（源窗 vs 成片同内容窗；规格值 `volume=0.6` = −4.44 dB，`0.15` = −16.48 dB）：
+
+| 支路 | 源 | 成片 | 实测差 | 规格 | 偏差 |
+|---|---|---|---|---|---|
+| 打字机 `[0,2]`→`[0.5,2.5]` | −21.5 dB | −25.9 dB | −4.40 dB | −4.44 dB | **+0.04 dB** |
+| 片尾音效 `[0,2.4]`→`[22.3,24.7]` | −23.8 dB | −28.3 dB | −4.50 dB | −4.44 dB | **−0.06 dB** |
+| BGM `[6,8]`→`[10,12]` | −19.9 dB | −36.4 dB | −16.50 dB | −16.48 dB | **−0.02 dB** |
+| BGM `[10,12]`→`[14,16]` | −17.9 dB | −34.4 dB | −16.50 dB | −16.48 dB | **−0.02 dB** |
+| BGM `[12,14]`→`[16,18]` | −20.6 dB | −37.1 dB | −16.50 dB | −16.48 dB | **−0.02 dB** |
+| TTS `[2,4]`→`[6,8]` | −25.6 dB | −27.2 dB | −1.60 dB | 0 dB | **−1.60 dB** |
+| TTS `[6,8]`→`[10,12]` | −24.0 dB | −26.4 dB | −2.40 dB | 0 dB | **−2.40 dB** |
+| TTS `[10,12]`→`[14,16]` | −24.8 dB | −26.5 dB | −1.70 dB | 0 dB | **−1.70 dB** |
+
+修复前这张表是「三路立体声一律 +1.9~+2.8 dB、TTS ≈0 dB」（Task 8 报告 §4.9）。
+修复后三路立体声落到规格字面值的 ±0.06 dB 内；**剩下的偏差整个移到了 TTS 上**
+——单声道 TTS 上混成立体声时 swresample 用的是同一套功率保持系数，实测
+（纯 PCM，绕开 aac）恰好 **−3.01 dB**：
+
+| 变换 | 相对单声道原始电平 | 实测系数 |
+|---|---|---|
+| `-ac 2 -ar 48000` | −3.00 dB | 0.7079 |
+| `aformat=...:channel_layouts=stereo` | −3.00 dB | 0.7079 |
+| `pan=stereo\|c0=c0\|c1=c0` | ±0.00 dB | 1.0000 |
+
+也就是说 **TTS↔BGM 的相对关系没有变**（±3 dB 从「BGM 偏响」换成了「TTS 偏轻」），
+整条音轨比修复前低约 3 dB。人声高出纯 BGM 的实测量：
+
+| 窗口 | 成片（混音） | 仅 BGM | 人声高出 | Task 8（修复前） |
+|---|---|---|---|---|
+| [4.5, 6.5] | −26.6 dB | −41.6 dB | 15.0 dB | 15.0 dB |
+| [6, 8] | −27.2 dB | −33.5 dB | 6.3 dB | 5.3 dB |
+| [10, 12] | −26.4 dB | −36.4 dB | 10.0 dB | 10.1 dB |
+| [14, 16] | −26.5 dB | −34.4 dB | 7.9 dB | 8.1 dB |
+
+**BGM 淡出**（隔离片，0.25s 子窗；规格 `[A-2, A]` 的 Content 段内时间换算成
+全片绝对时间 = `[18.276, 20.276]`）：
+
+| 窗口 | mean |
+|---|---|
+| [17.776, 18.026] | −37.8 dB |
+| [18.276, 18.526] | −38.0 dB |
+| [18.776, 19.026] | −40.5 dB |
+| [19.276, 19.526] | −42.2 dB |
+| [19.776, 20.026] | −52.2 dB |
+| [20.026, 20.276] | −59.2 dB |
+| [20.276, 20.526] | **−91.0 dB**（数字静音） |
+
+单调下降，`20.276` 之后精确为 0。
+
+**格式本身的两条证据**（BGM 内容窗 `[10,12]`，与素材 `[6,8]` 对应）：
+
+| | 全带 | >12.5kHz | 相对全带 | L−R 差信号 |
+|---|---|---|---|---|
+| 修复前（24kHz 单声道） | −36.6 dB | −85.5 dB | −48.9 dB | **−91.0 dB**（两声道逐样本相同） |
+| 修复后（48kHz 立体声） | −36.4 dB | −72.7 dB | **−36.3 dB** | −48.4 dB |
+| BGM 素材本身 | −19.9 dB | −56.0 dB | **−36.1 dB** | −31.9 dB |
+
+高频占比与声像占比（−36.3 vs −36.1、相对全带的 side 能量两边同为 −12.0 dB）
+都与素材一致——12kHz 以上的频段和立体声像都完整保住了。
+
+### 9.6 `-stream_loop -1` 素材循环实测（终审修复波 I2，2026-09-04）
+
+背景视频 162.28s、BGM 186.48s，此前所有验收成片都短于 30s，**这两条
+`-stream_loop -1` 从未被真正触发过**。这里用一段 200 秒静音 + 配套 VTT
+（20 条 cue，末条结束时间 200.000）把成片撑到 210 秒，一次跨过两个循环点：
+
+```
+$ ffmpeg -y -f lavfi -i "anullsrc=r=24000:cl=mono" -t 200 -c:a libmp3lame -q:a 2 /tmp/long.mp3
+$ panda render --audio /tmp/long.mp3 --vtt /tmp/long.vtt --title "素材循环验证" \
+    --bg ../panda-video-ts/public/video/0.mp4 --bgm ../panda-video-ts/public/bgm/0.mp3 \
+    -o /tmp/loop.mp4
+标题「素材循环验证」，音频 200.00s，共 6300 帧（210.00s）
+    376.45s user 39.08s system 419% cpu 1:39.08 total
+```
+
+**帧数与时长**（`总帧数 = 240 + ceil((A+2)*30) = 240 + 6060 = 6300`）：
+
+```
+$ ffprobe -v error -count_frames -select_streams v:0 \
+    -show_entries stream=nb_frames,nb_read_frames,r_frame_rate -show_entries format=duration /tmp/loop.mp4
+nb_frames=6300   nb_read_frames=6300   r_frame_rate=30/1   duration=210.000000
+```
+
+`nb_read_frames`（逐帧点数，不是容器元数据）精确等于 6300，时长精确 210.000。
+
+**背景视频循环点**（素材 162.28s → 全局帧 4868）：160×90 降采样后相邻帧平均
+绝对差，只有 4867→4868 一处尖峰（**54.50**，即素材尾接回素材头的硬切），
+两侧的帧差都在素材自身的正常范围（0.02~3.8，含它自带的约 5 帧重复周期）：
+
+| 帧对 | 4865→4866 | 4866→4867 | **4867→4868** | 4868→4869 | 4869→4870 | 4870→4871 |
+|---|---|---|---|---|---|---|
+| 平均绝对差 | 0.93 | 0.76 | **54.50** | 0.06 | 3.70 | 1.92 |
+
+**循环回的确实是素材第一帧**：把素材首帧过一遍同样的
+`scale→crop→colorchannelmixer` 再降采样，与成片两帧比对——
+
+| 比对 | 平均绝对差 |
+|---|---|
+| 素材首帧 ↔ 成片帧 4868（循环后第一帧） | **6.51**（残差来自叠加层字幕与 h264） |
+| 素材首帧 ↔ 成片帧 4867（循环前最后一帧） | 67.42 |
+
+四帧的整帧亮度均值 39.71 / 39.69 / 94.92 / 94.95（帧 4866–4869），**没有黑帧、
+没有冻结帧**。
+
+**BGM 循环点**（成片时间 `4.0 + 186.48 = 190.48s`）：素材首尾本身都接近静音
+（源 `[185,186.5]` = −63.3 dB、`[0,1.5]` = −66.8 dB），接缝处 0.25s 分窗电平
+连续、`max_volume` 无尖峰（−59.9 ~ −70.3 dB 区间内），**没有爆音也没有静默断层**。
+循环之后 BGM 确实在放，且音量仍精确是 `volume=0.15`：
+
+| 成片窗 | 对应素材窗（成片 t − 190.48） | 成片 | 素材 | 差 |
+|---|---|---|---|---|
+| [193.0, 194.5] | [2.52, 4.02] | −33.1 dB | −16.6 dB | −16.50 dB |
+| [195.0, 196.5] | [4.52, 6.02] | −37.2 dB | −20.8 dB | −16.40 dB |
+| [197.0, 198.5] | [6.52, 8.02] | −36.0 dB | −19.5 dB | −16.50 dB |
+| [199.5, 201.0] | [9.02, 10.52] | −36.8 dB | −20.4 dB | −16.40 dB |
+
+（规格值 −16.48 dB。）长时间轴下 BGM 的淡出窗 `[4+200−2, 4+200] = [202, 204]`
+同样成立：[201,202] −32.9 → [202,203] −38.7 → [203,204] −48.8 → [204,205]
+**−91.0 dB**，[206,207] 起是片尾音效（Outro 起点 = `(120+6060)/30` = 206.000）。
+
+**结论：两条 `-stream_loop -1` 都按预期工作**——BGM 的内嵌 mjpeg 封面图没有
+干扰循环（`[3:a]` 显式选流的功劳），AV1 背景视频在循环点是一次干净的硬切、
+不是黑帧或冻结帧，音频在接缝处连续。
