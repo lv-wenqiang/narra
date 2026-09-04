@@ -9,6 +9,27 @@
 //!
 //! 四帧覆盖四段：0=Cover、100=Intro（打字机进行中）、200=Content（字幕
 //! 入场动画中）、550=Outro（logo 已入场、整体淡出未开始）。
+//!
+//! **这条门禁准确证明的是什么**：`fixture()` 里固定的三段文案（「基线品牌」/
+//! 「正文水印」/「封面水印 · 副标题」）在 1280×720 下逐字节不变——不是
+//! 「任意输入在 1280×720 下都不变」。它**不覆盖**的一类输入：墨宽落在
+//! `(2000, 2560]` 像素区间的品牌/水印文案。本分支把「不换行哨兵」从写死的
+//! `2000.0` 改成 `w * 2.0`（BASE 上 2560.0，见 `Metrics::no_wrap_width`），
+//! 这类文案在旧代码下会换行、新代码下保持单行——这是这次重构里唯一改变了
+//! 输出的输入类别，而 `fixture()` 用的三段文案都远小于这个宽度，门禁测不到
+//! 它。这一类输入由
+//! `render::draw::tests::brand_wider_than_the_old_2000px_sentinel_still_renders_single_line_in_outro_title`
+//! 单独直接钉住，见该测试文档注释。
+//!
+//! **「四帧覆盖四段」有一处例外**：`Metrics::outro_ring_radius_step` 在
+//! 全部四帧快照上都不产生任何可观测像素差异——frame 550 是 Outro 段内
+//! 帧 70，`outro_ring_scale(70)` 钳制在 `1/(1-0.99)=100`，每个圆环半径都
+//! `>= 21600px`，早已覆盖满整个画布，而且是画在白底上的白色实心圆
+//! （`docs/follow-ups.md`「Outro 圆环在当前实现下完全不可观测」一节记录过
+//! 同样的物理限制）。这个字段因此**不受本门禁保护**，只靠
+//! `metrics::tests::base_metrics_match_the_pre_refactor_literals` 钉住它在
+//! BASE 上的字面值——若它的缩放公式将来被改错，这里的四帧快照不会有任何
+//! 反应。
 
 use panda::config::Branding;
 use panda::render::canvas::Canvas;
