@@ -916,6 +916,47 @@ mod tests {
         assert_eq!(value_after(&args, "-r").as_deref(), Some("30"));
     }
 
+    /// **Fix round 1（画布链变异验证）**：`build_render_args` 必须按传入的
+    /// `i.canvas` 拼 `-s` 与 `scale=`/`crop=`，而不是隐式假定 `Canvas::BASE`。
+    ///
+    /// 此前仓库里全部 `RenderInputs` 都填 `canvas: Canvas::BASE`，所以
+    /// 「把 `build_render_args` 里的 `i.canvas` 换回 `Canvas::BASE`」这个变异
+    /// 能骗过全部 250 条测试——`-s`/`scale=`/`crop=` 用的期望值本来就等于
+    /// `Canvas::BASE`，测的是「等于 BASE」而不是「等于传进去的画布」。这里
+    /// 特意用一个非 BASE 的真实目标尺寸（Plan B 的竖版 1920x1080）、且期望
+    /// 字符串写成字面量而不是从 `canvas` 反推——两边都从 `canvas` 算，变异
+    /// 会两边一起错，测不出来。
+    #[test]
+    fn build_render_args_follows_the_canvas_field_not_base() {
+        let (bg, tts, bgm, tw, intro, out) = sample_inputs();
+        let args = build_render_args(&RenderInputs {
+            bg: &bg,
+            tts_audio: &tts,
+            bgm: &bgm,
+            typewriter: &tw,
+            intro: &intro,
+            out: &out,
+            total_frames: 600,
+            audio_secs: 10.0,
+            content_frames: 360,
+            canvas: Canvas { w: 1920, h: 1080 },
+        });
+        assert_eq!(
+            value_after(&args, "-s").as_deref(),
+            Some("1920x1080"),
+            "帧流尺寸应跟着 i.canvas 走，不是写死的 BASE：{args:?}"
+        );
+        let g = value_after(&args, "-filter_complex").expect("应有 filter_complex");
+        assert!(
+            g.contains("scale=1920:1080"),
+            "背景 scale 应跟着 i.canvas 走：{g}"
+        );
+        assert!(
+            g.contains("crop=1920:1080"),
+            "背景 crop 应跟着 i.canvas 走：{g}"
+        );
+    }
+
     #[test]
     fn background_uses_cover_scaling_and_multiplicative_brightness() {
         let args = sample_args();

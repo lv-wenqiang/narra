@@ -811,13 +811,19 @@ mod tests {
     /// `render::timeline` 已验证过的 `layout(10.0)` 结果（`content_frames
     /// = 360`，`total_frames = 600`），三者互不相同，足够区分「填对」与
     /// 「填错」。
+    ///
+    /// **Fix round 1**：`canvas` 字段此前漏在断言之外——本条测试的名字与
+    /// 文档都说"every field"，实际却少了这一个。`source` 特意建在一个非
+    /// `Canvas::BASE` 的画布上：若仍用 BASE，`inputs.canvas ==
+    /// Canvas::BASE` 这条断言即使把 `build_render_inputs` 里的 `canvas:
+    /// source.canvas()` 错填成 `canvas: Canvas::BASE`也会侥幸通过。
     #[test]
     fn build_render_inputs_wires_every_field_without_swapping() {
         let source = FrameSource::new(
             RENDER_TEST_VTT,
             "标题".into(),
             &Branding::plain("测试品牌"),
-            Canvas::BASE,
+            Canvas { w: 1920, h: 1080 },
         )
         .unwrap();
         assert_eq!(source.audio_secs(), 10.0);
@@ -854,6 +860,12 @@ mod tests {
         // 三个数值互不相同，才能保证上面三条断言真的分得清谁是谁。
         assert_ne!(inputs.audio_secs, inputs.content_frames as f64);
         assert_ne!(inputs.total_frames, inputs.content_frames);
+
+        assert_eq!(
+            inputs.canvas,
+            source.canvas(),
+            "canvas 字段应原样来自 source.canvas()，而不是写死的 Canvas::BASE"
+        );
     }
 
     /// **临时目录在所有出口上都被清理**（销 `docs/follow-ups.md`「族 A」）。

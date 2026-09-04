@@ -233,6 +233,28 @@ mod tests {
         }
     }
 
+    /// **Fix round 1（画布链变异验证）**：`render()` 建的 `Pixmap` 尺寸、
+    /// `canvas()` 的返回值都必须来自构造时传入的 `canvas`，不是隐式的
+    /// `Canvas::BASE`。
+    ///
+    /// 仓库里此前全部 `FrameSource::new` 调用都传 `Canvas::BASE`，所以
+    /// 「`render()`/`canvas()` 内部改回读 `Canvas::BASE`」这两个变异能骗过
+    /// 全部既有测试——断言的「尺寸应为 1280x720」在两种实现下都成立。这里
+    /// 用一个非 BASE 的真实目标尺寸（Plan B 的竖版 1920x1080）钉住。
+    #[test]
+    fn render_and_canvas_accessor_follow_the_canvas_given_at_construction() {
+        let non_base = Canvas { w: 1920, h: 1080 };
+        let mut fs =
+            FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌"), non_base).unwrap();
+        assert_eq!(fs.canvas(), non_base, "canvas() 应原样回传构造时传入的画布");
+        let p = fs.render(0).unwrap();
+        assert_eq!(
+            (p.width(), p.height()),
+            (non_base.w, non_base.h),
+            "render() 建的 Pixmap 尺寸应跟着构造时的 canvas 走，不是写死的 BASE"
+        );
+    }
+
     #[test]
     fn cover_intro_outro_are_opaque_and_content_is_transparent() {
         let mut fs = FrameSource::new(
