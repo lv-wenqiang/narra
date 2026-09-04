@@ -2309,21 +2309,24 @@ fn outro_logo_and_ring_scale_with_width_not_height() {
 /// 语义是「远大于画布宽」，就该随画布走。
 #[test]
 fn no_wrap_sentinel_stays_far_wider_than_the_canvas() {
+    let mut failures = Vec::new();
     for c in [
         Canvas::BASE,
         Canvas { w: 1920, h: 1080 },
         Canvas { w: 1080, h: 1920 },
     ] {
         let m = Metrics::for_canvas(c);
-        assert!(
-            m.no_wrap_width >= c.w_f32() * 1.5,
-            "{}x{}: 不换行哨兵应至少为画布宽的 1.5 倍，实得 {} (画布宽 {})",
-            c.w,
-            c.h,
-            m.no_wrap_width,
-            c.w
-        );
+        if m.no_wrap_width < c.w_f32() * 1.5 {
+            failures.push(format!(
+                "{}x{}: 不换行哨兵应至少为画布宽的 1.5 倍，实得 {}，期望 ≥ {}",
+                c.w,
+                c.h,
+                m.no_wrap_width,
+                c.w_f32() * 1.5
+            ));
+        }
     }
+    assert!(failures.is_empty(), "不换行哨兵回归失败：{:?}", failures);
 }
 
 /// Cover 水印的垂直中心是画布高度的 80%，不是写死的 576。
@@ -2336,14 +2339,20 @@ fn cover_watermark_center_y_is_eighty_percent_of_height() {
         576.0,
         "BASE 上应与重构前的写死值一致"
     );
+    let mut failures = Vec::new();
     for c in [Canvas { w: 1920, h: 1080 }, Canvas { w: 1080, h: 1920 }] {
         let m = Metrics::for_canvas(c);
-        assert_eq!(
-            m.cover_watermark_center_y,
-            c.h_f32() * 0.8,
-            "{}x{}: Cover 水印中心应在 0.8h",
-            c.w,
-            c.h
-        );
+        let expected = c.h_f32() * 0.8;
+        if (m.cover_watermark_center_y - expected).abs() > 1e-6 {
+            failures.push(format!(
+                "{}x{}: Cover 水印中心应在 0.8h = {}，实得 {}",
+                c.w, c.h, expected, m.cover_watermark_center_y
+            ));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "Cover 水印垂直中心回归失败：{:?}",
+        failures
+    );
 }
