@@ -91,8 +91,21 @@ panda tts    [INPUT] [OUTDIR]
 panda render --audio <mp3> --vtt <vtt> [--title <s>] [--title-json <path>]
              --bg <mp4> --bgm <mp3> -o <out.mp4>
 
-panda make   [INPUT] [--title <s>] [--bg <mp4>] [--bgm <mp3>] -o <out.mp4>
 ```
+
+**「一条龙」不再是子命令**（2026-09-04）：`panda make` 曾把「跑 TTS → 拼产物
+路径 → 转手调用合成」串在一起，在二进制里是一层纯胶水——没有可注入的接缝、
+一条测试都没有，而它调用的每一段单独都已经有测试。编排移到仓库根的
+`justfile`：
+
+```
+just make [INPUT] [透传给 panda render 的参数...]
+```
+
+移过去顺带解决两件事：胶水层不再需要测试（它不在二进制里了），以及**素材的
+存在性检查提到了 TTS 之前**——`--bg` 打错一个字不必先付一整轮 Edge TTS 网络
+往返才报错。`justfile` 里镜像的几个默认值由 `tests/justfile_defaults.rs` 与
+`src/config.rs` 逐条比对，改一边不改另一边会变红。
 
 沿用现有环境变量作为默认值兜底，便于与现有 pnpm 脚本互换：
 
@@ -410,7 +423,7 @@ BGM 音量包络用 `volume` 滤镜的时间表达式实现，`amix` 时需设 `
 | `timeline` | 单测覆盖若干音频时长下的段落布局 | 各段首尾相接无空洞、总帧数正确 |
 | TTS 音频 | 端到端跑真实文稿 | 音频可播放、时长与文稿相称、字幕与音频不明显错位 |
 | 渲染 | 抽关键帧人工核对 | 各段视觉符合规格描述，字幕与音频同步 |
-| 端到端 | `panda make` 跑通真实文稿 | 产出可播放 mp4，人工观感验收 |
+| 端到端 | `just make` 跑通真实文稿 | 产出可播放 mp4，人工观感验收 |
 
 ## 11. 分期计划
 

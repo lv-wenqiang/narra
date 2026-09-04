@@ -106,47 +106,6 @@ enum Commands {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// 文稿 → TTS → 成片，一条龙
-    Make {
-        /// 文稿路径，默认与 panda tts 相同
-        input: Option<PathBuf>,
-        /// 标题，优先级最高
-        #[arg(long)]
-        title: Option<String>,
-        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨风」
-        #[arg(long)]
-        brand: Option<String>,
-        /// 正文左下角水印文案；不给则取 $WATERMARK，再不给则不画
-        #[arg(long)]
-        watermark: Option<String>,
-        /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
-        #[arg(long)]
-        watermark_cover: Option<String>,
-        /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
-        #[arg(long)]
-        watermark_icon: Option<String>,
-        /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
-        #[arg(long)]
-        logo: Option<String>,
-        /// 标题 JSON，默认 public/video/title.json
-        #[arg(long)]
-        title_json: Option<PathBuf>,
-        /// 背景视频，默认 public/video/0.mp4
-        #[arg(long)]
-        bg: Option<PathBuf>,
-        /// 背景音乐，默认 public/bgm/0.mp3
-        #[arg(long)]
-        bgm: Option<PathBuf>,
-        /// 片尾音效 mp3；不给则取 $SFX_INTRO，再不给用内嵌的那段
-        #[arg(long)]
-        sfx_intro: Option<PathBuf>,
-        /// 打字机音效 mp3；不给则取 $SFX_TYPEWRITER，再不给用内嵌的那段
-        #[arg(long)]
-        sfx_typewriter: Option<PathBuf>,
-        /// 成片输出，默认 output/video/video.mp4
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
 }
 
 /// 解析 `--frames`：逗号分隔的帧号列表；缺省时按每 30 帧取一张覆盖整条时间轴，
@@ -598,39 +557,6 @@ async fn main() -> Result<()> {
             sfx_typewriter,
             out,
         } => {
-            let paths = resolve_render_paths(title_json, bg, bgm, out);
-            let branding =
-                Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo);
-            let sfx = SfxSources::resolve(sfx_intro, sfx_typewriter);
-            compose_video(&compose_inputs(
-                &audio,
-                &vtt,
-                title.as_deref(),
-                &branding,
-                &sfx,
-                &paths,
-            ))
-        }
-        Commands::Make {
-            input,
-            title,
-            brand,
-            watermark,
-            watermark_cover,
-            watermark_icon,
-            logo,
-            title_json,
-            bg,
-            bgm,
-            sfx_intro,
-            sfx_typewriter,
-            out,
-        } => {
-            // TTS 的输出目录不走命令行：`make` 的 TTS 产物是中间物，位置由
-            // `panda tts` 的既有约定（$TTS_OUTPUT_DIR 或 output/tts）决定，
-            // 用户要关心的只有最后那个 `-o`。
-            let outdir = run_tts(input, None, None, None).await?;
-            let (audio, vtt) = tts_artifact_paths(&outdir);
             let paths = resolve_render_paths(title_json, bg, bgm, out);
             let branding =
                 Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo);

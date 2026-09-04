@@ -209,6 +209,15 @@ Task 0–8）端到端验收与终审修复波留下的账。
   正确的）。复测见 `docs/ffmpeg-pipeline.md` §9.5：三路立体声落到规格字面值的
   ±0.06 dB 内。**残留的一半**（偏差移到单声道 TTS 上）随后由裁定 R-F9 修掉，
   见下一条。
+- **`Commands::Make` 这个 match arm 自身零覆盖**（原「族 B」第 2 小条）与
+  **`make` 在整条 TTS 跑完之后才校验素材存在**（原「值得做」第 4 条）。
+  **两条一起销**：`panda make` 连同它那层胶水移到了仓库根的 `justfile`。
+  那层胶水（跑 TTS → 拼产物路径 → 转手调用合成）在二进制里既没有可注入的
+  接缝、也没有一条测试，而它调用的每一段单独都已经有测试；搬到 just 之后它
+  不在二进制里了，「零覆盖」自然消失。校验时机同时修好：配方在跑 TTS **之前**
+  先检查 bg/bgm 存在，`--bg` 打错一个字不必先付一整轮 Edge TTS 网络往返。
+  `justfile` 里镜像的默认值由 `tests/justfile_defaults.rs` 与 `src/config.rs`
+  逐条比对，改一边不改另一边会变红。
 - **`-stream_loop -1` 从未被真正触发过**（终审修复波 I2）。已用 200 秒静音把
   成片撑到 210 秒跨过两个循环点实测通过，见 `docs/ffmpeg-pipeline.md` §9.6。
 - **单声道 TTS 上混成立体声时被衰减 3.01 dB，`volume=1` 名不副实**（原「值得做」
@@ -245,20 +254,18 @@ Task 0–8）端到端验收与终审修复波留下的账。
 **为什么可以推迟**：泄漏量小（约 120 KB/次）、只发生在已经失败的运行上，且
 `/tmp` 由系统清理；测试侧的两处只影响测试机的临时文件卫生。
 
-#### 2. 族 B：CLI / 环境变量层覆盖不足（两处）
+#### 2. 族 B：四个素材路径的「空白视同未设置」语义无覆盖
 
-1. **四个素材路径函数的「空白视同未设置」语义无覆盖**：`bg_video_path` /
+**四个素材路径函数的「空白视同未设置」语义无覆盖**：`bg_video_path` /
    `bgm_path` / `title_json_path` / `video_output_path` 都经 `non_empty_env`
    处理（`BG_VIDEO="  "` 等价于不设置），但没有一条测试覆盖这个分支——把
    `non_empty_env` 换成裸 `std::env::var().ok()` 的变异**存活**。
-2. **`Commands::Make` 这个 match arm 自身零覆盖**：把 `tts_artifact_paths(&outdir)`
-   换成写死路径不会有任何测试变红。`Commands::Render` 有 `compose_video_with_runner`
-   一层可注入执行器兜着，`Make` 没有对应的接缝。
+**为什么可以推迟**：这是「参数装配」层，错了会立刻在第一次真实运行里以
+「文件不存在」的形式炸出来，不是静默坏片。**修法**：照 `tests/config_env.rs`
+既有的串行化环境变量夹具补四条。
 
-**为什么可以推迟**：两处都是「参数装配」层，错了会立刻在第一次真实运行里以
-「文件不存在」的形式炸出来，不是静默坏片。**修法**：(1) 照 `tests/config_env.rs`
-既有的串行化环境变量夹具补四条；(2) 把 `Make` 分支体也提炼成一个可注入
-`run_tts` 的函数，或至少给 `tts_artifact_paths` 补一条独立断言。
+（原第 2 小条「`Commands::Make` 零覆盖」已销账：该子命令连同它那层胶水一起
+移到了 `justfile`，见下面「已销账」。）
 
 #### 3. 反预乘慢路径有 6× 优化空间
 
@@ -273,16 +280,7 @@ Task 0–8）端到端验收与终审修复波留下的账。
 tiny-skia 渲染与 libx264 编码并行吃掉约 3.8 个核）；受影响最明显的是
 `frame.rs` 里两条走全时间轴的单测。
 
-#### 4. `make` 在整条 TTS 跑完之后才校验素材存在
-
-`check_render_inputs_exist` 在 `run_tts` 之后（它在 `compose_video_with_runner`
-里）。`panda make --bg` 打错一个字，要先付一整轮 Edge TTS 网络往返（实测约 10s，
-长文稿更久）才报错；`panda render` 因为不跑 TTS，是立刻报错。
-
-**修法**：把 bg/bgm 的存在性检查提到 `run_tts` 之前。**为什么可以推迟**：报错
-文案本身是对的，只是来得晚。
-
-#### 5. 取整口径不一致，且没有一条测试用非整秒的 `content_frames`
+#### 4. 取整口径不一致，且没有一条测试用非整秒的 `content_frames`
 
 `src/ffmpeg.rs` 里 `adelay` 的毫秒用 `.round() as i64`，`afade` 的 `st` 与 `-t`
 用 `{:.3}`。两者在整秒输入下结果相同，而**现有测试的 `content_frames` 全是
@@ -291,7 +289,7 @@ tiny-skia 渲染与 libx264 编码并行吃掉约 3.8 个核）；受影响最�
 **修法**：补一条 `content_frames` 非 30 倍数的用例（例如 `A = 10.01` →
 `content_frames = 361` → Outro 起点 `16.0333…s`），把口径钉死。
 
-#### 6. `run_render_does_not_panic_when_ffmpeg_exits_early` 经七次变异零响应
+#### 5. `run_render_does_not_panic_when_ffmpeg_exits_early` 经七次变异零响应
 
 实证零鉴别力的测试比没有测试更糟：占测试计数、给虚假信心、还要花时间起一个
 假 ffmpeg 子进程。**修法**：要么删，要么改成断言 broken-pipe 这一条具体路径。
