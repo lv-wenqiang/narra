@@ -5,6 +5,17 @@
 /output
 /assets/bg
 
+# 背景视频与 BGM（`--bg` / `--bgm` 的默认位置）。
+#
+# **不入库有两个理由**：一是体积（两个文件合计约 10.5MB，进了 git 历史就很难
+# 再摘干净）；二是出处未定——`public/video/0.mp4` 的元数据带
+# `Bilibili VXCode Swarm Transcoder` 标记（从 B 站下载的转码产物），
+# `public/bgm/0.mp3` 带 `made with suno`、`artist=noisyrappers579`，两者都没有
+# 记录授权。成片若要发布，这是要先想清楚的事。
+#
+# 想连同素材一起入库：`git add -f public/`。
+/public
+
 # Task 0 探针产物
 /probe.mp3
 

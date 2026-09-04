@@ -9,10 +9,12 @@
 use std::path::Path;
 
 #[test]
-#[ignore = "需要 ffmpeg 与 ../panda-video-ts/public 下的素材，且耗时约 30 秒"]
+#[ignore = "需要 ffmpeg 与 public/ 下的素材（见 .gitignore），且耗时约 30 秒"]
 fn produces_a_playable_mp4_with_video_and_audio_streams() {
-    let bg = Path::new("../panda-video-ts/public/video/0.mp4");
-    let bgm = Path::new("../panda-video-ts/public/bgm/0.mp3");
+    // 与 `config::bg_video_path()` / `bgm_path()` 的默认值同路径：素材已从
+    // TS 仓库搬进本仓库的 `public/`，这条测试不再依赖 `../panda-video-ts`。
+    let bg = Path::new("public/video/0.mp4");
+    let bgm = Path::new("public/bgm/0.mp3");
     // 素材缺失时必须 panic 而不是 `eprintln!` + `return`：本测试是计划「完成
     // 标准」逐字点名的验收命令（`cargo test --test render_e2e -- --ignored`），
     // 静默跳过意味着素材一旦被移动/改名，门禁会在**什么都没合成**的情况下

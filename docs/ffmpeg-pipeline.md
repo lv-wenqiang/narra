@@ -41,7 +41,9 @@
 
 - `ffmpeg version 8.1.2`（`ffprobe` 同版本，同在 PATH）。
 - 背景视频编解码器：`libdav1d`（AV1 软解）。编码器：`libx264`。
-- 背景素材：`../panda-video-ts/public/video/0.mp4` —— 1920x1080、AV1、
+- 背景素材：`public/video/0.mp4`（2026-09-04 从 TS 仓库搬进本仓库，路径随之
+  由 `../panda-video-ts/public/...` 改为 `public/...`；文件本身逐字节相同）
+  —— 1920x1080、AV1、
   `yuv420p(tv, bt709)`、30fps、时长 00:02:42.27（162.27s）、码率 317kb/s。
 - Linux 管道缓冲区大小（`fcntl(F_GETPIPE_SZ)` 实测）：**65536 字节**。
 
@@ -52,7 +54,7 @@
 
 ```
 ffmpeg -y \
-  -stream_loop -1 -i ../panda-video-ts/public/video/0.mp4 \
+  -stream_loop -1 -i public/video/0.mp4 \
   -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - \
   -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];[bg][1:v]overlay=shortest=0[v]" \
   -map "[v]" \
@@ -234,7 +236,7 @@ alpha 语义不变。
 ### 5.2 「纯 AV1 转码」（无 overlay，`-vf scale` 直接转码）
 
 ```bash
-time ffmpeg -y -v error -stream_loop -1 -i ../panda-video-ts/public/video/0.mp4 \
+time ffmpeg -y -v error -stream_loop -1 -i public/video/0.mp4 \
      -t 3 -vf scale=1280:720 -c:v libx264 -crf 23 -pix_fmt yuv420p /tmp/av1_only.mp4
 ```
 
@@ -461,7 +463,7 @@ EOF 后 `eof_action=repeat`（重复最后一帧而不是结束），**唯一能
 ```bash
 # (a) shortest=0，不给 -t，stdin 只喂 5 帧就关闭
 head -c $((1280*720*4*5)) /dev/zero | timeout 15 ffmpeg -y \
-  -stream_loop -1 -i ../panda-video-ts/public/video/0.mp4 \
+  -stream_loop -1 -i public/video/0.mp4 \
   -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - \
   -filter_complex "[0:v]scale=1280:720[bg];[bg][1:v]overlay=shortest=0[v]" \
   -map "[v]" -c:v libx264 -pix_fmt yuv420p -v error /tmp/i2a.mp4
@@ -476,7 +478,7 @@ echo $?
 ```bash
 # (b) shortest=1，同样只喂 5 帧就关闭 stdin，不给 -t
 head -c $((1280*720*4*5)) /dev/zero | timeout 15 ffmpeg -y \
-  -stream_loop -1 -i ../panda-video-ts/public/video/0.mp4 \
+  -stream_loop -1 -i public/video/0.mp4 \
   -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - \
   -filter_complex "[0:v]scale=1280:720[bg];[bg][1:v]overlay=shortest=1[v]" \
   -map "[v]" -c:v libx264 -pix_fmt yuv420p -v error /tmp/i2b.mp4
@@ -568,8 +570,8 @@ Task 5 如果最终决定用 `shortest=1`，请在报告里明确说明如何堵
 ```
 $ printf '大家好，欢迎收看本期节目。\n今天我们来聊一个有意思的话题，这段话稍微长一点，用来测试字幕换行和字号规则，也顺便验证背景音乐的淡出时机。\n希望这期内容对你有帮助，我们下期再见。\n' > /tmp/e2e.txt
 $ ./target/release/panda make /tmp/e2e.txt --title "端到端验收标题" \
-    --bg ../panda-video-ts/public/video/0.mp4 \
-    --bgm ../panda-video-ts/public/bgm/0.mp3 \
+    --bg public/video/0.mp4 \
+    --bgm public/bgm/0.mp3 \
     -o /tmp/final.mp4
 ```
 
@@ -585,10 +587,10 @@ $ ./target/release/panda make /tmp/e2e.txt --title "端到端验收标题" \
 
 ```
 ffmpeg -y \
-  -stream_loop -1 -i ../panda-video-ts/public/video/0.mp4 \
+  -stream_loop -1 -i public/video/0.mp4 \
   -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - \
   -i output/tts/audio.mp3 \
-  -stream_loop -1 -i ../panda-video-ts/public/bgm/0.mp3 \
+  -stream_loop -1 -i public/bgm/0.mp3 \
   -i /tmp/panda_render_{pid}_{uuid}/intro_typewriter.mp3 \
   -i /tmp/panda_render_{pid}_{uuid}/intro.mp3 \
   -filter_complex "\
@@ -707,7 +709,7 @@ BGM 用「把 TTS 换成同时长静音 mp3、走同一份 VTT 跑 `panda render
 ```
 $ ffmpeg -y -f lavfi -i "anullsrc=r=24000:cl=mono" -t 16.257 -c:a libmp3lame -q:a 2 /tmp/sil.mp3
 $ panda render --audio /tmp/sil.mp3 --vtt output/tts/audio.vtt --title "终审修复波验收" \
-    --bg ../panda-video-ts/public/video/0.mp4 --bgm ../panda-video-ts/public/bgm/0.mp3 \
+    --bg public/video/0.mp4 --bgm public/bgm/0.mp3 \
     -o /tmp/bgmonly.mp4
 $ ffmpeg -hide_banner -nostats -ss <起点> -t <时长> -i <文件> -map 0:a -af volumedetect -f null -
 ```
@@ -793,7 +795,7 @@ $ ffmpeg -hide_banner -nostats -ss <起点> -t <时长> -i <文件> -map 0:a -af
 ```
 $ ffmpeg -y -f lavfi -i "anullsrc=r=24000:cl=mono" -t 200 -c:a libmp3lame -q:a 2 /tmp/long.mp3
 $ panda render --audio /tmp/long.mp3 --vtt /tmp/long.vtt --title "素材循环验证" \
-    --bg ../panda-video-ts/public/video/0.mp4 --bgm ../panda-video-ts/public/bgm/0.mp3 \
+    --bg public/video/0.mp4 --bgm public/bgm/0.mp3 \
     -o /tmp/loop.mp4
 标题「素材循环验证」，音频 200.00s，共 6300 帧（210.00s）
     376.45s user 39.08s system 419% cpu 1:39.08 total
