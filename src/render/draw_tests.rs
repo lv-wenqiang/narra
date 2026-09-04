@@ -2414,6 +2414,107 @@ fn painter_lays_out_according_to_the_canvas_it_was_given() {
     );
 }
 
+/// **漏网陷阱的兜底网**：在一组**刻意不是 16:9、也不是 BASE** 的尺寸上，
+/// 四段都要能画完、不 panic、墨迹不越出画布。
+///
+/// 三个已知陷阱是人工清点出来的（规格 §3），可能还有第四个。16:9 下
+/// 「按高推导」与「按宽推导」恰好同值，所以只用 16:9 与 9:16 验证是不够的
+/// ——这里特意取 4:3、1:1、21:9 三种比例把这类巧合拆开。
+///
+/// collect-then-assert：四段各自的失败信息都收进 `failures`，循环内不
+/// `assert!`，一次跑完能看到全部违规的档位与段，而不是撞到第一个就停。
+#[test]
+fn all_segments_render_within_bounds_on_non_sixteen_nine_canvases() {
+    let b = branding_with(Some(TEST_CONTENT_WM), Some(TEST_COVER_WM));
+    let mut failures = Vec::new();
+
+    for c in [
+        Canvas { w: 1024, h: 768 },  // 4:3
+        Canvas { w: 900, h: 900 },   // 1:1
+        Canvas { w: 2560, h: 1080 }, // 21:9
+    ] {
+        let mut p = Painter::new(&b, c).unwrap();
+
+        let mut pm = Pixmap::new(c.w, c.h).unwrap();
+        p.draw_cover(&mut pm, "一个足够长的测试标题用来触发换行");
+        match ink_bbox(&pm) {
+            None => failures.push(format!("{}x{} Cover：应有墨迹，实际全白", c.w, c.h)),
+            Some((x0, y0, x1, y1)) => {
+                if x1 >= c.w || y1 >= c.h {
+                    failures.push(format!(
+                        "{}x{} Cover：墨迹越出画布，bbox=({x0},{y0},{x1},{y1})",
+                        c.w, c.h
+                    ));
+                }
+            }
+        }
+
+        // 三帧覆盖打字机进行中（60）与稳态尾声（104）；104 并非全淡出终点
+        // （那是 Outro 才有的设计），所以三帧里应当至少有一帧有墨迹。
+        let mut intro_has_ink = false;
+        for f in [0u32, 60, 104] {
+            let mut pm = Pixmap::new(c.w, c.h).unwrap();
+            p.draw_intro(&mut pm, f, "一个足够长的测试标题用来触发换行");
+            if let Some((x0, y0, x1, y1)) = ink_bbox(&pm) {
+                intro_has_ink = true;
+                if x1 >= c.w || y1 >= c.h {
+                    failures.push(format!(
+                        "{}x{} Intro frame {f}：墨迹越出画布，bbox=({x0},{y0},{x1},{y1})",
+                        c.w, c.h
+                    ));
+                }
+            }
+        }
+        if !intro_has_ink {
+            failures.push(format!("{}x{} Intro：三个代表帧均无墨迹", c.w, c.h));
+        }
+
+        // Content 段背景透明（不是 Cover/Intro/Outro 的不透明白底），
+        // 越界判据要用 alpha 而不是颜色，否则透明底也会被 `ink_bbox`
+        // 误判成"整幅都是墨迹"（premultiplied 透明像素的 rgb 恰好是 0）。
+        let mut pm = Pixmap::new(c.w, c.h).unwrap();
+        p.draw_content(&mut pm, 30, &caps());
+        match non_transparent_bbox(&pm) {
+            None => failures.push(format!("{}x{} Content：应有墨迹，实际全透明", c.w, c.h)),
+            Some((x0, y0, x1, y1)) => {
+                if x1 >= c.w || y1 >= c.h {
+                    failures.push(format!(
+                        "{}x{} Content：墨迹越出画布，bbox=({x0},{y0},{x1},{y1})",
+                        c.w, c.h
+                    ));
+                }
+            }
+        }
+
+        // f=119 是整体淡出的终点，设计上就是纯白无墨迹（见
+        // `outro_renders_representative_frames_without_panicking` 附近的
+        // `OUTRO_FADE_OUT_FRAMES = [105,119]`），所以不能要求每一帧都有墨迹，
+        // 只要求三帧里至少一帧有。
+        let mut outro_has_ink = false;
+        for f in [0u32, 60, 119] {
+            let mut pm = Pixmap::new(c.w, c.h).unwrap();
+            p.draw_outro(&mut pm, f);
+            if let Some((x0, y0, x1, y1)) = ink_bbox(&pm) {
+                outro_has_ink = true;
+                if x1 >= c.w || y1 >= c.h {
+                    failures.push(format!(
+                        "{}x{} Outro frame {f}：墨迹越出画布，bbox=({x0},{y0},{x1},{y1})",
+                        c.w, c.h
+                    ));
+                }
+            }
+        }
+        if !outro_has_ink {
+            failures.push(format!("{}x{} Outro：三个代表帧均无墨迹", c.w, c.h));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "非 16:9 画布下发现越界/无墨迹的段：{failures:#?}"
+    );
+}
+
 /// 白底上的墨迹包围盒（任一通道显著低于 255 即算墨迹）。
 fn ink_bbox(p: &Pixmap) -> Option<(u32, u32, u32, u32)> {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
