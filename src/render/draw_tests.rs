@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::Branding;
 use crate::render::canvas::Canvas;
+use crate::render::metrics::Metrics;
 use crate::vtt::Caption;
 use tiny_skia::Pixmap;
 
@@ -2006,13 +2007,15 @@ fn outro_logo_pixmap_is_scaled_to_216px() {
 
 /// **N: 圆环半径系数 0.3→0.5**。半径公式 `720*0.3*i` 与 logo 尺寸公式
 /// `min(1280,720)*0.3` 只是数值恰好相同（都是 216），语义不同（见
-/// `OUTRO_RING_RADIUS_STEP_PX` 文档），不应共用同一个常量、也不能靠
+/// `outro_ring_radius_step` 文档），不应共用同一个常量、也不能靠
 /// 白叠白的圆环像素来验证系数——直接断言常量字面值。
 #[test]
 fn outro_ring_radius_step_is_216px() {
+    let m = Metrics::for_canvas(Canvas::BASE);
     assert!(
-        (OUTRO_RING_RADIUS_STEP_PX - 216.0).abs() < 1e-4,
-        "圆环半径步长应精确为 720*0.3=216，实得 {OUTRO_RING_RADIUS_STEP_PX}"
+        (m.outro_ring_radius_step - 216.0).abs() < 1e-4,
+        "圆环半径步长应精确为 720*0.3=216，实得 {}",
+        m.outro_ring_radius_step
     );
 }
 
@@ -2221,17 +2224,59 @@ fn outro_renders_representative_frames_without_panicking() {
 /// BASE 上永远绿，起不到作用。
 #[test]
 fn cover_container_center_y_is_half_the_canvas_height() {
+    let mut failures = Vec::new();
     for c in [
         Canvas::BASE,
         Canvas { w: 1920, h: 1080 },
         Canvas { w: 1080, h: 1920 },
     ] {
-        assert_eq!(
-            cover_container_center_y(c),
-            c.h_f32() / 2.0,
-            "Cover 容器应垂直居中于画布；写死 360 时 {}x{} 会偏上",
-            c.w,
-            c.h
-        );
+        let actual = cover_container_center_y(c);
+        let expected = c.h_f32() / 2.0;
+        if (actual - expected).abs() > 1e-6 {
+            failures.push(format!(
+                "{}x{}: Cover 容器应垂直居中于画布；写死 360 时会偏上（期望 {expected}，实得 {actual}）",
+                c.w, c.h
+            ));
+        }
     }
+    assert!(failures.is_empty(), "{:?}", failures);
+}
+
+/// **陷阱 2 回归**（规格 §3）：Outro 的 logo 与圆环半径步长必须按**宽度**
+/// 推导，不能按高度。
+///
+/// 判据是「占画布宽度的比例三档相等」。**不能只用 16:9 的画布验**：在任意
+/// 16:9 上 `H×0.3` 恰等于 `W×0.16875`，两种写法同值，测试会假绿。9:16 那
+/// 一档才是真正的判据。
+#[test]
+fn outro_logo_and_ring_scale_with_width_not_height() {
+    let base = Metrics::for_canvas(Canvas::BASE);
+    let base_logo_ratio = base.outro_logo_size as f32 / Canvas::BASE.w_f32();
+    let base_ring_ratio = base.outro_ring_radius_step / Canvas::BASE.w_f32();
+    assert!(
+        (base_logo_ratio - 0.16875).abs() < 1e-6,
+        "BASE 上 logo 应为画布宽的 16.875%（216/1280），实得 {base_logo_ratio}"
+    );
+
+    let mut failures = Vec::new();
+    for c in [Canvas { w: 1920, h: 1080 }, Canvas { w: 1080, h: 1920 }] {
+        let m = Metrics::for_canvas(c);
+        let logo_ratio = m.outro_logo_size as f32 / c.w_f32();
+        let ring_ratio = m.outro_ring_radius_step / c.w_f32();
+
+        if (logo_ratio - base_logo_ratio).abs() >= 1e-3 {
+            failures.push(format!(
+                "{}x{}: logo 占宽比应与 BASE 一致（{base_logo_ratio}），实得 {logo_ratio}；\
+                 按 h*0.3 推导时 9:16 会得到 0.533",
+                c.w, c.h
+            ));
+        }
+        if (ring_ratio - base_ring_ratio).abs() >= 1e-3 {
+            failures.push(format!(
+                "{}x{}: 圆环半径步长占宽比应与 BASE 一致，实得 {ring_ratio}",
+                c.w, c.h
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{:?}", failures);
 }

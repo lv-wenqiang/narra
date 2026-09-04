@@ -11,6 +11,11 @@
 use crate::render::canvas::Canvas;
 
 /// 一个画布对应的全部版式量。字段名对应重构前的常量名（去掉 `_PX` 后缀）。
+///
+/// **`216.0` 这个基准值的由来**：重构前写作 `CANVAS_H * 0.3`，在 BASE 上
+/// 等于 `720 * 0.3 = 216`。改成按宽度推导之后基准值就是 216（= 1280 的
+/// 16.875%）。两种写法在**任意 16:9 画布**上同值——`H = W × 0.5625`，故
+/// `H × 0.3 = W × 0.16875`——所以这个差别只有 9:16 才看得出来。
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub struct Metrics {
@@ -50,7 +55,11 @@ pub struct Metrics {
     pub intro_title_font_size: f32,
     pub intro_cursor_gap: f32,
 
-    // —— Outro ——
+    // —— Outro（按宽度推导，见陷阱 2）——
+    pub outro_logo_size: u32,
+    pub outro_ring_radius_step: f32,
+
+    // —— Outro 标题 ——
     pub outro_title_font_size: f32,
     pub outro_title_gap: f32,
     pub outro_title_translate_y_from: f32,
@@ -87,6 +96,8 @@ impl Metrics {
             cover_title_padding: 40.0 * s,
             intro_title_font_size: 70.0 * s,
             intro_cursor_gap: 4.0 * s,
+            outro_logo_size: px(216.0),
+            outro_ring_radius_step: 216.0 * s,
             outro_title_font_size: 70.0 * s,
             outro_title_gap: 40.0 * s,
             outro_title_translate_y_from: -50.0 * s,
@@ -128,6 +139,8 @@ mod tests {
         assert_eq!(m.cover_title_padding, 40.0);
         assert_eq!(m.intro_title_font_size, 70.0);
         assert_eq!(m.intro_cursor_gap, 4.0);
+        assert_eq!(m.outro_logo_size, 216);
+        assert_eq!(m.outro_ring_radius_step, 216.0);
         assert_eq!(m.outro_title_font_size, 70.0);
         assert_eq!(m.outro_title_gap, 40.0);
         assert_eq!(m.outro_title_translate_y_from, -50.0);
@@ -136,14 +149,14 @@ mod tests {
     /// 长度量纲一律随 `scale` 线性放缩，且**「动画」小节里那三个像素位移
     /// 也在内**——它们看着像动画参数，量纲却是像素，是最容易漏的一类。
     ///
-    /// 本测试逐一断言全部 25 个字段，而非抽样检查：在 BASE 尺寸处 `scale == 1.0`，
+    /// 本测试逐一断言全部 27 个字段，而非抽样检查：在 BASE 尺寸处 `scale == 1.0`，
     /// 忘记乘 `* s` 的字段会被掩盖（`12.0` 与 `12.0 * 1.0` 都给出 12.0）。
     /// 只在抽样字段上断言会让大多数字段的缩放回归无人察觉。
     #[test]
     fn every_length_scales_linearly_including_the_animation_offsets() {
         let base = Metrics::for_canvas(Canvas::BASE);
         let double = Metrics::for_canvas(Canvas { w: 2560, h: 720 });
-        // f32 fields (22)
+        // f32 fields (23)
         assert_eq!(double.caption_padding_x, base.caption_padding_x * 2.0);
         assert_eq!(
             double.caption_font_size_long,
@@ -202,6 +215,11 @@ mod tests {
         );
         assert_eq!(double.intro_cursor_gap, base.intro_cursor_gap * 2.0);
         assert_eq!(
+            double.outro_ring_radius_step,
+            base.outro_ring_radius_step * 2.0,
+            "Outro 圆环半径步长是像素，必须跟着缩放"
+        );
+        assert_eq!(
             double.outro_title_font_size,
             base.outro_title_font_size * 2.0
         );
@@ -211,12 +229,13 @@ mod tests {
             base.outro_title_translate_y_from * 2.0,
             "Outro 标题的归位位移是像素，必须跟着缩放"
         );
-        // u32 fields (3)
+        // u32 fields (4)
         assert_eq!(double.watermark_icon_size, base.watermark_icon_size * 2);
         assert_eq!(
             double.cover_watermark_icon_size,
             base.cover_watermark_icon_size * 2
         );
         assert_eq!(double.cover_logo_size, base.cover_logo_size * 2);
+        assert_eq!(double.outro_logo_size, base.outro_logo_size * 2);
     }
 }

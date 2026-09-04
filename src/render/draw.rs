@@ -22,6 +22,7 @@ use crate::assets::logo_rgba;
 use crate::config::Branding;
 use crate::render::anim::{interpolate, interpolate3, spring};
 use crate::render::canvas::Canvas;
+use crate::render::metrics::Metrics;
 use crate::render::text::{TextRenderer, TextStyle};
 use crate::vtt::Caption;
 
@@ -168,10 +169,6 @@ const INTRO_FADE_OUT_RANGE: [f64; 2] = [90.0, 104.0];
 /// 一层本移植不做的 `box-shadow` 才看得出边缘），但仍照原样画出（协调者裁定：
 /// 忠实移植，不因「看不见」而省略，也不擅自改色/加阴影）。
 const OUTRO_RING_COUNT: u32 = 5;
-/// `720 * 0.3`：`720` 是规格字面值（`CANVAS_H`），不是 `min(1280,720)`
-/// （那是 logo 尺寸的算法，圆环半径规格另有其字面公式，两者数值恰好相同
-/// 纯属巧合，不应共用同一个常量表达不同的语义）。
-const OUTRO_RING_RADIUS_STEP_PX: f32 = CANVAS_H * 0.3;
 /// 圆环淡出弹簧：时长 0.5s、延迟 1s（规格字面值）。
 const OUTRO_RING_OUT_DURATION_SECONDS: f64 = 0.5;
 const OUTRO_RING_OUT_DELAY_SECONDS: f64 = 1.0;
@@ -185,9 +182,6 @@ const OUTRO_RING_OUT_DELAY_FRAMES: f64 = OUTRO_RING_OUT_DELAY_SECONDS * FPS;
 /// `mod tests`）。
 const OUTRO_RING_OUT_PROGRESS_MAX: f64 = 0.99;
 
-/// Outro logo：`min(1280,720) * 0.3 = 216`（`min` 在当前画布尺寸下就是
-/// `CANVAS_H`，与 `OUTRO_RING_RADIUS_STEP_PX` 数值相同但语义无关，见上）。
-const OUTRO_LOGO_SIZE_PX: u32 = (CANVAS_H * 0.3) as u32;
 /// logo 自身中心缩放：`0.2 -> 1.0`，首 0.8s 内完成（`[0, 24]` 帧，规格字面值）。
 const OUTRO_LOGO_SCALE_IN_FRAMES: [f64; 2] = [0.0, 24.0];
 const OUTRO_LOGO_SCALE_RANGE: [f64; 2] = [0.2, 1.0];
@@ -265,9 +259,9 @@ struct LogoSource {
 /// 用户那份走 [`crate::assets::load_icon`] 的同一条分流（`.svg` → resvg，
 /// `.png` → image）。**按最大的目标尺寸光栅化**：两个目标里 Outro 的 216px
 /// 更大，先出 216px 再缩到 36px，比反过来清晰。
-fn load_logo_source(path: Option<&Path>) -> anyhow::Result<LogoSource> {
+fn load_logo_source(path: Option<&Path>, size: u32) -> anyhow::Result<LogoSource> {
     let (mut rgba, w, h) = match path {
-        Some(p) => crate::assets::load_icon(p, OUTRO_LOGO_SIZE_PX)?,
+        Some(p) => crate::assets::load_icon(p, size)?,
         None => logo_rgba()?,
     };
     premultiply_in_place(&mut rgba);
@@ -637,6 +631,7 @@ impl Painter {
     /// 路径只会让「到底画没画」多一种说法。
     pub fn new(branding: &Branding) -> anyhow::Result<Self> {
         let mut renderer = TextRenderer::new()?;
+        let m = Metrics::for_canvas(Canvas::BASE);
         // 图标按两处各自的目标尺寸分别加载一次。**共用一个配置项、但不是
         // 共用一张位图**：正文 28px、封面/片尾 32px，各自按目标尺寸光栅化
         // （SVG 走矢量渲染、PNG 走 Lanczos3 缩放）比缩一张再二次缩放清晰。
@@ -669,9 +664,10 @@ impl Painter {
                 )
             })
             .transpose()?;
-        let logo_src = load_logo_source(branding.logo.as_deref().map(Path::new))?;
+        let logo_src =
+            load_logo_source(branding.logo.as_deref().map(Path::new), m.outro_logo_size)?;
         let logo_36 = scaled_logo(&logo_src, COVER_LOGO_SIZE_PX)?;
-        let logo_216 = scaled_logo(&logo_src, OUTRO_LOGO_SIZE_PX)?;
+        let logo_216 = scaled_logo(&logo_src, m.outro_logo_size)?;
         Ok(Self {
             renderer,
             brand: branding.brand.clone(),
@@ -927,6 +923,7 @@ impl Painter {
     pub fn draw_outro(&mut self, pixmap: &mut Pixmap, local_frame: u32) {
         pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
 
+        let m = Metrics::for_canvas(Canvas::BASE);
         let frame = local_frame as f64;
         let fade_opacity = interpolate(frame, OUTRO_FADE_OUT_FRAMES, OUTRO_FADE_OUT_RANGE) as f32;
         if fade_opacity <= 0.0 {
@@ -943,7 +940,7 @@ impl Painter {
             ring_paint.set_color_rgba8(255, 255, 255, ring_alpha);
             ring_paint.anti_alias = true;
             for i in (0..OUTRO_RING_COUNT).rev() {
-                let radius = OUTRO_RING_RADIUS_STEP_PX as f64 * f64::from(i) * ring_scale;
+                let radius = m.outro_ring_radius_step as f64 * f64::from(i) * ring_scale;
                 if radius <= 0.0 {
                     continue; // i=0：半径 0，`from_circle` 对非正半径返回 None
                 }
@@ -975,7 +972,7 @@ impl Painter {
             bold: true,
         };
         let (_, title_h) = self.renderer.measure(&self.brand, &title_style);
-        let logo_size = OUTRO_LOGO_SIZE_PX as f32;
+        let logo_size = m.outro_logo_size as f32;
         let group_h = logo_size + OUTRO_TITLE_GAP_PX + title_h;
         let group_top = CANVAS_H / 2.0 - group_h / 2.0;
         let logo_center_x = CANVAS_W / 2.0;
