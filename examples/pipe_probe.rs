@@ -1,7 +1,12 @@
-//! ffmpeg 管道联通性探针（Task 0 关卡，用完即弃）。
+//! ffmpeg 管道联通性探针（Task 0 关卡）。
 //!
 //! 目的：确认「rawvideo RGBA 经 stdin 喂进 filter_complex，与 AV1 背景视频
 //! overlay 后编码成 mp4」这条路走得通，并测出编码吞吐。
+//!
+//! **保留在仓库里是有意的**（文件头原来写的是「用完即弃」，与事实不符，
+//! 已订正）：`docs/ffmpeg-pipeline.md` 第 2/3/5 节的吞吐数字全部出自本探针，
+//! 留着它是那些数字唯一的可复现来源。代价是每次 `cargo clippy --all-targets`
+//! 都要编译它——几百毫秒，可接受。
 //!
 //! 运行：cargo run --release --example pipe_probe
 

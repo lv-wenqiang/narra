@@ -20,9 +20,23 @@ pub struct FrameSource {
 }
 
 impl FrameSource {
-    /// 由 VTT 文本与标题构造。音频时长取最后一条字幕的结束时间。
+    /// 由 VTT 文本与标题构造。音频时长取**所有字幕结束时间的最大值**
+    /// （不是文件里最后一条字幕的结束时间——VTT 不保证按结束时间单调排列，
+    /// 见 `audio_secs_uses_the_max_end_time_not_the_last_caption_in_file_order`）。
+    ///
+    /// **解析不出任何字幕时报错而不是继续**：`parse_vtt` 对任何无法解析的输入
+    /// 都返回空 `Vec` 而不报错（无时间行、编码错乱、拿错文件……）。若放行，
+    /// `audio_secs` 会是 0 → `content_frames` 取 `layout()` 撑出的下限 60 帧 →
+    /// 总帧 300，整条流程会一路跑到底，产出一个 **10 秒**、字幕全空、把长旁白
+    /// 截断到 10 秒的 mp4，退出码 0 并打印「成片已写入」。拿错 `--vtt` 是最常
+    /// 见的用户错误，而这个失败形式完全静默。
     pub fn new(vtt_text: &str, title: String) -> Result<Self> {
         let captions = parse_vtt(vtt_text);
+        if captions.is_empty() {
+            bail!(
+                "字幕文件里没有解析出任何字幕，请确认 --vtt 指向的是 TTS 产出的 audio.vtt（WebVTT 格式，含 `00:00:00.000 --> 00:00:03.000` 这样的时间行）"
+            );
+        }
         let audio_secs = captions.iter().map(|c| c.end_ms).max().unwrap_or(0) as f64 / 1000.0;
         Ok(Self {
             painter: Painter::new()?,
@@ -51,7 +65,9 @@ impl FrameSource {
         Ok(pixmap)
     }
 
-    /// 音频时长 `A`（秒）：VTT 最后一条字幕的结束时间。
+    /// 音频时长 `A`（秒）：**所有字幕结束时间的最大值**（不是文件里最后一条
+    /// 字幕的结束时间——VTT 不保证按结束时间单调排列，见
+    /// `audio_secs_uses_the_max_end_time_not_the_last_caption_in_file_order`）。
     /// Content 段长 `ceil((A+2)*30)` 帧，BGM 的淡出区间由它推出。
     pub fn audio_secs(&self) -> f64 {
         self.captions.iter().map(|c| c.end_ms).max().unwrap_or(0) as f64 / 1000.0
@@ -370,7 +386,40 @@ mod tests {
     /// 仍然对返回的全部帧各自调用恰好一次 `write_all`，只是全量意义上的
     /// 「全部帧」从 600 条缩到 300 条；两个测试真正要钉住的性质（字节数精确
     /// 等于 帧数×W×H×4、Cover 不透明、Content 透明）在 300 帧下同样成立。
-    const SHORT_VTT: &str = "WEBVTT\n\n";
+    ///
+    /// **为什么不是空字幕（原来是 `"WEBVTT\n\n"`）**：`FrameSource::new` 现在
+    /// 对「解析不出任何字幕」报错——那是拿错 `--vtt` 时唯一能拦住静默坏片的
+    /// 地方，不能为了让这两条测试跑得快就留一条 `new_unchecked` 后门（后门
+    /// 一旦存在，生产代码哪天改去调它也不会有测试变红）。改成一条**零长度
+    /// 的占位 cue**：`end_ms = 0` → `audio_secs = 0`，`layout()` 算出的帧数与
+    /// 空字幕时**逐帧相同**（仍是 `CONTENT_TAIL_SECS` 撑出的 300 帧），两条
+    /// 测试的断言值一个字都不用改，耗时也不变。
+    const SHORT_VTT: &str = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:00.000\n占位。\n";
+
+    /// `FrameSource::new` 必须在解析不出任何字幕时报错。
+    ///
+    /// 没有这条守卫时，`panda render --vtt 拿错的文件.txt` 会走完整条流程：
+    /// `audio_secs=0` → `content_frames=60` → 总帧 300 → 产出一个 10 秒、字幕
+    /// 全空、把长旁白截断到 10 秒的 mp4，**退出码 0 并打印「成片已写入」**。
+    #[test]
+    fn constructing_from_a_vtt_with_no_parsable_cues_is_an_error() {
+        // 三种「解析不出字幕」的真实形态：空文件、只有 WEBVTT 头、
+        // 拿错文件（纯文本，没有任何时间行）。
+        for (name, text) in [
+            ("空文件", ""),
+            ("只有头", "WEBVTT\n\n"),
+            ("拿错文件", "这是一份旁白文稿，不是字幕。\n第二行。\n"),
+        ] {
+            let err = FrameSource::new(text, "标题".into())
+                .err()
+                .unwrap_or_else(|| panic!("{name} 应当报错，而不是产出一个 10 秒空片"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("--vtt"),
+                "{name} 的错误文案应指导用户去检查 --vtt，实得：{msg}"
+            );
+        }
+    }
 
     #[test]
     fn write_rgba_frames_emits_exactly_one_frame_worth_of_bytes_per_frame() {
