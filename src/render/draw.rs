@@ -26,7 +26,15 @@ use crate::render::metrics::Metrics;
 use crate::render::text::{TextRenderer, TextStyle};
 use crate::vtt::Caption;
 
-const FPS: f64 = 30.0;
+/// **单一真相源是 `timeline::FPS`**——本模块的全部动画窗口（打字机、光标闪烁、
+/// Outro 各阶段的帧区间……）都以帧数表达，必须与 `timeline::layout` 用的是
+/// 同一个帧率，否则改一处帧率、另一处动画时长不变，动画会整体变速甚至错位
+/// （例如 Intro 淡出提前于打字机完成）。曾经这里独立写着 `const FPS: f64 = 30.0`，
+/// 与 `timeline::FPS` 互不引用——两边恰好都是 30 时测试全绿，改动其一时才会
+/// 露馅，且编译器完全看不出这类错位。`pub(crate)` 是为了让
+/// `ffmpeg.rs` 的 `draw_fps_derives_from_the_timeline_single_source_of_truth`
+/// 能直接读它做跨模块断言。
+pub(crate) const FPS: f64 = crate::render::timeline::FPS as f64;
 
 /// 字幕最大宽度：画面 80% 的容器再减去左右各 40px 的 padding = BASE 上 944px。
 /// TS 的 `Content.tsx` 在**同一个** div 上同时写了 `width:'80%'` 与

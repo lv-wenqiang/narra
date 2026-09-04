@@ -20,17 +20,36 @@
 ### 已销账
 
 - **画布尺寸与帧率同时存在于两个文件、互不引用**（原「值得做」第 3 条，
-  帧渲染子系统补充部分）。`docs/superpowers/plans/2026-09-04-canvas-metrics-refactor.md`
-  收敛为单一的值类型 `render::canvas::Canvas`（`BASE`/`scale()`/`w_f32()`/
-  `h_f32()`），`Metrics::for_canvas` 接管全部 44 个宽/高派生量，`Painter` /
-  `FrameSource` / `RenderInputs` 都改成显式持有 `Canvas`。中间步骤曾让
-  `timeline::WIDTH`/`HEIGHT` 从 `Canvas::BASE` 派生（而不是直接删除）作为
-  过渡；等到 `draw.rs` 的 `CANVAS_W`/`CANVAS_H` 也全部改用 `Metrics` 之后，
-  这两个 `pub` 重导出在 `src/` 与 `tests/` 里已经没有任何读者，只是靠 `pub`
-  躲过了 `dead_code` 检查——发现后直接删除，见
-  `src/render/timeline.rs` 的删除记录。变异验证：把 `Canvas::BASE` 改错一格
-  （`1280`→`1281`），`render::canvas::tests::base_matches_the_pre_refactor_hardcoded_size`
-  与 `cargo test --test canvas_baseline` 两侧同时变红。
+  帧渲染子系统补充部分）。两半现在都已收敛：
+
+  - **尺寸半**：`docs/superpowers/plans/2026-09-04-canvas-metrics-refactor.md`
+    收敛为单一的值类型 `render::canvas::Canvas`（`BASE`/`scale()`/`w_f32()`/
+    `h_f32()`），`Metrics::for_canvas` 接管全部 44 个字段（1 个 `canvas` +
+    27 个按 `scale` 缩放的长度量纲字段 + 2 个语义字段 + 14 个宽/高直接派生
+    的位置/容器尺寸字段；44 是总字段数，**不是 44 个字段都是宽/高派生量**，
+    真正由宽/高直接派生的只有 14 个），`Painter` / `FrameSource` /
+    `RenderInputs` 都改成显式持有 `Canvas`。中间步骤曾让 `timeline::WIDTH`/`HEIGHT` 从 `Canvas::BASE`
+    派生（而不是直接删除）作为过渡；等到 `draw.rs` 的 `CANVAS_W`/`CANVAS_H`
+    也全部改用 `Metrics` 之后，这两个 `pub` 重导出在 `src/` 与 `tests/` 里
+    已经没有任何读者，只是靠 `pub` 躲过了 `dead_code` 检查——发现后直接
+    删除，见 `src/render/timeline.rs` 的删除记录。变异验证：把
+    `Canvas::BASE` 改错一格（`1280`→`1281`），
+    `render::canvas::tests::base_matches_the_pre_refactor_hardcoded_size`
+    与 `cargo test --test canvas_baseline` 两侧同时变红。
+  - **帧率半**（终审修复波补做）：`src/render/timeline.rs` 的
+    `pub const FPS: u32 = 30` 与 `src/render/draw.rs` 曾各写一份独立的
+    `const FPS`，互不引用——只改 `timeline::FPS` 会让 `layout()`/ffmpeg 的
+    `-r`/`INTRO_START_SECS`/`CONTENT_START_SECS` 跟着变，而 `draw.rs` 里
+    打字机、光标闪烁、Outro 各阶段的动画窗口仍按旧帧率的常量走，动画整体
+    变速甚至错位，且没有任何测试把两者摆在一起比。现在
+    `draw::FPS`（`pub(crate)`）直接写成
+    `crate::render::timeline::FPS as f64`，从源码结构上排除再分叉的可能；
+    `src/ffmpeg.rs` 新增跨模块测试
+    `draw_fps_derives_from_the_timeline_single_source_of_truth` 钉住这个
+    关系，写法与风格同本文件旁边 `segment_starts_match_the_audio_delays_in_the_filter_graph`
+    一致。变异验证：暂时把 `draw::FPS` 改回独立字面量 `30.0`、把
+    `timeline::FPS` 改成 `60`，该测试从 `ok` 变 `FAILED`
+    （`left: 30.0, right: 60.0`）；两处都改回后重新变绿。
 
 ### 值得做
 

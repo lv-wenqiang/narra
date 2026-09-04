@@ -515,6 +515,35 @@ mod tests {
         );
     }
 
+    /// **跨模块一致性测试**：`draw.rs` 的动画帧率必须与 `timeline::FPS`——
+    /// 本文件用来算 `INTRO_START_SECS`/`CONTENT_START_SECS`/`-r` 参数的
+    /// 同一个真相源——保持同一个值。
+    ///
+    /// 为什么需要单独一条：`timeline::FPS` 决定 `layout()` 切出的段落帧数、
+    /// ffmpeg 的输出帧率、`main.rs` 打印的时长；`draw.rs` 的动画窗口（打字机
+    /// 逐字速度、光标闪烁周期、Outro 各阶段的淡入淡出帧区间……）过去各写
+    /// 一份 `const FPS`，互不引用。两边恰好都写 30 时，`timeline.rs` 与
+    /// `draw.rs` 各自的测试、以及本文件的
+    /// `segment_starts_match_the_audio_delays_in_the_filter_graph` 会照旧全绿；
+    /// 把 `timeline::FPS` 单独改成 60，`layout()`/ffmpeg 侧的时间轴会变成
+    /// 60fps，而 `draw.rs` 的动画窗口仍按 30fps 的常量走——动画整体变速两倍，
+    /// 且 Intro 会在打字机还没打完时就开始淡出。编译能过，上面提到的测试
+    /// 也照样全绿，只有真的把两个模块的 `FPS` 摆在一起比才能捕捉到。
+    ///
+    /// 现在 `draw::FPS` 已经改为直接从 `timeline::FPS` 派生
+    /// （`pub(crate) const FPS: f64 = crate::render::timeline::FPS as f64;`），
+    /// 所以本测试在源码层面已不可能失败；它存在是为了防止未来有人把
+    /// `draw::FPS` 改回一份独立的字面量而不被任何测试察觉。
+    #[test]
+    fn draw_fps_derives_from_the_timeline_single_source_of_truth() {
+        assert_eq!(
+            crate::render::draw::FPS,
+            crate::render::timeline::FPS as f64,
+            "draw.rs 的动画帧率必须与 timeline::FPS 保持同一个真相源，否则动画会\
+             按错误的帧率播放（打字机变速、Outro 提前/延后淡出）"
+        );
+    }
+
     #[test]
     fn bgm_fade_starts_two_seconds_before_audio_end_in_absolute_time() {
         // 这是本计划最容易写错的一条（裁定 R2）：
