@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use panda::config;
 use panda::config::{Branding, SfxSources};
+use panda::render::canvas::Canvas;
 use panda::render::frame::FrameSource;
 use panda::render::timeline::FPS;
 use panda::tmp::TempPath;
@@ -145,7 +146,7 @@ fn run_debug_frames(
         .with_context(|| format!("读取 VTT 文件失败：{}", vtt.display()))?;
     let title = config::non_blank(title).unwrap_or_else(|| branding.brand.clone());
 
-    let mut source = FrameSource::new(&vtt_text, title, &branding)?;
+    let mut source = FrameSource::new(&vtt_text, title, &branding, Canvas::BASE)?;
     let total_frames = source.total_frames();
     let frame_ids = parse_frame_list(frames.as_deref(), total_frames)?;
 
@@ -339,6 +340,7 @@ fn build_render_inputs<'a>(
         total_frames: source.total_frames(),
         audio_secs: source.audio_secs(),
         content_frames: source.content_frames(),
+        canvas: source.canvas(),
     }
 }
 
@@ -461,7 +463,7 @@ fn compose_video_with_runner(
     let tmp = TempPath::create_dir("panda_render")?;
     let (intro, typewriter) = resolve_sfx_paths(sfx, tmp.path())?;
 
-    let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding)?;
+    let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding, Canvas::BASE)?;
 
     println!(
         "标题「{resolved_title}」，音频 {:.2}s，共 {} 帧（{:.2}s），输出 {}",
@@ -811,8 +813,13 @@ mod tests {
     /// 「填错」。
     #[test]
     fn build_render_inputs_wires_every_field_without_swapping() {
-        let source =
-            FrameSource::new(RENDER_TEST_VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
+        let source = FrameSource::new(
+            RENDER_TEST_VTT,
+            "标题".into(),
+            &Branding::plain("测试品牌"),
+            Canvas::BASE,
+        )
+        .unwrap();
         assert_eq!(source.audio_secs(), 10.0);
         assert_eq!(source.content_frames(), 360);
         assert_eq!(source.total_frames(), 600);

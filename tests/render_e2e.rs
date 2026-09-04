@@ -38,6 +38,7 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
         vtt,
         "端到端测试标题".into(),
         &panda::config::Branding::plain("测试品牌"),
+        panda::render::canvas::Canvas::BASE,
     )
     .unwrap();
     let out = tmp.join("out.mp4");
@@ -45,6 +46,7 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
     let total = fs.total_frames();
     let audio_secs = fs.audio_secs();
     let content_frames = fs.content_frames();
+    let canvas = fs.canvas();
     panda::ffmpeg::run_render(
         &mut fs,
         &panda::ffmpeg::RenderInputs {
@@ -57,6 +59,7 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
             total_frames: total,
             audio_secs,
             content_frames,
+            canvas,
         },
     )
     .unwrap();

@@ -31,12 +31,14 @@ fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
         vtt,
         "标题".into(),
         &panda::config::Branding::plain("测试品牌"),
+        panda::render::canvas::Canvas::BASE,
     )
     .unwrap();
     let bad = Path::new("/nonexistent-xyz.mp4");
     let total_frames = fs.total_frames();
     let audio_secs = fs.audio_secs();
     let content_frames = fs.content_frames();
+    let canvas = fs.canvas();
 
     // SAFETY（就多线程而言）：这个测试二进制里只有这一条 #[test]，没有
     // 其它线程会并发读写 PATH。
@@ -55,6 +57,7 @@ fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
             total_frames,
             audio_secs,
             content_frames,
+            canvas,
         },
     );
 

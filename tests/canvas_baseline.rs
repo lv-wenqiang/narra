@@ -11,6 +11,7 @@
 //! 入场动画中）、550=Outro（logo 已入场、整体淡出未开始）。
 
 use panda::config::Branding;
+use panda::render::canvas::Canvas;
 use panda::render::frame::FrameSource;
 
 const VTT: &str = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:04.000\n第一条字幕。\n\n2\n00:00:04.000 --> 00:00:10.000\n第二条字幕，稍微长一点。\n";
@@ -35,7 +36,7 @@ fn fixture() -> Branding {
 fn base_canvas_rendering_is_byte_identical_to_the_baseline() {
     let dir = baseline_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    let mut fs = FrameSource::new(VTT, "基线标题".into(), &fixture()).unwrap();
+    let mut fs = FrameSource::new(VTT, "基线标题".into(), &fixture(), Canvas::BASE).unwrap();
 
     let mut regenerated = Vec::new();
     for f in FRAMES {
