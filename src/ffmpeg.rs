@@ -711,6 +711,63 @@ mod tests {
         }
     }
 
+    /// **非整秒的 `content_frames`**：把 `adelay` 的取整口径钉死。
+    ///
+    /// 销 `docs/follow-ups.md`「ffmpeg 合成 · 取整口径」：`adelay` 的毫秒用
+    /// `.round() as i64`，`afade` 的 `st` 与 `-t` 用 `{:.3}`。两者在整秒输入下
+    /// 结果**相同**，而此前所有测试的 `content_frames` 全是 30 的倍数（360、
+    /// 90…），Outro 起点因此总落在整秒上——把 `.round()` 换成截断
+    /// （`as i64` 直接丢小数）不会有任何测试变红。
+    ///
+    /// 这里取 `content_frames = 361`（真实场景：`A = 10.01s` →
+    /// `ceil((10.01 + 2) × 30) = 361`）：
+    ///
+    /// - Outro 起点 = `(120 + 361) / 30` = `16.0333…s` → `16033.33…ms`
+    /// - **四舍五入** → `16033`；**截断** → `16033`（这一位分不出来）
+    ///
+    /// 所以还要一个小数部分 ≥ 0.5 的用例：`content_frames = 362` →
+    /// `(120 + 362) / 30 = 16.0666…s` → `16066.66…ms`，四舍五入得 **16067**、
+    /// 截断得 **16066**。两条合起来才真正钉住口径。
+    #[test]
+    fn adelay_rounds_rather_than_truncates_on_non_integer_seconds() {
+        // 小数部分 < 0.5：两种口径同值，作为对照说明这一条本身不足以区分。
+        let g = audio_filter_graph(10.01, (120.0 + 361.0) / 30.0);
+        assert_eq!(
+            delay_ms_of(&g, "[5:a]"),
+            16033,
+            "content_frames=361 → Outro 起点 16.0333…s → 16033ms：{g}"
+        );
+
+        // 小数部分 > 0.5：四舍五入 16067，截断 16066——这一条能区分。
+        let g = audio_filter_graph(10.08, (120.0 + 362.0) / 30.0);
+        assert_eq!(
+            delay_ms_of(&g, "[5:a]"),
+            16067,
+            "content_frames=362 → Outro 起点 16.0666…s，应四舍五入到 16067 而非截断到 16066：{g}"
+        );
+
+        // 再取一个小数部分恰好 .5 的：content_frames = 363 →
+        // (120+363)/30 = 16.1s → 16100ms，两种口径同值；这里断言的是
+        // 「毫秒数不带小数」，即 `adelay` 的参数始终是整数。
+        let g = audio_filter_graph(10.1, (120.0 + 363.0) / 30.0);
+        assert_eq!(delay_ms_of(&g, "[5:a]"), 16100, "{g}");
+    }
+
+    /// 非整秒输入下 `afade` 的 `st` 保持毫秒精度的定长格式，不被取整。
+    ///
+    /// 与上面那条成对：`adelay` 取整到毫秒、`afade` 的 `st` 保留三位小数，
+    /// 这是两种**不同**的口径，各管各的。`A = 10.01` → BGM 淡出起点
+    /// `4.0 + 10.01 - 2.0 = 12.01`，若有人把 `st` 也按 `adelay` 那样取整成秒，
+    /// 会得到 `st=12` —— 淡出提前 10ms 开始，听不出来，但口径就散了。
+    #[test]
+    fn afade_start_keeps_millisecond_precision_on_non_integer_seconds() {
+        let g = audio_filter_graph(10.01, (120.0 + 361.0) / 30.0);
+        assert!(
+            g.contains("afade=t=out:st=12.010:d=2"),
+            "BGM 淡出起点应为 4.0 + 10.01 - 2.0 = 12.010（三位小数定长）：{g}"
+        );
+    }
+
     #[test]
     fn amix_disables_normalization_and_mixes_four_inputs() {
         // normalize=1（默认）会按输入数自动缩放，把各路相对音量全改掉。
@@ -1059,6 +1116,14 @@ mod tests {
     }
 
     #[test]
+    /// **这条同时承担「ffmpeg 提前退出时写端不 panic、不挂死」那份职责。**
+    /// 曾经另有一条 `run_render_does_not_panic_when_ffmpeg_exits_early` 专测
+    /// 它，用同一套坏输入、只断言 `result.is_err()`——经七次变异零响应，被
+    /// 判定为实证零鉴别力后删除（`docs/follow-ups.md` 已销账）。本条用同一条
+    /// 代码路径（ffmpeg 因找不到输入立刻退出 → 写帧端撞上已关闭的管道），
+    /// 却断言更强的性质：错误必须原样透出 ffmpeg 的 stderr。若写端真的
+    /// panic 或挂死，本条一样会 panic 或超时——「不 panic」是它的前提，
+    /// 不需要再单列一条只断言这个前提的测试。
     fn run_render_reports_ffmpeg_stderr_verbatim_when_it_exits_nonzero() {
         // 用一个必然失败的参数组合（不存在的输入素材）触发 ffmpeg 非零退出，
         // 确认错误信息把 ffmpeg 自己的话原样透出，而不是吞掉或改写。
@@ -1076,7 +1141,9 @@ mod tests {
             &crate::config::Branding::plain("测试品牌"),
         )
         .unwrap();
-        let out_dir = std::env::temp_dir().join("panda_ffmpeg_stderr_test");
+        let out_dir_guard =
+            crate::tmp::TempPath::new(std::env::temp_dir().join("panda_ffmpeg_stderr_test"));
+        let out_dir = out_dir_guard.path().to_path_buf();
         let out = out_dir.join("out.mp4");
         let bg = std::path::Path::new("/nonexistent-bg-xyz.mp4");
         let a = std::path::Path::new("/nonexistent-a-xyz.mp3");
@@ -1106,41 +1173,6 @@ mod tests {
             msg.contains("No such file") || msg.contains("Invalid"),
             "应原样透出 ffmpeg 的 stderr：{msg}"
         );
-        std::fs::remove_dir_all(&out_dir).ok();
-    }
-
-    #[test]
-    fn run_render_does_not_panic_when_ffmpeg_exits_early() {
-        // ffmpeg 因参数错误立刻退出时，写帧线程会遇到 broken pipe。
-        // 这条测试的全部要求就是：返回 Err，不 panic，不挂死。
-        let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:20.000\n够长的一条，保证帧数多到写端会撞上已关闭的管道。\n";
-        let mut fs = crate::render::frame::FrameSource::new(
-            vtt,
-            "标题".into(),
-            &crate::config::Branding::plain("测试品牌"),
-        )
-        .unwrap();
-        let bad = std::path::Path::new("/nonexistent-xyz.mp4");
-        // 三个数值必须在 &mut fs 之前算好：否则 &mut fs 与 &fs 同时活着，借用检查不过。
-        let total_frames = fs.total_frames();
-        let audio_secs = fs.audio_secs();
-        let content_frames = fs.content_frames();
-        let result = run_render(
-            &mut fs,
-            &RenderInputs {
-                bg: bad,
-                tts_audio: bad,
-                bgm: bad,
-                typewriter: bad,
-                intro: bad,
-                out: std::path::Path::new("/tmp/panda_early_exit_test.mp4"),
-                total_frames,
-                audio_secs,
-                content_frames,
-            },
-        );
-        assert!(result.is_err(), "应返回 Err");
-        std::fs::remove_file("/tmp/panda_early_exit_test.mp4").ok();
     }
 
     /// 写一个可执行的假 ffmpeg 脚本到临时目录，返回其路径。仅用于下面三条
@@ -1152,13 +1184,20 @@ mod tests {
     /// 规模下稳定复现的条件。用假脚本直接控制这几种行为，比等真实 ffmpeg
     /// 巧合触发要可靠得多。
     #[cfg(unix)]
-    fn write_fake_ffmpeg(name: &str, script: &str) -> std::path::PathBuf {
+    /// 写一个假 ffmpeg 脚本，返回**自清理的守卫**。
+    ///
+    /// 交 `TempPath` 而不是裸 `PathBuf`（销 `docs/follow-ups.md`「族 A」测试
+    /// 侧的两条）：这几条测试都经 `run_with_timeout` 跑被测闭包，闭包 panic
+    /// 或超时时 `run_with_timeout` 自己就 `panic!`，写在测试尾部的
+    /// `remove_file(&script)` 永远执行不到——而「闭包 panic」恰恰是这些测试
+    /// 最想抓的那类回归，也就是说**越是抓到了 bug，越会留下垃圾文件**。
+    fn write_fake_ffmpeg(name: &str, script: &str) -> crate::tmp::TempPath {
         use std::os::unix::fs::PermissionsExt;
         let path =
             std::env::temp_dir().join(format!("panda_fake_ffmpeg_{name}_{}", std::process::id()));
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
+        crate::tmp::TempPath::new(path)
     }
 
     /// 三条用假 ffmpeg 脚本的测试共用的超时预算。
@@ -1222,15 +1261,18 @@ mod tests {
         )
         .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
-        let out = std::env::temp_dir().join(format!(
+        // 守卫在作用域末尾删产物：`run_with_timeout` 的闭包 panic 或超时时
+        // 它自己就 `panic!`，写在测试尾部的清理执行不到（销「族 A」测试侧）。
+        let out_guard = crate::tmp::TempPath::new(std::env::temp_dir().join(format!(
             "panda_stderr_deadlock_test_{}.mp4",
             std::process::id()
-        ));
+        )));
+        let out = out_guard.path().to_path_buf();
         let total_frames = fs.total_frames();
         let audio_secs = fs.audio_secs();
         let content_frames = fs.content_frames();
 
-        let script_for_run = script.clone();
+        let script_for_run = script.path().to_path_buf();
         let out_for_run = out.clone();
         let result = run_with_timeout(move || {
             let inputs = RenderInputs {
@@ -1251,8 +1293,6 @@ mod tests {
             result.is_ok(),
             "假 ffmpeg 正常读完 stdin 后退出 0，不应报错：{result:?}"
         );
-        std::fs::remove_file(&out).ok();
-        std::fs::remove_file(&script).ok();
     }
 
     #[test]
@@ -1282,15 +1322,17 @@ mod tests {
         )
         .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
-        let out = std::env::temp_dir().join(format!(
+        // 同上：清理挂到作用域上，不写在尾部。
+        let out_guard = crate::tmp::TempPath::new(std::env::temp_dir().join(format!(
             "panda_write_swallow_test_{}.mp4",
             std::process::id()
-        ));
+        )));
+        let out = out_guard.path().to_path_buf();
         let total_frames = fs.total_frames();
         let audio_secs = fs.audio_secs();
         let content_frames = fs.content_frames();
 
-        let script_for_run = script.clone();
+        let script_for_run = script.path().to_path_buf();
         let out_for_run = out.clone();
         let result = run_with_timeout(move || {
             let inputs = RenderInputs {
@@ -1316,8 +1358,6 @@ mod tests {
             !msg.contains("退出码"),
             "假 ffmpeg 退出码是 0，不应误报成 ffmpeg 非零退出：{msg}"
         );
-        std::fs::remove_file(&out).ok();
-        std::fs::remove_file(&script).ok();
     }
 
     #[test]
@@ -1352,15 +1392,17 @@ mod tests {
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         // 特意让输出的父目录（两层，逼 create_dir_all 而不是单层 mkdir）
         // 在测试开始前不存在。
-        let out_dir =
-            std::env::temp_dir().join(format!("panda_create_dir_test_{}", std::process::id()));
+        let out_dir_guard = crate::tmp::TempPath::new(
+            std::env::temp_dir().join(format!("panda_create_dir_test_{}", std::process::id())),
+        );
+        let out_dir = out_dir_guard.path().to_path_buf();
         std::fs::remove_dir_all(&out_dir).ok();
         let out = out_dir.join("nested").join("out.mp4");
         let total_frames = fs.total_frames();
         let audio_secs = fs.audio_secs();
         let content_frames = fs.content_frames();
 
-        let script_for_run = script.clone();
+        let script_for_run = script.path().to_path_buf();
         let out_for_run = out.clone();
         let result = run_with_timeout(move || {
             let inputs = RenderInputs {
@@ -1385,8 +1427,5 @@ mod tests {
             out.exists(),
             "假 ffmpeg 应已在正确路径创建了文件，说明目录确实建好了"
         );
-
-        std::fs::remove_dir_all(&out_dir).ok();
-        std::fs::remove_file(&script).ok();
     }
 }

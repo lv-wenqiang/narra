@@ -521,3 +521,54 @@ fn sfx_resolve_prefers_cli_over_env_over_embedded() {
 
     clear();
 }
+
+/// 四个素材路径函数的「空白视同未设置」语义。
+///
+/// 销 `docs/follow-ups.md`「ffmpeg 合成 · 族 B」：这四个函数都经 `non_empty_env`
+/// 处理（`BG_VIDEO="  "` 等价于不设置），但此前**一条测试都没有覆盖这个分支**
+/// ——把 `non_empty_env` 换成裸 `std::env::var().ok()` 的变异存活。
+///
+/// 失败形式值得一提：`BG_VIDEO=" "` 若被当成真值，`bg_video_path()` 会返回
+/// 一个纯空格的路径，然后在 `check_render_inputs_exist` 里报「背景视频文件
+/// 不存在： 」——文件名是个空格，看报错完全猜不到是环境变量设歪了。
+#[test]
+fn blank_material_env_vars_are_treated_as_unset() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    // SAFETY: 持有 ENV_LOCK，本文件内串行；本进程（独立测试二进制）里没有
+    // 其它代码路径会 spawn 子进程或并发调用 getenv。
+    unsafe {
+        std::env::set_var("BG_VIDEO", "   ");
+        std::env::set_var("BGM_FILE", "\t");
+        std::env::set_var("TITLE_JSON", " \n ");
+        std::env::set_var("VIDEO_OUTPUT", "  \t  ");
+    }
+
+    assert_eq!(
+        panda::config::bg_video_path(),
+        "public/video/0.mp4",
+        "全空白的 BG_VIDEO 应回落默认值"
+    );
+    assert_eq!(
+        panda::config::bgm_path(),
+        "public/bgm/0.mp3",
+        "全空白的 BGM_FILE 应回落默认值"
+    );
+    assert_eq!(
+        panda::config::title_json_path(),
+        "public/video/title.json",
+        "全空白的 TITLE_JSON 应回落默认值"
+    );
+    assert_eq!(
+        panda::config::video_output_path(),
+        "output/video/video.mp4",
+        "全空白的 VIDEO_OUTPUT 应回落默认值"
+    );
+
+    // SAFETY: 同上。
+    unsafe {
+        std::env::remove_var("BG_VIDEO");
+        std::env::remove_var("BGM_FILE");
+        std::env::remove_var("TITLE_JSON");
+        std::env::remove_var("VIDEO_OUTPUT");
+    }
+}

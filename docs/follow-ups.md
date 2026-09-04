@@ -209,6 +209,37 @@ Task 0–8）端到端验收与终审修复波留下的账。
   正确的）。复测见 `docs/ffmpeg-pipeline.md` §9.5：三路立体声落到规格字面值的
   ±0.06 dB 内。**残留的一半**（偏差移到单声道 TTS 上）随后由裁定 R-F9 修掉，
   见下一条。
+- **族 A：清理代码写在可能被跳过的位置（三处同根因）**（原「值得做」第 1 条）。
+  新增 `src/tmp.rs` 的 `TempPath` 作用域守卫，`Drop` 里删路径，三处一起解决：
+  生产路径的 `compose_video_with_runner`（`create_dir_all` 与清理之间夹着两个
+  `?` 出口，走那两条时临时目录连同两个 mp3 约 120 KB 泄漏在 `/tmp`）、
+  `write_fake_ffmpeg` 交出的脚本、以及三条假 ffmpeg 测试的产物目录（它们经
+  `run_with_timeout` 跑闭包，闭包 panic 或超时时 `run_with_timeout` 自己
+  `panic!`，写在测试尾部的清理执行不到——**越是抓到了 bug，越会留下垃圾文件**）。
+  新增 `compose_video_cleans_up_the_tmp_dir_on_every_exit_path` 覆盖三条出口
+  （成功 / Err / **runner panic**），判据是让注入的 runner 从
+  `render_inputs.intro` 捞出临时目录路径，返回后断言那个具体路径不存在——
+  确定性，不靠扫 `/tmp` 找残留。
+- **族 B：四个素材路径的「空白视同未设置」语义无覆盖**（原「值得做」第 2 条）。
+  照 `tests/config_env.rs` 既有的串行化环境变量夹具补了
+  `blank_material_env_vars_are_treated_as_unset`。变异验证：把 `non_empty_env`
+  换成裸 `std::env::var().ok()` → 该文件 9 条全红（此前该变异存活）。
+- **反预乘慢路径**（原「值得做」第 3 条）。`unpremultiply_into` 对
+  `alpha == 0` 直接写四个 0——`demultiply()` 只对 `alpha == 255` 短路，而
+  Content 段是透明底，绝大多数像素正是这一支。**本机实测 600 帧 1.49s →
+  0.38s，3.89×**（欠账本原记的是 6× / 1.6s → 0.26s，这里记实测值）。等价性由
+  `unpremultiply_fast_path_is_byte_identical_to_plain_demultiply` 保证：拿四段
+  各一帧真实渲染帧，对着未优化的参考实现逐字节比对。
+- **取整口径不一致**（原「值得做」第 5 条）。补了两条非整秒 `content_frames`
+  的用例：`content_frames=362` → Outro 起点 `16.0666…s`，四舍五入 16067 /
+  截断 16066，能区分；另一条钉住 `afade` 的 `st` 保留三位小数不被取整。
+  变异验证：`.round()` 换截断 → 1 条红；`st` 也按秒取整 → 4 条红。
+- **`run_render_does_not_panic_when_ffmpeg_exits_early` 经七次变异零响应**
+  （原「值得做」第 6 条）。**已删**。它与
+  `run_render_reports_ffmpeg_stderr_verbatim_when_it_exits_nonzero` 用同一套坏
+  输入、走同一条代码路径（ffmpeg 立刻退出 → 写端撞上已关闭的管道），但只断言
+  `result.is_err()`；后者断言错误必须原样透出 ffmpeg 的 stderr，严格更强，且
+  写端若真的 panic 或挂死，它一样会 panic 或超时。职责已写进后者的文档注释。
 - **`Commands::Make` 这个 match arm 自身零覆盖**（原「族 B」第 2 小条）与
   **`make` 在整条 TTS 跑完之后才校验素材存在**（原「值得做」第 4 条）。
   **两条一起销**：`panda make` 连同它那层胶水移到了仓库根的 `justfile`。
@@ -238,63 +269,7 @@ Task 0–8）端到端验收与终审修复波留下的账。
 
 ### 值得做
 
-#### 1. 族 A：清理代码写在可能被跳过的位置（三处同根因）
-
-- **生产代码**：`src/main.rs` 的 `compose_video_with_runner` 里，`create_dir_all`
-  之后、`cleanup_tmp_and_propagate` 之前有两个 `?` 出口
-  （`write_embedded_audio_checked` 与 `FrameSource::new`）。走这两条路时临时目录
-  连同两个 mp3（约 120 KB）泄漏在 `/tmp`。
-- **测试**：`run_with_timeout` 在被测闭包 panic 后清理不可达。
-- **测试**：注入的 `runner` 闭包 panic 会穿过 `compose_video_with_runner`，
-  同样跳过 `cleanup_tmp_and_propagate`。
-
-**修法**：一个持有临时目录路径、`Drop` 里删目录的 guard，三处一起解决——把
-「清理」从控制流的某一行挪到作用域上，就不存在「哪条路径漏了」这个问题。
-
-**为什么可以推迟**：泄漏量小（约 120 KB/次）、只发生在已经失败的运行上，且
-`/tmp` 由系统清理；测试侧的两处只影响测试机的临时文件卫生。
-
-#### 2. 族 B：四个素材路径的「空白视同未设置」语义无覆盖
-
-**四个素材路径函数的「空白视同未设置」语义无覆盖**：`bg_video_path` /
-   `bgm_path` / `title_json_path` / `video_output_path` 都经 `non_empty_env`
-   处理（`BG_VIDEO="  "` 等价于不设置），但没有一条测试覆盖这个分支——把
-   `non_empty_env` 换成裸 `std::env::var().ok()` 的变异**存活**。
-**为什么可以推迟**：这是「参数装配」层，错了会立刻在第一次真实运行里以
-「文件不存在」的形式炸出来，不是静默坏片。**修法**：照 `tests/config_env.rs`
-既有的串行化环境变量夹具补四条。
-
-（原第 2 小条「`Commands::Make` 零覆盖」已销账：该子命令连同它那层胶水一起
-移到了 `justfile`，见下面「已销账」。）
-
-#### 3. 反预乘慢路径有 6× 优化空间
-
-`src/render/frame.rs` 的 `unpremultiply_into` 逐像素调
-`PremultipliedColorU8::demultiply()`，而它**只对 `alpha == 255` 短路**；
-`alpha == 0`（Content 段的透明底，占绝大多数像素）会走三次 f64 除零。
-
-三行改动（`alpha == 0` 时直接写四个 0），**release 下输出逐位相同**，已实测
-600 帧 **1.6s → 0.26s**。
-
-**为什么可以推迟**：反预乘不是端到端瓶颈（`panda render` 实测 51 fps，
-tiny-skia 渲染与 libx264 编码并行吃掉约 3.8 个核）；受影响最明显的是
-`frame.rs` 里两条走全时间轴的单测。
-
-#### 4. 取整口径不一致，且没有一条测试用非整秒的 `content_frames`
-
-`src/ffmpeg.rs` 里 `adelay` 的毫秒用 `.round() as i64`，`afade` 的 `st` 与 `-t`
-用 `{:.3}`。两者在整秒输入下结果相同，而**现有测试的 `content_frames` 全是
-30 的倍数**——把 `.round()` 换成截断不会有任何测试变红。
-
-**修法**：补一条 `content_frames` 非 30 倍数的用例（例如 `A = 10.01` →
-`content_frames = 361` → Outro 起点 `16.0333…s`），把口径钉死。
-
-#### 5. `run_render_does_not_panic_when_ffmpeg_exits_early` 经七次变异零响应
-
-实证零鉴别力的测试比没有测试更糟：占测试计数、给虚假信心、还要花时间起一个
-假 ffmpeg 子进程。**修法**：要么删，要么改成断言 broken-pipe 这一条具体路径。
-注意 `run_render_reports_write_failure_even_when_ffmpeg_exits_zero` 已经在测更
-强的性质（ffmpeg 退出码 0 但写帧失败时错误不能被吞），**直接删可能更干净**。
+（本子系统的欠账已全部销清，见上面「已销账」。）
 
 ### 可以不做
 

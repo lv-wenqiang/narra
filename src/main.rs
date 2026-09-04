@@ -7,6 +7,7 @@ use panda::config;
 use panda::config::{Branding, SfxSources};
 use panda::render::frame::FrameSource;
 use panda::render::timeline::FPS;
+use panda::tmp::TempPath;
 use panda::tts::pipeline::{ProcessOptions, process_narration_file};
 
 #[derive(Parser)]
@@ -287,19 +288,6 @@ fn check_render_inputs_exist(audio: &Path, vtt: &Path, bg: &Path, bgm: &Path) ->
     Ok(())
 }
 
-/// 内嵌音效的临时目录。除 pid 之外再带一个随机后缀：`render` 与 `make`
-/// 共用 `compose_video`，同一个进程里跑两次合成（并发的单测、将来的批量
-/// 合成）时，只带 pid 的目录名会被两次合成共用，先结束的那次
-/// `cleanup_tmp_and_propagate` 会删掉另一次仍被 ffmpeg 读取的音效文件，
-/// 表现为偶发失败。取名方式沿用 `tts::pipeline` 里的 `unique_tmp_dir`。
-fn unique_tmp_audio_dir() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "panda_render_{}_{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ))
-}
-
 /// 落盘两段内嵌音效，并按文件名确认没有被对调。
 ///
 /// `assets::write_embedded_audio` 的返回顺序是 `(intro, typewriter)`，而
@@ -352,14 +340,6 @@ fn build_render_inputs<'a>(
         audio_secs: source.audio_secs(),
         content_frames: source.content_frames(),
     }
-}
-
-/// 无论 `run_render` 成功与否都清理临时音效目录；清理本身失败不掩盖真正的
-/// 错误——`remove_dir_all` 的 `Err` 被丢弃，只有 `result` 自己的 `Err` 会
-/// 继续传播。
-fn cleanup_tmp_and_propagate(tmp: &Path, result: Result<()>) -> Result<()> {
-    std::fs::remove_dir_all(tmp).ok();
-    result
 }
 
 /// `run_render` 返回 `Err` 时，磁盘上可能已经留下一个看起来完整、实则被
@@ -473,10 +453,13 @@ fn compose_video_with_runner(
 
     // 两段内嵌音效落到临时目录，供 ffmpeg 作为输入文件读取——stdin
     // 已经被帧流占用，没法再从管道喂第二、第三份数据。
-    let tmp = unique_tmp_audio_dir();
-    std::fs::create_dir_all(&tmp)
-        .with_context(|| format!("创建临时目录失败：{}", tmp.display()))?;
-    let (intro, typewriter) = resolve_sfx_paths(sfx, &tmp)?;
+    // 作用域守卫：`Drop` 里删目录。此前是「`create_dir_all` → …… →
+    // `cleanup_tmp_and_propagate`」的写法，中间夹着两个 `?` 出口
+    // （`resolve_sfx_paths` 与 `FrameSource::new`），走那两条路时临时目录连同
+    // 两个 mp3 泄漏在 /tmp；注入的 `runner` 闭包 panic 时同样跳过清理。
+    // 把清理挂到作用域上之后，出口有几个、走的是 `?` 还是 unwind 都不必再数。
+    let tmp = TempPath::create_dir("panda_render")?;
+    let (intro, typewriter) = resolve_sfx_paths(sfx, tmp.path())?;
 
     let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding)?;
 
@@ -490,7 +473,7 @@ fn compose_video_with_runner(
 
     let render_inputs = build_render_inputs(&source, bg, audio, bgm, &typewriter, &intro, out);
     let result = runner(&mut source, &render_inputs);
-    let result = cleanup_tmp_and_propagate(&tmp, result);
+    // `tmp` 的清理由 `Drop` 负责（含下面 `?` 提前返回与 panic 展开两条路）。
     cleanup_output_on_failure(out, result)?;
 
     println!("成片已写入 {}", out.display());
@@ -866,31 +849,91 @@ mod tests {
         assert_ne!(inputs.total_frames, inputs.content_frames);
     }
 
-    /// 变异实验：临时目录在失败路径上不清理。Ok 与 Err 两条路径都要验证
-    /// 目录被移除，且 `result` 的 Ok/Err 变体（含错误文本）原样透传。
+    /// **临时目录在所有出口上都被清理**（销 `docs/follow-ups.md`「族 A」）。
+    ///
+    /// 覆盖三条出口：runner 成功、runner 返回 `Err`、**runner panic**。第三条
+    /// 是此前真正漏掉的那一条——清理写在 `runner(..)` 之后的一行上，panic
+    /// 展开会直接越过它，临时目录连同两个 mp3（约 120 KB）留在 `/tmp`。
+    ///
+    /// 判据不靠「扫 /tmp 找残留」（同一进程里并发跑的其它测试也会在那儿建
+    /// 目录，会互相干扰），而是让注入的 runner **把临时目录的路径捞出来**：
+    /// `render_inputs.intro` 正指向临时目录里的那份内嵌音效，取它的父目录即可。
+    /// 调用返回后断言那个具体路径不存在——确定性，无竞态。
     #[test]
-    fn cleanup_tmp_and_propagate_removes_dir_on_both_success_and_failure() {
-        let ok_dir = std::env::temp_dir().join(format!("panda_cleanup_ok_{}", std::process::id()));
-        std::fs::create_dir_all(&ok_dir).unwrap();
-        std::fs::write(ok_dir.join("intro.mp3"), b"x").unwrap();
-        let r = cleanup_tmp_and_propagate(&ok_dir, Ok(()));
-        assert!(r.is_ok());
-        assert!(!ok_dir.exists(), "成功路径也应清理临时目录");
+    fn compose_video_cleans_up_the_tmp_dir_on_every_exit_path() {
+        let dir = std::env::temp_dir().join(format!("panda_compose_leak_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("a.mp3");
+        let bg = dir.join("bg.mp4");
+        let bgm = dir.join("bgm.mp3");
+        let vtt = dir.join("a.vtt");
+        let title_json = dir.join("no_such_title.json");
+        let out = dir.join("out.mp4");
+        for p in [&audio, &bg, &bgm] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        std::fs::write(&vtt, RENDER_TEST_VTT).unwrap();
 
-        let err_dir =
-            std::env::temp_dir().join(format!("panda_cleanup_err_{}", std::process::id()));
-        std::fs::create_dir_all(&err_dir).unwrap();
-        std::fs::write(err_dir.join("typewriter.mp3"), b"x").unwrap();
-        let r = cleanup_tmp_and_propagate(&err_dir, Err(anyhow::anyhow!("模拟 run_render 失败")));
+        let branding = Branding::plain(TEST_BRAND);
+        let sfx = SfxSources::default();
+        let make_inputs = || ComposeVideoInputs {
+            branding: &branding,
+            sfx: &sfx,
+            audio: &audio,
+            vtt: &vtt,
+            title: Some("测试标题"),
+            title_json: &title_json,
+            bg: &bg,
+            bgm: &bgm,
+            out: &out,
+        };
+
+        // 出口 1：runner 成功。
+        let seen = std::cell::Cell::new(PathBuf::new());
+        compose_video_with_runner(&make_inputs(), |_, ri| {
+            seen.set(ri.intro.parent().unwrap().to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        let tmp_ok = seen.take();
+        assert!(!tmp_ok.as_os_str().is_empty(), "runner 应当被调用过");
+        assert!(!tmp_ok.exists(), "成功路径应清理临时目录：{tmp_ok:?}");
+
+        // 出口 2：runner 返回 Err。
+        let seen = std::cell::Cell::new(PathBuf::new());
+        let err = compose_video_with_runner(&make_inputs(), |_, ri| {
+            seen.set(ri.intro.parent().unwrap().to_path_buf());
+            Err(anyhow::anyhow!("模拟 run_render 失败"))
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "模拟 run_render 失败", "错误应原样透传");
+        let tmp_err = seen.take();
+        assert!(!tmp_err.exists(), "失败路径应清理临时目录：{tmp_err:?}");
+
+        // 出口 3：runner panic —— 此前漏掉的那一条。
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(PathBuf::new()));
+        let sink = std::sync::Arc::clone(&captured);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // 别把预期中的 panic 打到测试输出里
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compose_video_with_runner(&make_inputs(), |_, ri| {
+                *sink.lock().unwrap() = ri.intro.parent().unwrap().to_path_buf();
+                panic!("模拟 runner 炸掉");
+            })
+        }));
+        std::panic::set_hook(hook);
+        assert!(unwound.is_err(), "runner 应当确实 panic 了");
+        let tmp_panic = captured.lock().unwrap().clone();
         assert!(
-            !err_dir.exists(),
-            "失败路径也应清理临时目录，这是本任务要堵的那个疏漏"
+            !tmp_panic.as_os_str().is_empty(),
+            "panic 前应已记下临时目录"
         );
-        assert_eq!(
-            r.unwrap_err().to_string(),
-            "模拟 run_render 失败",
-            "错误信息应原样透传"
+        assert!(
+            !tmp_panic.exists(),
+            "panic 展开时也应清理临时目录，这正是「族 A」要堵的那一条：{tmp_panic:?}"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 决定：`run_render` 失败时删除可能已落盘的误导性成片；成功时绝不触碰
@@ -1137,22 +1180,5 @@ mod tests {
         assert_eq!(inputs.bg, Path::new(&config::bg_video_path()));
         assert_eq!(inputs.bgm, Path::new(&config::bgm_path()));
         assert_eq!(inputs.out, Path::new(&config::video_output_path()));
-    }
-
-    /// 裁定 R-T8-4：`render` 与 `make` 共用 `compose_video` 之后，只带 pid
-    /// 的临时目录名在同进程内不唯一——两次合成会共用一个目录，先结束的那
-    /// 次清理会删掉另一次仍被 ffmpeg 读取的内嵌音效。
-    #[test]
-    fn unique_tmp_audio_dir_differs_within_the_same_process() {
-        let a = unique_tmp_audio_dir();
-        let b = unique_tmp_audio_dir();
-        assert_ne!(a, b, "同一进程内两次调用必须给出不同目录：{a:?}");
-        assert_eq!(a.parent(), Some(std::env::temp_dir().as_path()));
-        assert!(
-            a.file_name()
-                .and_then(|f| f.to_str())
-                .is_some_and(|n| n.starts_with("panda_render_")),
-            "目录名应保留 panda_render_ 前缀便于人工辨认：{a:?}"
-        );
     }
 }

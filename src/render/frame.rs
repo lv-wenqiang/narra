@@ -112,10 +112,21 @@ impl FrameSource {
 /// 整体淡出会整体发暗，而**成片能播、不报错**，属于不容易发现的那类。
 ///
 /// `alpha == 0` 时 RGB 没有定义，统一输出 0，避免把预乘残留的垃圾值喂出去。
+///
+/// **`alpha == 0` 走快路径**：`PremultipliedColorU8::demultiply()` 只对
+/// `alpha == 255` 短路，`alpha == 0` 仍要走三次浮点除法（除数为 0）。而
+/// Content 段是**透明底**，绝大多数像素正是这一支——全时间轴下它是最热的
+/// 一条路径。直接写四个 0 与 `demultiply()` 的结果逐字节相同
+/// （`unpremultiply_fast_path_is_byte_identical_to_plain_demultiply` 拿真实
+/// 渲染帧对着未优化的参考实现比对过）。
 fn unpremultiply_into(pixmap: &Pixmap, buf: &mut Vec<u8>) {
     buf.clear();
     buf.reserve(pixmap.width() as usize * pixmap.height() as usize * 4);
     for px in pixmap.pixels() {
+        if px.alpha() == 0 {
+            buf.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
         let c = px.demultiply();
         buf.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
@@ -126,6 +137,56 @@ mod tests {
     use super::*;
 
     const VTT: &str = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:04.000\n第一条。\n\n2\n00:00:04.000 --> 00:00:10.000\n第二条。\n";
+
+    /// `alpha == 0` 的像素必须输出四个 0。
+    ///
+    /// 这是 `unpremultiply_into` 里 `alpha == 0` 快路径依赖的不变量：预乘表示
+    /// 下 alpha 为 0 时 RGB 没有定义（存的是乘过 0 的残留），必须统一归零而
+    /// 不是把残留值喂给 ffmpeg。Content 段是透明底，绝大多数像素走这一支。
+    #[test]
+    fn fully_transparent_pixels_unpremultiply_to_four_zero_bytes() {
+        let p = Pixmap::new(4, 4).unwrap(); // 新建的 Pixmap 全透明
+        let mut buf = Vec::new();
+        unpremultiply_into(&p, &mut buf);
+        assert_eq!(buf.len(), 4 * 4 * 4);
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "全透明画布应逐字节为 0，实得非零字节"
+        );
+    }
+
+    /// **快路径与逐像素 `demultiply()` 逐字节等价。**
+    ///
+    /// `alpha == 0` 时直接写四个 0，是一条基于「`demultiply()` 对 alpha 为 0
+    /// 的像素也返回全 0」的短路。这条测试拿真实渲染帧（含不透明、半透明、
+    /// 全透明三类像素）对着**未优化的参考实现**逐字节比对——优化若改变了
+    /// 任何一个像素，这里立刻变红。
+    ///
+    /// 参考实现留在测试里而不是留一个 `#[cfg(feature)]` 开关：它只有三行，
+    /// 而把两条路径都编进生产二进制会让「到底跑的是哪条」多一种说法。
+    #[test]
+    fn unpremultiply_fast_path_is_byte_identical_to_plain_demultiply() {
+        /// 优化前的写法：无条件逐像素 `demultiply()`。
+        fn reference(pixmap: &Pixmap, buf: &mut Vec<u8>) {
+            buf.clear();
+            for px in pixmap.pixels() {
+                let c = px.demultiply();
+                buf.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+            }
+        }
+
+        let mut fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
+        // 四段各取一帧：Cover(0) 不透明白底、Intro(100) 白底 + 文字、
+        // Content(200) 透明底 + 半透明抗锯齿边缘、Outro(550) 白底 + 缩放动画。
+        for f in [0u32, 100, 200, 550] {
+            let pixmap = fs.render(f).unwrap();
+            let mut fast = Vec::new();
+            let mut slow = Vec::new();
+            unpremultiply_into(&pixmap, &mut fast);
+            reference(&pixmap, &mut slow);
+            assert_eq!(fast, slow, "第 {f} 帧的快路径输出应与参考实现逐字节相同");
+        }
+    }
 
     #[test]
     fn total_frames_follows_the_last_cue_end_time() {
