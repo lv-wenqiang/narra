@@ -2336,6 +2336,13 @@ fn outro_logo_and_ring_scale_with_width_not_height() {
 /// 重构前是写死的 `2000.0`：1280 宽下是画布的 1.56 倍（安全），1920 宽下
 /// 只比画布宽 4.2%——一个长品牌名配 1.5 倍放大的字号真的可能触发换行。
 /// 语义是「远大于画布宽」，就该随画布走。
+///
+/// 钉的是**公式本身**（`== w * 2.0`），不是一个宽松的下界：`no_wrap_width`
+/// 与 `c.w_f32()` 两边都从同一个 `canvas.w` 派生，若断言写成
+/// `>= c.w_f32() * 1.5`，无论公式里的倍数是 `2.0` 是 `1.6` 还是别的什么，
+/// 只要仍是「宽度的某个 >1.5 倍」就永远为真——这条测试会变成一个无论怎么
+/// 改都测不出回归的近似重言式。改成精确相等后，公式一旦被悄悄改动（哪怕
+/// 仍然「远大于画布宽」），这里都会先变红。
 #[test]
 fn no_wrap_sentinel_stays_far_wider_than_the_canvas() {
     let mut failures = Vec::new();
@@ -2345,17 +2352,114 @@ fn no_wrap_sentinel_stays_far_wider_than_the_canvas() {
         Canvas { w: 1080, h: 1920 },
     ] {
         let m = Metrics::for_canvas(c);
-        if m.no_wrap_width < c.w_f32() * 1.5 {
+        let want = c.w_f32() * 2.0;
+        if m.no_wrap_width != want {
             failures.push(format!(
-                "{}x{}: 不换行哨兵应至少为画布宽的 1.5 倍，实得 {}，期望 ≥ {}",
-                c.w,
-                c.h,
-                m.no_wrap_width,
-                c.w_f32() * 1.5
+                "{}x{}: 不换行哨兵公式应恰为画布宽的 2.0 倍，实得 {}，期望 {}",
+                c.w, c.h, m.no_wrap_width, want
             ));
         }
     }
     assert!(failures.is_empty(), "不换行哨兵回归失败：{:?}", failures);
+}
+
+/// **不换行哨兵从 2000.0 改成 `w * 2.0`（BASE 上 2560.0）之后，唯一被真正
+/// 改变了输出的输入类别**：墨宽落在 `(2000, 2560]` 像素区间的品牌/水印
+/// 文案。重构前这类文案在 70px Outro 标题（或 38px Cover 上排、
+/// 正文/封面水印）下会触发换行，重构后保持单行——这不是意外的行为漂移，
+/// 是刻意的（TS 原版对这三处水印/品牌文字都写了 `whiteSpace: nowrap`，
+/// 单行本就是设计意图，重构前 `2000.0` 这个哨兵只是在 1280 宽画布上恰好
+/// 够用，并不是有意允许换行）。
+///
+/// `tests/canvas_baseline.rs` 的字节门禁**测不到这类输入**：门禁固定用
+/// 「基线品牌」/「正文水印」/「封面水印 · 副标题」几个短文案，离 2000px
+/// 门槛很远，本分支的改动不会让门禁变红——这正是「输出在 1280×720 下不变」
+/// 这句话真正的例外，必须有一条独立测试直接钉住它，而不是指望门禁顺带
+/// 覆盖。
+///
+/// 宽度不去猜字符数（不同字符的字体前进宽度不同，猜数字不可靠、也和
+/// 「基于渲染器实测」的要求相悖）：用 `TextRenderer::measure`——与
+/// `draw_outro` 里构造 Outro 标题完全相同的 `TextStyle`——实测着拼出一个
+/// 墨宽落在 `(2000, 2560]` 之间的品牌名。
+///
+/// 单行与否用**墨迹包围盒高度**判断，而不是 `measure()` 返回的排版高度：
+/// 后者由 `cosmic-text` 的行数 × 行高公式给出，如果换行逻辑本身有问题，
+/// 排版高度和墨迹高度可能会一起算错、彼此掩护；实际渲染出来的像素才是
+/// 最终要保证不变的东西。参照物是同一套 `TextStyle`、同一个渲染管线画一个
+/// 明显短得多的品牌名（必然单行），两者的墨迹高度应当接近——若宽品牌名
+/// 意外换行，标题会变成两行，墨迹高度应显著更高（约 2 倍）。
+#[test]
+fn brand_wider_than_the_old_2000px_sentinel_still_renders_single_line_in_outro_title() {
+    let m = Metrics::for_canvas(Canvas::BASE);
+    let title_style = TextStyle {
+        size_px: m.outro_title_font_size,
+        color: TITLE_COLOR_BLACK,
+        stroke: None,
+        letter_spacing_px: 0.0,
+        max_width_px: m.no_wrap_width,
+        line_height: DEFAULT_LINE_HEIGHT,
+        bold: true,
+    };
+    let mut renderer = TextRenderer::new().unwrap();
+
+    // 逐字追加，实测宽度，直到落入 (2000, 2560] 区间——不预设字符数。
+    let pool = "熊猫智研社品牌名称测试文案拼接够长了吗还没到再来几个字符看看现在";
+    let mut wide_brand = String::new();
+    let mut width = 0.0f32;
+    for ch in pool.chars().cycle() {
+        wide_brand.push(ch);
+        let (w, _) = renderer.measure(&wide_brand, &title_style);
+        width = w;
+        if width > 2000.0 {
+            break;
+        }
+        assert!(
+            wide_brand.chars().count() < 200,
+            "拼接了 200 字仍未越过 2000px，实测宽度 {width}，测试构造本身有问题"
+        );
+    }
+    assert!(
+        width > 2000.0 && width <= 2560.0,
+        "构造用于测试的品牌名墨宽应落在 (2000, 2560] 区间（旧哨兵 2000 < 新哨兵 2560），\
+         实得 {width}，「{wide_brand}」（{} 字）",
+        wide_brand.chars().count()
+    );
+
+    // 用真正的 Painter::draw_outro（生产路径）渲染这个品牌名，不单独摆弄
+    // TextRenderer——要验证的是 `Metrics::no_wrap_width` 真的传导到了
+    // 生产绘制代码，而不是这条测试自己另起一套等价逻辑。
+    let wide_branding = Branding {
+        brand: wide_brand.clone(),
+        watermark: None,
+        watermark_cover: None,
+        watermark_icon: None,
+        logo: None,
+    };
+    let mut wide_painter = Painter::new(&wide_branding, Canvas::BASE).unwrap();
+    let mut wide_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    wide_painter.draw_outro(&mut wide_p, 60); // 标题淡入已完成、整体淡出未开始（同 outro_title_font_size_matches_70px）
+
+    // 参照：一个明显短得多、必然单行的品牌名，同样走 draw_outro。
+    let short_branding = Branding::plain("短品牌");
+    let mut short_painter = Painter::new(&short_branding, Canvas::BASE).unwrap();
+    let mut short_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    short_painter.draw_outro(&mut short_p, 60);
+
+    // 扫描窗口：logo 底部（≈403）到画布底（两处都没配水印，不必再避让
+    // `cover_watermark_center_y`），足够宽松地覆盖标题墨迹，不论一行两行。
+    let (_, wide_y0, _, wide_y1) =
+        ink_bbox_in_y_range(&wide_p, 420, Canvas::BASE.h).expect("宽品牌名标题应有墨迹");
+    let (_, short_y0, _, short_y1) =
+        ink_bbox_in_y_range(&short_p, 420, Canvas::BASE.h).expect("短品牌名标题应有墨迹");
+    let wide_h = (wide_y1 - wide_y0 + 1) as f32;
+    let short_h = (short_y1 - short_y0 + 1) as f32;
+
+    assert!(
+        (wide_h - short_h).abs() / short_h <= 0.2,
+        "宽品牌名（墨宽 {width}px，越过旧哨兵 2000px）应与短品牌名一样单行渲染，\
+         墨迹高度应接近（±20%）：短品牌 {short_h}px，宽品牌 {wide_h}px——\
+         若宽品牌名意外换行成两行，这里的高度会显著更高（约 2 倍）"
+    );
 }
 
 /// Cover 水印的垂直中心是画布高度的 80%，不是写死的 576。
@@ -2448,6 +2552,7 @@ fn all_segments_render_within_bounds_on_non_sixteen_nine_canvases() {
         Canvas { w: 1024, h: 768 },  // 4:3
         Canvas { w: 900, h: 900 },   // 1:1
         Canvas { w: 2560, h: 1080 }, // 21:9
+        Canvas { w: 720, h: 1280 },  // 9:16（计划 B 1080×1920 的同形状缩小版）
     ] {
         let mut p = Painter::new(&b, c).unwrap();
 
