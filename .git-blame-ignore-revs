@@ -1,0 +1,7 @@
+# 只含纯格式化 / 纯位移的提交，git blame 应当跳过它们。
+#
+# 启用（一次性，本地配置）：
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# style: cargo fmt 全仓库统一格式（裁定 R-F6，20 个文件 / 155 个 hunk）
+d8c637957710f0628aff249641c04ec29edae68b
