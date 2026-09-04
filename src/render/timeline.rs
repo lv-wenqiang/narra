@@ -1,10 +1,14 @@
 pub const FPS: u32 = 30;
-/// 时间轴模块沿用的画布尺寸。**不再各写一份**：由 `Canvas::BASE` 推导，
-/// 与 `render::draw` 共享唯一真相源（销 `docs/follow-ups.md` TTS 子系统
-/// 第 3 条：画布尺寸此前同时存在于两个文件且互不引用）。
+/// 时间轴模块沿用的画布尺寸，由 `Canvas::BASE` 推导。
 ///
-/// 计划 B 会把这两个 re-export 换成随运行期 `Canvas` 走的参数；本计划只做
-/// 收敛，不改数值。
+/// **收敛只做了一半，另一半在 Task 7。** 此刻 `render::draw` 仍持有它自己那份
+/// 写死的 `CANVAS_W`/`CANVAS_H`（`draw.rs` 顶部），与这里互不引用——改
+/// `Canvas::BASE` 只会动到本模块与它的下游（`ffmpeg`、`render::frame`），
+/// `draw` 不受影响。真正的单一真相源要等 `draw` 也接上 `Canvas` 之后才成立，
+/// 那时 `docs/follow-ups.md` 里「画布尺寸同时存在于两个文件」那条才谈得上销账。
+///
+/// 数值不变：本计划全程输出仍是 1280×720，由 `tests/canvas_baseline.rs` 的
+/// 逐字节门禁守住。
 pub const WIDTH: u32 = crate::render::canvas::Canvas::BASE.w;
 pub const HEIGHT: u32 = crate::render::canvas::Canvas::BASE.h;
 
