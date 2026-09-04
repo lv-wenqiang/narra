@@ -16,7 +16,8 @@ use tiny_skia::{
     Color, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, Transform,
 };
 
-use crate::assets::{github_mark_rgba, logo_rgba};
+use crate::assets::logo_rgba;
+use crate::config::Branding;
 use crate::render::anim::{interpolate, interpolate3, spring};
 use crate::render::text::{TextRenderer, TextStyle};
 use crate::vtt::Caption;
@@ -57,7 +58,6 @@ const ENTRANCE_LETTER_SPACING_RANGE: [f64; 2] = [8.0, 0.0];
 
 /// 左下角水印（`content` 预设，规格 §8.6）：无中文后缀，`bold: false` +
 /// `stroke: None`（brief 明确指出：合成粗体会让半透明水印在三遍重叠处叠加变浓）。
-const WATERMARK_TEXT: &str = "Panda Video Generator";
 const WATERMARK_MARGIN_LEFT_PX: f32 = 40.0;
 const WATERMARK_MARGIN_BOTTOM_PX: f32 = 40.0;
 const WATERMARK_FONT_SIZE_PX: f32 = 24.0;
@@ -65,8 +65,6 @@ const WATERMARK_FONT_SIZE_PX: f32 = 24.0;
 /// `draw_centered` 的 `opacity` 参数固定传 `1.0`——两者是两件事（brief 提醒 1）。
 const WATERMARK_COLOR: [u8; 4] = [255, 255, 255, 69];
 const WATERMARK_LETTER_SPACING_EM: f32 = 0.01;
-const WATERMARK_ICON_SIZE_PX: u32 = 28;
-const WATERMARK_ICON_GAP_PX: f32 = 10.0;
 /// 水印只有一行，换行宽度给一个远大于画布宽度的值以避免意外换行。
 const WATERMARK_MAX_WIDTH_PX: f32 = 2000.0;
 
@@ -75,12 +73,13 @@ const WATERMARK_MAX_WIDTH_PX: f32 = 2000.0;
 const COVER_WATERMARK_CENTER_Y_PX: f32 = 576.0;
 const COVER_WATERMARK_FONT_SIZE_PX: f32 = 28.0;
 const COVER_WATERMARK_COLOR: [u8; 4] = [23, 23, 23, 102];
-const COVER_WATERMARK_ICON_SIZE_PX: u32 = 32;
-const COVER_WATERMARK_ICON_GAP_PX: f32 = 12.0;
-const COVER_WATERMARK_TEXT_MAIN: &str = "Panda Video Generator";
-const COVER_WATERMARK_TEXT_SEP: &str = " · ";
-const COVER_WATERMARK_TEXT_SUFFIX: &str = "熊猫视频自动化引擎";
-const COVER_WATERMARK_SEP_OPACITY_MUL: f32 = 0.75;
+/// 文案里的 `·` 分隔符单独降到 0.75 倍不透明度。
+///
+/// 这是**排版规则而非写死的文案**：对任何含 `·` 的水印文案都成立，见
+/// [`split_on_separator`]。
+const WATERMARK_SEP_OPACITY_MUL: f32 = 0.75;
+/// 水印文案的分隔符字面量。
+const WATERMARK_SEP: &str = "·";
 
 /// Cover 居中容器（规格 §8.4「Cover」小节 + 协调者交接的精确排版）：
 /// 宽度 80% = 1024px，水平居中，整个容器（上排 + 主标题）垂直居中于 y=360。
@@ -88,7 +87,7 @@ const COVER_CONTAINER_WIDTH_PX: f32 = CANVAS_W * 0.8;
 const COVER_CONTAINER_LEFT_PX: f32 = (CANVAS_W - COVER_CONTAINER_WIDTH_PX) / 2.0;
 const COVER_CONTAINER_CENTER_Y: f32 = 360.0;
 
-/// 上排（logo + 「熊猫智研社」）：左对齐（不是居中），左偏移 40px，
+/// 上排（logo + 品牌名）：左对齐（不是居中），左偏移 40px，
 /// 整体不透明度 0.30。
 const COVER_ROW_MARGIN_LEFT_PX: f32 = 40.0;
 const COVER_ROW_LEFT_PX: f32 = COVER_CONTAINER_LEFT_PX + COVER_ROW_MARGIN_LEFT_PX;
@@ -96,11 +95,10 @@ const COVER_LOGO_SIZE_PX: u32 = 36;
 const COVER_LOGO_MARGIN_PX: f32 = 8.0;
 /// 上排行高：logo 尺寸 + 四周 margin（`36 + 8*2 = 52`）。
 const COVER_ROW_HEIGHT_PX: f32 = COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX * 2.0;
-/// 「熊猫智研社」左边缘：`row_left + logo_margin + logo_size + logo_margin`。
+/// 品牌名左边缘：`row_left + logo_margin + logo_size + logo_margin`。
 const COVER_ROW_TEXT_LEFT_PX: f32 =
     COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX + COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX;
 const COVER_ROW_TEXT_FONT_SIZE_PX: f32 = 38.0;
-const COVER_ROW_TEXT: &str = "熊猫智研社";
 const COVER_ROW_OPACITY: f32 = 0.30;
 /// 上排文字不会换行，给一个远大于画布宽度的值以避免意外换行。
 const COVER_ROW_TEXT_MAX_WIDTH_PX: f32 = 2000.0;
@@ -112,7 +110,7 @@ const COVER_TITLE_PADDING_PX: f32 = 40.0;
 const COVER_TITLE_MAX_WIDTH_PX: f32 = COVER_CONTAINER_WIDTH_PX - COVER_TITLE_PADDING_PX * 2.0;
 const COVER_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
 
-/// Cover 主标题、Cover 上排「熊猫智研社」、Intro 标题一律用黑色、无描边
+/// Cover 主标题、Cover 上排品牌名、Intro 标题一律用黑色、无描边
 /// （协调者裁定：TS 原版这三处都没指定 `color`，浏览器在白底上按默认色渲染
 /// 即黑色）。
 const TITLE_COLOR_BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -175,11 +173,10 @@ const OUTRO_LOGO_SIZE_PX: u32 = (CANVAS_H * 0.3) as u32;
 const OUTRO_LOGO_SCALE_IN_FRAMES: [f64; 2] = [0.0, 24.0];
 const OUTRO_LOGO_SCALE_RANGE: [f64; 2] = [0.2, 1.0];
 
-/// 固定标题「熊猫智研社」：70px 粗体黑色，紧随 logo 淡入之后（`[24, 39]` 帧）
+/// 品牌名（`Painter::brand`，默认「墨风」）：70px 粗体黑色，紧随 logo 淡入之后（`[24, 39]` 帧）
 /// 淡入 + 上移 50px 归位。TS 原版 `whiteSpace: nowrap`（不换行）——沿用既有
 /// 代码里表达「不换行」的惯例，给一个远大于画布宽度的 `max_width_px`
 /// （见 `WATERMARK_MAX_WIDTH_PX`/`COVER_ROW_TEXT_MAX_WIDTH_PX` 的同款注释）。
-const OUTRO_TITLE_TEXT: &str = "熊猫智研社";
 const OUTRO_TITLE_FONT_SIZE_PX: f32 = 70.0;
 const OUTRO_TITLE_MAX_WIDTH_PX: f32 = 2000.0;
 /// logo（未缩放的原生 216px 布局盒）与标题之间的纵向间距（TS `marginTop:40px`）。
@@ -195,25 +192,6 @@ const OUTRO_TITLE_TRANSLATE_Y_RANGE: [f64; 2] = [-50.0, 0.0];
 /// 四者，白底不受影响（与 Cover/Intro 的白底恒定不透明一致）。
 const OUTRO_FADE_OUT_FRAMES: [f64; 2] = [105.0, 119.0];
 const OUTRO_FADE_OUT_RANGE: [f64; 2] = [1.0, 0.0];
-
-/// 把 GitHub 图标的原始光栅化位图（`assets::github_mark_rgba` 返回的单色形状、
-/// 填充色不重要）按给定纯色重新着色，返回预乘 alpha 的 `Pixmap`，可直接用
-/// `Pixmap::draw_pixmap` 合成到目标画布上。已按尺寸/颜色两个维度参数化——
-/// Task 6 的 32px 深色图标直接复用，不需要新写一份。
-fn tint_icon(raw_rgba: &[u8], width: u32, height: u32, color: [u8; 4]) -> Pixmap {
-    let mut out = vec![0u8; raw_rgba.len()];
-    for (src, dst) in raw_rgba.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
-        // 只借用原图 alpha 通道作为形状覆盖率，颜色由 `color` 决定。
-        let mask = u32::from(src[3]);
-        let a = mask * u32::from(color[3]) / 255;
-        dst[0] = (u32::from(color[0]) * a / 255) as u8;
-        dst[1] = (u32::from(color[1]) * a / 255) as u8;
-        dst[2] = (u32::from(color[2]) * a / 255) as u8;
-        dst[3] = a as u8;
-    }
-    Pixmap::from_vec(out, IntSize::from_wh(width, height).expect("图标尺寸非零"))
-        .expect("图标像素数据长度应与 width*height*4 一致")
-}
 
 /// 把一段 straight-alpha RGBA8 像素原地转换为 `tiny_skia::Pixmap` 要求的
 /// 预乘 alpha（`Pixmap::from_vec`/`decode_png` 内部都是这么做的，见
@@ -325,8 +303,6 @@ enum WatermarkAnchor {
 /// `Painter` 的新字段，就能画出 cover 水印——不需要改 `draw_content`，
 /// 也不需要复制 `layout_and_draw_watermark`/`draw_watermark` 里的任何绘制代码。
 struct WatermarkPreset {
-    icon_size_px: u32,
-    icon_gap_px: f32,
     font_size_px: f32,
     color: [u8; 4],
     /// 字距，像素（`content` = `24 * 0.01em = 0.24px`，由调用方从 em 换算好再填入）。
@@ -337,14 +313,33 @@ struct WatermarkPreset {
     anchor: WatermarkAnchor,
 }
 
-fn content_watermark_preset() -> WatermarkPreset {
+/// 把水印文案切成绘制分段：`·` 单独成段并降到
+/// [`WATERMARK_SEP_OPACITY_MUL`]，其余原样。
+///
+/// 文案不含 `·` 时返回单段，与「整段一个颜色」完全等价。文案**是**一个
+/// `·` 时返回一段分隔符——不特判，因为那正是用户配的内容。
+fn split_on_separator(text: &str) -> Vec<(String, f32)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(WATERMARK_SEP) {
+        if i > 0 {
+            out.push((rest[..i].to_string(), 1.0));
+        }
+        out.push((WATERMARK_SEP.to_string(), WATERMARK_SEP_OPACITY_MUL));
+        rest = &rest[i + WATERMARK_SEP.len()..];
+    }
+    if !rest.is_empty() {
+        out.push((rest.to_string(), 1.0));
+    }
+    out
+}
+
+fn content_watermark_preset(text: &str) -> WatermarkPreset {
     WatermarkPreset {
-        icon_size_px: WATERMARK_ICON_SIZE_PX,
-        icon_gap_px: WATERMARK_ICON_GAP_PX,
         font_size_px: WATERMARK_FONT_SIZE_PX,
         color: WATERMARK_COLOR,
         letter_spacing_px: WATERMARK_FONT_SIZE_PX * WATERMARK_LETTER_SPACING_EM,
-        segments: vec![(WATERMARK_TEXT.to_string(), 1.0)],
+        segments: split_on_separator(text),
         anchor: WatermarkAnchor::BottomLeft {
             margin_left_px: WATERMARK_MARGIN_LEFT_PX,
             margin_bottom_px: WATERMARK_MARGIN_BOTTOM_PX,
@@ -359,34 +354,24 @@ fn content_watermark_preset() -> WatermarkPreset {
 /// 容器）原样搬来的，语义是「在 y=432 以下的剩余区域里垂直居中」，即
 /// `432 + (720-432)/2 = 576`，不是把水印中心直接放在 y=432（那样会压进
 /// Cover 主标题）。
-fn cover_watermark_preset() -> WatermarkPreset {
+fn cover_watermark_preset(text: &str) -> WatermarkPreset {
     WatermarkPreset {
-        icon_size_px: COVER_WATERMARK_ICON_SIZE_PX,
-        icon_gap_px: COVER_WATERMARK_ICON_GAP_PX,
         font_size_px: COVER_WATERMARK_FONT_SIZE_PX,
         color: COVER_WATERMARK_COLOR,
         letter_spacing_px: 0.0,
-        segments: vec![
-            (COVER_WATERMARK_TEXT_MAIN.to_string(), 1.0),
-            (
-                COVER_WATERMARK_TEXT_SEP.to_string(),
-                COVER_WATERMARK_SEP_OPACITY_MUL,
-            ),
-            (COVER_WATERMARK_TEXT_SUFFIX.to_string(), 1.0),
-        ],
+        segments: split_on_separator(text),
         anchor: WatermarkAnchor::Centered {
             center_y_px: COVER_WATERMARK_CENTER_Y_PX,
         },
     }
 }
 
-/// 按预设把水印（图标 + 分段文字）画到 `pixmap` 上。**唯一一份水印绘制逻辑**：
-/// `content`/`cover`/`outro` 的区别只在传入的 `WatermarkPreset` 与 `icon`
-/// （尺寸、颜色都由调用方按预设准备好），本函数不认得任何具体预设的名字。
+/// 按预设把水印分段文字画到 `pixmap` 上。**唯一一份水印绘制逻辑**：
+/// `content`/`cover`/`outro` 的区别只在传入的 `WatermarkPreset`（字号、颜色、
+/// 锚点都由调用方按预设准备好），本函数不认得任何具体预设的名字。
 fn layout_and_draw_watermark(
     renderer: &mut TextRenderer,
     pixmap: &mut Pixmap,
-    icon: &Pixmap,
     preset: &WatermarkPreset,
 ) {
     let style = TextStyle {
@@ -412,8 +397,7 @@ fn layout_and_draw_watermark(
         .map(|(text, _)| renderer.measure(text, &style).1)
         .unwrap_or(0.0);
 
-    let icon_size = preset.icon_size_px as f32;
-    let row_height = text_h.max(icon_size);
+    let row_height = text_h;
 
     let (row_left, row_center_y) = match preset.anchor {
         WatermarkAnchor::BottomLeft {
@@ -424,23 +408,12 @@ fn layout_and_draw_watermark(
             (margin_left_px, row_bottom - row_height / 2.0)
         }
         WatermarkAnchor::Centered { center_y_px } => {
-            let total_width = icon_size + preset.icon_gap_px + seg_widths.iter().sum::<f32>();
+            let total_width = seg_widths.iter().sum::<f32>();
             (CANVAS_W / 2.0 - total_width / 2.0, center_y_px)
         }
     };
 
-    let icon_left = row_left;
-    let icon_top = row_center_y - icon_size / 2.0;
-    pixmap.draw_pixmap(
-        icon_left.round() as i32,
-        icon_top.round() as i32,
-        icon.as_ref(),
-        &PixmapPaint::default(),
-        Transform::identity(),
-        None,
-    );
-
-    let mut cursor_x = row_left + icon_size + preset.icon_gap_px;
+    let mut cursor_x = row_left;
     for (seg, &w) in preset.segments.iter().zip(seg_widths.iter()) {
         let (text, opacity_mul) = seg;
         if !text.is_empty() {
@@ -455,7 +428,7 @@ fn layout_and_draw_watermark(
     }
 }
 
-/// 某个 `WatermarkPreset` 预渲染出的一张小图（连图标带文字，已裁剪到恰好包住
+/// 某个 `WatermarkPreset` 预渲染出的一张小图（已裁剪到恰好包住
 /// 墨迹 + 4px 安全边距）与它在画布上的贴图坐标（整数像素，`draw_pixmap` 要求）。
 ///
 /// **I2 修复**：静态水印此前每帧都要重新排版（`measure` 一次、`draw_centered`
@@ -481,12 +454,9 @@ fn prepare_watermark(
     renderer: &mut TextRenderer,
     preset: &WatermarkPreset,
 ) -> anyhow::Result<PreparedWatermark> {
-    let (icon_raw, iw, ih) = github_mark_rgba(preset.icon_size_px)?;
-    let icon = tint_icon(&icon_raw, iw, ih, preset.color);
-
     let mut scratch =
         Pixmap::new(CANVAS_W as u32, CANVAS_H as u32).context("水印预渲染暂存画布分配失败")?;
-    layout_and_draw_watermark(renderer, &mut scratch, &icon, preset);
+    layout_and_draw_watermark(renderer, &mut scratch, preset);
 
     let Some((x0, y0, x1, y1)) = non_transparent_bbox(&scratch) else {
         // 预设没有画出任何东西（理论上不会发生，防御性兜底）：1x1 透明占位，
@@ -551,10 +521,17 @@ fn draw_watermark(pixmap: &mut Pixmap, watermark: &PreparedWatermark, opacity: f
 /// 里现造。
 pub struct Painter {
     renderer: TextRenderer,
+    /// 品牌名，画在 Cover 上排与 Outro 大字上。整片恒定，故存在这里而不是
+    /// 逐帧当参数传——`draw_content` 用不到它，当参数传会让三个 `draw_*`
+    /// 的签名各不相同。
+    brand: String,
     /// `content` 预设的水印，`new()` 里预渲染一次（I1/I2 修复）。
-    content_watermark: PreparedWatermark,
+    /// `None` = 未配置 `--watermark`/`$WATERMARK`，整段不画。
+    content_watermark: Option<PreparedWatermark>,
     /// `cover` 预设的水印，`new()` 里预渲染一次（Task 6）。
-    cover_watermark: PreparedWatermark,
+    /// `None` = 未配置 `--watermark-cover`/`$WATERMARK_COVER`，Cover 与
+    /// Outro 都不画。
+    cover_watermark: Option<PreparedWatermark>,
     /// Cover 上排用的 36px logo，`new()` 里用 Lanczos3 缩好一次缓存起来
     /// （Task 6；Task 7 的 outro 216px 版本是并列的另一个字段，见 `logo_216`）。
     logo_36: Pixmap,
@@ -563,14 +540,27 @@ pub struct Painter {
 }
 
 impl Painter {
-    pub fn new() -> anyhow::Result<Self> {
+    /// 未配置的水印**不预渲染**：`prepare_watermark` 要分配一张 1280×720 的
+    /// 暂存画布、排版一次再裁剪，为一段空文案付这笔开销没有意义，而且
+    /// `Some(空白预设)` 与 `None` 在成片上都是「什么都不画」——留两条等价
+    /// 路径只会让「到底画没画」多一种说法。
+    pub fn new(branding: &Branding) -> anyhow::Result<Self> {
         let mut renderer = TextRenderer::new()?;
-        let content_watermark = prepare_watermark(&mut renderer, &content_watermark_preset())?;
-        let cover_watermark = prepare_watermark(&mut renderer, &cover_watermark_preset())?;
+        let content_watermark = branding
+            .watermark
+            .as_deref()
+            .map(|t| prepare_watermark(&mut renderer, &content_watermark_preset(t)))
+            .transpose()?;
+        let cover_watermark = branding
+            .watermark_cover
+            .as_deref()
+            .map(|t| prepare_watermark(&mut renderer, &cover_watermark_preset(t)))
+            .transpose()?;
         let logo_36 = scaled_logo(COVER_LOGO_SIZE_PX)?;
         let logo_216 = scaled_logo(OUTRO_LOGO_SIZE_PX)?;
         Ok(Self {
             renderer,
+            brand: branding.brand.clone(),
             content_watermark,
             cover_watermark,
             logo_36,
@@ -589,7 +579,9 @@ impl Painter {
         if let Some(caption) = current {
             self.draw_caption(pixmap, local_frame, caption);
         }
-        draw_watermark(pixmap, &self.content_watermark, 1.0);
+        if let Some(wm) = &self.content_watermark {
+            draw_watermark(pixmap, wm, 1.0);
+        }
     }
 
     /// 绘制当前字幕，含入场动画（scale / opacity / translate_x / letter_spacing）。
@@ -639,7 +631,7 @@ impl Painter {
     }
 
     /// 绘制 Cover 段一帧（规格 §8.4「Cover」小节）：不透明白底 + 左上排
-    /// （logo + 「熊猫智研社」，整体 0.30 透明度，左对齐）+ 主标题（100px
+    /// （logo + 品牌名，整体 0.30 透明度，左对齐）+ 主标题（100px
     /// 粗体，居中，支持换行）+ `cover` 预设水印。
     ///
     /// 居中容器（宽 1024px）整体垂直居中于 y=360：上排固定 52px 高
@@ -691,11 +683,11 @@ impl Painter {
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
-        let (row_text_w, _) = self.renderer.measure(COVER_ROW_TEXT, &row_text_style);
+        let (row_text_w, _) = self.renderer.measure(&self.brand, &row_text_style);
         let row_text_center_x = COVER_ROW_TEXT_LEFT_PX + row_text_w / 2.0;
         self.renderer.draw_centered(
             pixmap,
-            COVER_ROW_TEXT,
+            &self.brand,
             row_text_center_x,
             row_center_y,
             &row_text_style,
@@ -714,7 +706,9 @@ impl Painter {
             1.0,
         );
 
-        draw_watermark(pixmap, &self.cover_watermark, 1.0);
+        if let Some(wm) = &self.cover_watermark {
+            draw_watermark(pixmap, wm, 1.0);
+        }
     }
 
     /// 绘制 Intro 段一帧（规格 §8.4「Intro」小节）：不透明白底 + 打字机标题
@@ -866,7 +860,7 @@ impl Painter {
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
-        let (_, title_h) = self.renderer.measure(OUTRO_TITLE_TEXT, &title_style);
+        let (_, title_h) = self.renderer.measure(&self.brand, &title_style);
         let logo_size = OUTRO_LOGO_SIZE_PX as f32;
         let group_h = logo_size + OUTRO_TITLE_GAP_PX + title_h;
         let group_top = CANVAS_H / 2.0 - group_h / 2.0;
@@ -914,7 +908,7 @@ impl Painter {
         let title_center_y = title_top + title_h / 2.0 + translate_y;
         self.renderer.draw_centered(
             pixmap,
-            OUTRO_TITLE_TEXT,
+            &self.brand,
             CANVAS_W / 2.0,
             title_center_y,
             &title_style,
@@ -922,7 +916,9 @@ impl Painter {
             1.0,
         );
 
-        draw_watermark(pixmap, &self.cover_watermark, fade_opacity);
+        if let Some(wm) = &self.cover_watermark {
+            draw_watermark(pixmap, wm, fade_opacity);
+        }
     }
 }
 

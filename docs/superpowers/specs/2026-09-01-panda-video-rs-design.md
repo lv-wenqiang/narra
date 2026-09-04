@@ -122,7 +122,13 @@ panda make   [INPUT] [--title <s>] [--bg <mp4>] [--bgm <mp3>] -o <out.mp4>
 
 背景视频与 BGM **保持为外部文件**（不内嵌），因为现有流程本来就在用 `shuffle:bg-video` / `shuffle:bgm` 替换它们。
 
-标题三级兜底：`--title` > `--title-json` 指向文件的 `title` 字段 > `熊猫智研社`。
+标题三级兜底：`--title` > `--title-json` 指向文件的 `title` 字段 > **品牌名**。
+
+品牌名与两处水印文案各自三级兜底：`--brand` > `$BRAND` > `墨风`；
+`--watermark` > `$WATERMARK` > **不画**；`--watermark-cover` > `$WATERMARK_COVER`
+> **不画**。每一级都要求「非空白」才算数（`--brand "  "` 继续往下兜底，而不是
+产出一个空品牌名的片尾）。三者由 `config::Branding::resolve` 装配成一个
+`Branding` 值，随 `FrameSource` 传到渲染层。
 
 ## 7. TTS 子系统
 
@@ -218,9 +224,9 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 - 居中容器：画面正中，宽度 80%，内容居中对齐
   - **上排**（整体 `opacity 0.30`，左偏移 40px，水平排列、垂直居中）：
     - `logo.png`，36px（`min(1280,720) * 0.1 / 2`），四周 margin 8px
-    - 紧邻的「熊猫智研社」：38px 粗体，`dingliesongtypeface`，行高 1.2
+    - 紧邻的**品牌名**（默认「墨风」，`--brand`/`$BRAND` 可改）：38px 粗体，`dingliesongtypeface`，行高 1.2
   - **主标题**：100px 粗体，`dingliesongtypeface`，左右 padding 40px，行高 1.2，支持换行（`pre-line` + 长词断行）
-- 水印（`cover` 预设）
+- 水印（`cover` 预设）——**仅在配置了 `--watermark-cover` 时**
 
 **Intro（3.5s）— 打字机**
 - 白底
@@ -245,7 +251,7 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
   - `opacity`：`0 → 1`
   - `translate_x`：`100 → 0`（像素）
   - `letter_spacing`：`8 → 0`（像素）
-- 左下角水印（`content` 预设）
+- 左下角水印（`content` 预设）——**仅在配置了 `--watermark` 时**
 
 **Outro（4s）**
 - 白底（由 Content 之后的段落提供）
@@ -253,28 +259,40 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
   - `out_progress = spring(frame, fps, damping = 200, duration = 0.5s, delay = 1s)`
   - **边界**：`out_progress → 1` 时 scale 发散，需钳制上限避免数值溢出
 - Logo：`logo.png`，尺寸 `min(1280, 720) * 0.3 = 216px`，`scale = interpolate(frame, [0, 24], [0.2, 1.0], clamp)`
-- 固定标题「熊猫智研社」：70px 粗体黑色，logo 下方 40px
+- **品牌名**（默认「墨风」，同 Cover 上排取自同一个配置项）：70px 粗体黑色，logo 下方 40px
   - `opacity = interpolate(frame, [24, 39], [0, 1], clamp)`
   - `translate_y = interpolate(frame, [24, 39], [-50, 0], clamp)`
 - 整体淡出：`interpolate(frame, [105, 119], [1, 0], clamp)`
-- 水印（`cover` 预设）
+- 水印（`cover` 预设）——**仅在配置了 `--watermark-cover` 时**
 
 > **已知差异**：现有 TS 版片尾标题指定的是 Inter 字体，但内容是中文，Chrome 实际回退到系统字体渲染。Rust 版统一使用 `dingliesongtypeface`，成片会与现状有可见差异。这被视为修正而非回归。
 
 ### 8.6 水印规格
 
-两处预设，内容都是 **GitHub 图标 + `Panda Video Generator`**，`cover` 预设额外追加 ` · 熊猫视频自动化引擎`。
+> **本节是本项目第一次主动偏离 TS 原版**（2026-09-04）。此前所有取舍都记的是
+> 「忠实移植，差异视为修正」；这一次改的是**产品决定**而非移植保真度：成片
+> 默认不再携带工具自身的推广。两处水印的**文案由用户配置，默认为空即不画**，
+> GitHub 图标整个移除。排版规格（位置、字号、颜色、字距、分隔点降透明度）
+> 原样保留——变的是「画什么、画不画」，不是「怎么画」。
+
+两处预设，文案都由配置提供：`content` 取 `--watermark`/`$WATERMARK`，`cover`
+取 `--watermark-cover`/`$WATERMARK_COVER`。**两者相互独立**，各自为空时各自不画。
 
 | | `cover`（用于 Cover / Outro） | `content`（用于 Content） |
 |---|---|---|
+| 文案来源 | `--watermark-cover` / `$WATERMARK_COVER` | `--watermark` / `$WATERMARK` |
+| 未配置时 | 不画 | 不画 |
 | 位置 | 画面水平居中，**垂直中心 576px** | 左下角，距左 40px、距下 40px |
 | 字号 | 28px | 24px |
 | 颜色 | `rgba(23, 23, 23, 0.4)` | `rgba(255, 255, 255, 0.27)` |
-| 字重 | 400 | 500 |
+| 字重 | 400 | 500（实现豁免，见下第 3 条） |
 | 字距 | 默认 | `0.01em` |
-| 图标尺寸 | 32px | 28px |
-| 图标与文字间距 | 12px | 10px |
-| 中文后缀 | 有（间隔点 `·` 不透明度 0.75） | 无 |
+| 分隔点 `·` | 单独降到 0.75 不透明度 | 同左 |
+
+**分隔点是排版规则，不是写死的文案**：`split_on_separator` 把文案里的每个 `·`
+切成单独一段并降到 0.75 倍率，对任意含 `·` 的配置文案都成立（`墨风 · 自动化引擎`
+与 `a·b·c` 同样处理）。文案不含 `·` 时退化成单段满倍率，与「整段一个颜色」
+逐像素等价。
 
 > **`cover` 位置的 576 是怎么来的**：TS 写的是 `marginTop: 432px`，但那个水印
 > 元素处在 `inset: 0` + `alignItems: center` 的居中容器里，盒高 288px，`marginTop`
@@ -283,19 +301,24 @@ Rust 每帧输出一张 `1280×720` RGBA 位图：
 > 代码（`src/render/draw.rs` 的 `COVER_WATERMARK_CENTER_Y_PX`）用的 576 是对的，
 > 导出帧上水印墨迹也确实落在 y≈576。
 
-**三处实现决策**（TS 原版行为与 Rust 实现的取舍）：
+**实现决策**（TS 原版行为与 Rust 实现的取舍）：
 
 1. **字体**：TS 原版水印用 Inter。Rust 版**统一用 `dingliesongtypeface`**，不再内嵌第二套字体——可省约 500KB 二进制体积，代价是水印的拉丁字形与现状有可见差异。水印在 27%~40% 不透明度下属装饰元素，判定可接受。
-2. **GitHub 图标**：原版是单条 SVG path（`fill="currentColor"`，纯单色，含 `a` 圆弧指令）。Rust 版**内嵌 SVG 源码，启动时用 `resvg` 光栅化一次并缓存**，绘制时按预设颜色着色。
+2. **GitHub 图标：已移除**（2026-09-04）。原版是单条 SVG path，Rust 版曾内嵌 SVG 源码、启动时用 `resvg` 光栅化一次并缓存、绘制时按预设颜色着色。它是本次要去掉的「商业元素」里最典型的一个，而水印文案可配置之后，在用户自定的文案旁挂一个 GitHub 标志也讲不通。随之删除的还有 `assets/github-mark.svg`、`assets::github_mark_rgba`、`draw.rs` 的 `tint_icon`，以及 `WatermarkPreset` 的 `icon_size_px`/`icon_gap_px` 两个字段。
 
-   选它而非"预先光栅化成 PNG 内嵌"的原因有二：(a) 本机没有任何 SVG 光栅化工具（`resvg`/`rsvg-convert`/`inkscape`/`magick` 均不存在），生成不出那个 PNG；(b) `resvg` 的渲染后端本来就是 `tiny-skia`，与本项目的 2D 栈同源，不引入第二套图形依赖。路径里的圆弧指令也意味着手写 path 解析不划算。
+   **副作用一处，已在测试里改口径**：图标位图铺满自己的框，所以 `content` 水印的墨迹左边缘此前精确等于 40；改成纯文字后，墨迹起点还要加上首字形的左边距（left side bearing），实测 41。`watermark_ink_geometry_and_alpha_are_exact` 相应改为断言「落在 `[40, 44]`」。
 
 3. **`content` 水印的字重**：上表要求字重 500，Rust 实现用的是 `bold: false`
-   （不施加合成粗体）。本项目没有 500 字重的字体文件，"加粗"靠的是把字形描三遍
+   （不施加合成粗体）。本项目没有 500 字重的字体文件，「加粗」靠的是把字形描三遍
    做合成粗体——而 `content` 水印是 `rgba(255,255,255,0.27)` 的半透明白，三遍描边
    在彼此重叠处会把 alpha 叠起来，得到一圈浓度不均匀的脏边，比字重偏轻难看得多。
    因此这里**明确豁免**字重 500，代价是水印字重比 TS 原版轻。`cover` 水印字重
    400，本来就不需要加粗，不受影响。
+
+4. **未配置的水印不预渲染**：`prepare_watermark` 要分配一张 1280×720 的暂存画布、
+   排版一次再裁剪。`Painter` 的两个水印字段是 `Option<PreparedWatermark>`，
+   `None` 时整条路径跳过——而不是拿空文案走一遍得到一张零宽的图。两条路径在
+   成片上等价，留两条只会让「到底画没画」多一种说法。
 
 ### 8.5 动画函数移植
 

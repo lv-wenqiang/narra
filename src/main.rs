@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use panda::config;
+use panda::config::Branding;
 use panda::render::frame::FrameSource;
 use panda::render::timeline::FPS;
 use panda::tts::pipeline::{ProcessOptions, process_narration_file};
@@ -35,9 +36,18 @@ enum Commands {
         /// VTT 文件路径
         #[arg(long)]
         vtt: PathBuf,
-        /// 标题，默认「熊猫智研社」
+        /// 标题，默认取品牌名
         #[arg(long)]
         title: Option<String>,
+        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨风」
+        #[arg(long)]
+        brand: Option<String>,
+        /// 正文左下角水印文案；不给则取 $WATERMARK，再不给则不画
+        #[arg(long)]
+        watermark: Option<String>,
+        /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
+        #[arg(long)]
+        watermark_cover: Option<String>,
         /// 输出目录
         #[arg(short, long)]
         out: PathBuf,
@@ -56,6 +66,15 @@ enum Commands {
         /// 标题，优先级最高
         #[arg(long)]
         title: Option<String>,
+        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨风」
+        #[arg(long)]
+        brand: Option<String>,
+        /// 正文左下角水印文案；不给则取 $WATERMARK，再不给则不画
+        #[arg(long)]
+        watermark: Option<String>,
+        /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
+        #[arg(long)]
+        watermark_cover: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -76,6 +95,15 @@ enum Commands {
         /// 标题，优先级最高
         #[arg(long)]
         title: Option<String>,
+        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨风」
+        #[arg(long)]
+        brand: Option<String>,
+        /// 正文左下角水印文案；不给则取 $WATERMARK，再不给则不画
+        #[arg(long)]
+        watermark: Option<String>,
+        /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
+        #[arg(long)]
+        watermark_cover: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -90,9 +118,6 @@ enum Commands {
         out: Option<PathBuf>,
     },
 }
-
-/// 默认标题：VTT 上游没有专门的标题字段，`--title` 缺省时用品牌名占位。
-const DEFAULT_DEBUG_TITLE: &str = "熊猫智研社";
 
 /// 解析 `--frames`：逗号分隔的帧号列表；缺省时按每 30 帧取一张覆盖整条时间轴，
 /// 并补上末帧——末帧是 Outro 淡出的终点，正是最该人工核对的一帧，而
@@ -122,14 +147,15 @@ fn parse_frame_list(frames: Option<&str>, total_frames: u32) -> Result<Vec<u32>>
 fn run_debug_frames(
     vtt: PathBuf,
     title: Option<String>,
+    branding: Branding,
     out: PathBuf,
     frames: Option<String>,
 ) -> Result<()> {
     let vtt_text = std::fs::read_to_string(&vtt)
         .with_context(|| format!("读取 VTT 文件失败：{}", vtt.display()))?;
-    let title = title.unwrap_or_else(|| DEFAULT_DEBUG_TITLE.to_string());
+    let title = config::non_blank(title).unwrap_or_else(|| branding.brand.clone());
 
-    let mut source = FrameSource::new(&vtt_text, title)?;
+    let mut source = FrameSource::new(&vtt_text, title, &branding)?;
     let total_frames = source.total_frames();
     let frame_ids = parse_frame_list(frames.as_deref(), total_frames)?;
 
@@ -205,9 +231,9 @@ async fn run_tts(
 
 /// 标题三级兜底的 IO 外壳：读文件（缺失或不可读视作「没有 JSON」），
 /// 纯粹的优先级逻辑交给 `config::resolve_title`。
-fn read_title(cli: Option<&str>, json_path: &Path) -> String {
+fn read_title(cli: Option<&str>, json_path: &Path, brand: &str) -> String {
     let json_text = std::fs::read_to_string(json_path).ok();
-    config::resolve_title(cli, json_text.as_deref())
+    config::resolve_title(cli, json_text.as_deref(), brand)
 }
 
 /// `Render` 四个可选参数各自的三级兜底路径：CLI 未给时落到 `config` 里
@@ -359,6 +385,7 @@ struct ComposeVideoInputs<'a> {
     audio: &'a Path,
     vtt: &'a Path,
     title: Option<&'a str>,
+    branding: &'a Branding,
     title_json: &'a Path,
     bg: &'a Path,
     bgm: &'a Path,
@@ -376,12 +403,14 @@ fn compose_inputs<'a>(
     audio: &'a Path,
     vtt: &'a Path,
     title: Option<&'a str>,
+    branding: &'a Branding,
     paths: &'a ResolvedRenderPaths,
 ) -> ComposeVideoInputs<'a> {
     ComposeVideoInputs {
         audio,
         vtt,
         title,
+        branding,
         title_json: &paths.title_json,
         bg: &paths.bg,
         bgm: &paths.bgm,
@@ -417,6 +446,7 @@ fn compose_video_with_runner(
         audio,
         vtt,
         title,
+        branding,
         title_json,
         bg,
         bgm,
@@ -425,7 +455,7 @@ fn compose_video_with_runner(
 
     check_render_inputs_exist(audio, vtt, bg, bgm)?;
 
-    let resolved_title = read_title(title, title_json);
+    let resolved_title = read_title(title, title_json, &branding.brand);
     let vtt_text =
         std::fs::read_to_string(vtt).with_context(|| format!("读取字幕失败：{}", vtt.display()))?;
 
@@ -436,7 +466,7 @@ fn compose_video_with_runner(
         .with_context(|| format!("创建临时目录失败：{}", tmp.display()))?;
     let (intro, typewriter) = write_embedded_audio_checked(&tmp)?;
 
-    let mut source = FrameSource::new(&vtt_text, resolved_title.clone())?;
+    let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding)?;
 
     println!(
         "标题「{resolved_title}」，音频 {:.2}s，共 {} 帧（{:.2}s），输出 {}",
@@ -478,24 +508,46 @@ async fn main() -> Result<()> {
         Commands::DebugFrames {
             vtt,
             title,
+            brand,
+            watermark,
+            watermark_cover,
             out,
             frames,
-        } => run_debug_frames(vtt, title, out, frames),
+        } => run_debug_frames(
+            vtt,
+            title,
+            Branding::resolve(brand, watermark, watermark_cover),
+            out,
+            frames,
+        ),
         Commands::Render {
             audio,
             vtt,
             title,
+            brand,
+            watermark,
+            watermark_cover,
             title_json,
             bg,
             bgm,
             out,
         } => {
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            compose_video(&compose_inputs(&audio, &vtt, title.as_deref(), &paths))
+            let branding = Branding::resolve(brand, watermark, watermark_cover);
+            compose_video(&compose_inputs(
+                &audio,
+                &vtt,
+                title.as_deref(),
+                &branding,
+                &paths,
+            ))
         }
         Commands::Make {
             input,
             title,
+            brand,
+            watermark,
+            watermark_cover,
             title_json,
             bg,
             bgm,
@@ -507,7 +559,14 @@ async fn main() -> Result<()> {
             let outdir = run_tts(input, None, None, None).await?;
             let (audio, vtt) = tts_artifact_paths(&outdir);
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            compose_video(&compose_inputs(&audio, &vtt, title.as_deref(), &paths))
+            let branding = Branding::resolve(brand, watermark, watermark_cover);
+            compose_video(&compose_inputs(
+                &audio,
+                &vtt,
+                title.as_deref(),
+                &branding,
+                &paths,
+            ))
         }
     }
 }
@@ -516,25 +575,36 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    /// 测试用品牌名，**刻意不等于生产默认值「墨风」**——若写成默认值，
+    /// 把兜底错写成硬编码字面量的变异就检不出来。
+    const TEST_BRAND: &str = "测试品牌";
+
     #[test]
     fn read_title_uses_cli_when_given() {
         let missing = std::path::Path::new("/nonexistent-title-xyz.json");
-        assert_eq!(read_title(Some("命令行标题"), missing), "命令行标题");
+        assert_eq!(
+            read_title(Some("命令行标题"), missing, TEST_BRAND),
+            "命令行标题"
+        );
     }
 
     #[test]
-    fn read_title_falls_back_to_default_when_json_is_missing() {
-        // 标题 JSON 是可选素材：文件不存在不应报错，应静默回落默认值。
+    fn read_title_falls_back_to_brand_when_json_is_missing() {
+        // 标题 JSON 是可选素材：文件不存在不应报错，应静默回落品牌名。
         let missing = std::path::Path::new("/nonexistent-title-xyz.json");
-        assert_eq!(read_title(None, missing), panda::config::DEFAULT_TITLE);
+        assert_eq!(read_title(None, missing, TEST_BRAND), TEST_BRAND);
     }
 
     #[test]
     fn read_title_reads_the_json_file_when_it_exists() {
         let p = std::env::temp_dir().join(format!("panda_title_{}.json", std::process::id()));
         std::fs::write(&p, r#"{"title": "文件里的标题"}"#).unwrap();
-        assert_eq!(read_title(None, &p), "文件里的标题");
-        assert_eq!(read_title(Some("覆盖"), &p), "覆盖", "CLI 优先级最高");
+        assert_eq!(read_title(None, &p, TEST_BRAND), "文件里的标题");
+        assert_eq!(
+            read_title(Some("覆盖"), &p, TEST_BRAND),
+            "覆盖",
+            "CLI 优先级最高"
+        );
         std::fs::remove_file(&p).ok();
     }
 
@@ -672,7 +742,8 @@ mod tests {
     /// 「填错」。
     #[test]
     fn build_render_inputs_wires_every_field_without_swapping() {
-        let source = FrameSource::new(RENDER_TEST_VTT, "标题".into()).unwrap();
+        let source =
+            FrameSource::new(RENDER_TEST_VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         assert_eq!(source.audio_secs(), 10.0);
         assert_eq!(source.content_frames(), 360);
         assert_eq!(source.total_frames(), 600);
@@ -786,7 +857,9 @@ mod tests {
         std::fs::write(&bgm, "bgm").unwrap();
         std::fs::write(&vtt, RENDER_TEST_VTT).unwrap();
 
+        let branding = Branding::plain(TEST_BRAND);
         let inputs = ComposeVideoInputs {
+            branding: &branding,
             audio: &audio,
             vtt: &vtt,
             title: Some("测试标题"),
@@ -862,7 +935,9 @@ mod tests {
 
         // 场景一：只有 audio 缺失，vtt/bg/bgm 都存在。
         std::fs::write(&vtt, RENDER_TEST_VTT).unwrap();
+        let branding = Branding::plain(TEST_BRAND);
         let inputs = ComposeVideoInputs {
+            branding: &branding,
             audio: &audio,
             vtt: &vtt,
             title: Some("t"),
@@ -886,7 +961,9 @@ mod tests {
         // 场景二：换成只有 vtt 缺失，audio/bg/bgm 都存在。
         std::fs::write(&audio, "audio").unwrap();
         std::fs::remove_file(&vtt).unwrap();
+        let branding = Branding::plain(TEST_BRAND);
         let inputs = ComposeVideoInputs {
+            branding: &branding,
             audio: &audio,
             vtt: &vtt,
             title: Some("t"),
@@ -934,7 +1011,8 @@ mod tests {
         let audio = PathBuf::from("/given/audio.mp3");
         let vtt = PathBuf::from("/given/audio.vtt");
 
-        let inputs = compose_inputs(&audio, &vtt, Some("标题"), &paths);
+        let branding = Branding::plain(TEST_BRAND);
+        let inputs = compose_inputs(&audio, &vtt, Some("标题"), &branding, &paths);
 
         assert_eq!(inputs.audio, audio.as_path());
         assert_eq!(inputs.vtt, vtt.as_path());
@@ -956,7 +1034,8 @@ mod tests {
         let (audio, vtt) = tts_artifact_paths(&outdir);
         let paths = resolve_render_paths(None, None, None, None);
 
-        let inputs = compose_inputs(&audio, &vtt, None, &paths);
+        let branding = Branding::plain(TEST_BRAND);
+        let inputs = compose_inputs(&audio, &vtt, None, &branding, &paths);
 
         assert_eq!(
             inputs.audio,

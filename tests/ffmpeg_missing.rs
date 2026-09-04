@@ -27,7 +27,12 @@ fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
     // `Command::new("ffmpeg")` 无论在哪一步被调用都找不到它。这个进程
     // 只跑这一条测试，改 PATH 不会影响任何其它测试。
     let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
-    let mut fs = panda::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+    let mut fs = panda::render::frame::FrameSource::new(
+        vtt,
+        "标题".into(),
+        &panda::config::Branding::plain("测试品牌"),
+    )
+    .unwrap();
     let bad = Path::new("/nonexistent-xyz.mp4");
     let total_frames = fs.total_frames();
     let audio_secs = fs.audio_secs();

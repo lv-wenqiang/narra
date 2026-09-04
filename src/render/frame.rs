@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use std::io::Write;
 use tiny_skia::Pixmap;
 
+use crate::config::Branding;
 use crate::render::draw::Painter;
 use crate::render::timeline::{HEIGHT, Layout, Segment, WIDTH, layout, segment_at};
 use crate::vtt::{Caption, parse_vtt};
@@ -30,7 +31,7 @@ impl FrameSource {
     /// 总帧 300，整条流程会一路跑到底，产出一个 **10 秒**、字幕全空、把长旁白
     /// 截断到 10 秒的 mp4，退出码 0 并打印「成片已写入」。拿错 `--vtt` 是最常
     /// 见的用户错误，而这个失败形式完全静默。
-    pub fn new(vtt_text: &str, title: String) -> Result<Self> {
+    pub fn new(vtt_text: &str, title: String, branding: &Branding) -> Result<Self> {
         let captions = parse_vtt(vtt_text);
         if captions.is_empty() {
             bail!(
@@ -39,7 +40,7 @@ impl FrameSource {
         }
         let audio_secs = captions.iter().map(|c| c.end_ms).max().unwrap_or(0) as f64 / 1000.0;
         Ok(Self {
-            painter: Painter::new()?,
+            painter: Painter::new(branding)?,
             layout: layout(audio_secs),
             captions,
             title,
@@ -128,14 +129,14 @@ mod tests {
 
     #[test]
     fn total_frames_follows_the_last_cue_end_time() {
-        let fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         // A = 10 秒 → content = ceil(12*30) = 360 → 总帧 = 600
         assert_eq!(fs.total_frames(), 600);
     }
 
     #[test]
     fn every_frame_renders_at_the_right_size() {
-        let mut fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let mut fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         for f in [0, 14, 15, 119, 120, 479, 480, 599] {
             let p = fs.render(f).unwrap();
             assert_eq!((p.width(), p.height()), (1280, 720), "帧 {f} 尺寸错误");
@@ -144,7 +145,7 @@ mod tests {
 
     #[test]
     fn cover_intro_outro_are_opaque_and_content_is_transparent() {
-        let mut fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let mut fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         for f in [0, 60, 500] {
             let p = fs.render(f).unwrap();
             assert_eq!(p.pixel(0, 0).unwrap().alpha(), 255, "帧 {f} 应不透明");
@@ -155,13 +156,13 @@ mod tests {
 
     #[test]
     fn rendering_past_the_end_is_an_error() {
-        let mut fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let mut fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         assert!(fs.render(600).is_err());
     }
 
     #[test]
     fn renders_the_whole_timeline_without_panicking() {
-        let mut fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let mut fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         // 全量跑一遍，抓 panic 与非有限几何
         for f in 0..fs.total_frames() {
             fs.render(f).unwrap();
@@ -178,9 +179,9 @@ mod tests {
     #[test]
     fn dispatch_matches_calling_the_matching_draw_fn_directly_with_the_local_frame() {
         let title = "标题".to_string();
-        let mut fs = FrameSource::new(VTT, title.clone()).unwrap();
+        let mut fs = FrameSource::new(VTT, title.clone(), &Branding::plain("测试品牌")).unwrap();
         let captions = parse_vtt(VTT);
-        let mut reference = Painter::new().unwrap();
+        let mut reference = Painter::new(&Branding::plain("测试品牌")).unwrap();
 
         // Cover: global 0..15，段内帧号与 global 相同。
         let got = fs.render(0).unwrap();
@@ -240,7 +241,7 @@ mod tests {
         let vtt = "WEBVTT\n\n\
                    1\n00:00:00.000 --> 00:00:30.000\n时间更晚但排在前面的字幕。\n\n\
                    2\n00:00:05.000 --> 00:00:10.000\n排在后面但结束更早的字幕。\n";
-        let fs = FrameSource::new(vtt, "标题".into()).unwrap();
+        let fs = FrameSource::new(vtt, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         // max(30, 10) = 30 秒 → content = ceil(32*30) = 960 → 总帧 = 240+960 = 1200
         // 若误用 last().end_ms（=10 秒）会得到 600，与此不同。
         assert_eq!(fs.total_frames(), 1200);
@@ -312,7 +313,7 @@ mod tests {
 
     #[test]
     fn audio_secs_and_content_frames_follow_the_layout() {
-        let fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         // A = 10 秒 → content = ceil(12*30) = 360 → 总帧 600
         assert!(
             (fs.audio_secs() - 10.0).abs() < 1e-9,
@@ -336,7 +337,7 @@ mod tests {
         let vtt = "WEBVTT\n\n\
                    1\n00:00:00.000 --> 00:00:30.000\n时间更晚但排在前面的字幕。\n\n\
                    2\n00:00:05.000 --> 00:00:10.000\n排在后面但结束更早的字幕。\n";
-        let fs = FrameSource::new(vtt, "标题".into()).unwrap();
+        let fs = FrameSource::new(vtt, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         // max(30, 10) = 30 秒。若误用 last().end_ms（=10 秒）会得到 10.0，与此不同。
         assert!(
             (fs.audio_secs() - 30.0).abs() < 1e-9,
@@ -419,7 +420,7 @@ mod tests {
             ("只有头", "WEBVTT\n\n"),
             ("拿错文件", "这是一份旁白文稿，不是字幕。\n第二行。\n"),
         ] {
-            let err = FrameSource::new(text, "标题".into())
+            let err = FrameSource::new(text, "标题".into(), &Branding::plain("测试品牌"))
                 .err()
                 .unwrap_or_else(|| panic!("{name} 应当报错，而不是产出一个 10 秒空片"));
             let msg = err.to_string();
@@ -432,7 +433,8 @@ mod tests {
 
     #[test]
     fn write_rgba_frames_emits_exactly_one_frame_worth_of_bytes_per_frame() {
-        let mut fs = FrameSource::new(SHORT_VTT, "标题".into()).unwrap();
+        let mut fs =
+            FrameSource::new(SHORT_VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         assert_eq!(fs.total_frames(), 300, "空字幕应给出最小时间轴 300 帧");
         let mut w = CountingWriter { bytes: 0 };
         let n = fs.write_rgba_frames(&mut w).unwrap();
@@ -449,7 +451,8 @@ mod tests {
         // 在字节流里验证段落语义：帧 0（Cover）左上角必须不透明，
         // 帧 150（Content 段，120..180 之间）左上角必须全透明。
         // 这条同时钉住「反预乘没有破坏 alpha」。
-        let mut fs = FrameSource::new(SHORT_VTT, "标题".into()).unwrap();
+        let mut fs =
+            FrameSource::new(SHORT_VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         let mut w = FirstPixelPicker {
             frame_bytes: 1280 * 720 * 4,
             seen: 0,
@@ -504,19 +507,29 @@ mod tests {
     fn write_rgba_frames_applies_unpremultiply_to_semi_transparent_pixels_too() {
         const CONTENT_FRAME: u32 = 150;
 
+        // **必须显式配一个水印**：`SHORT_VTT` 只有一条零长度 cue，Content 段
+        // 从头到尾没有任何字幕，水印是这条时间轴上唯一的墨迹来源。水印默认
+        // 不画之后，不配就是一张全透明的帧，找不到半透明像素，这条测试也就
+        // 无从测起。
+        //
         // 只造一个 FrameSource（`Painter::new()` 约 100ms，两次全时间轴测试已经
         // 各付一次这个成本，这里复用同一个实例，避免再多付一次）：先直接渲染
         // 同一帧，找一个半透明像素（水印抗锯齿边缘），算出期望的 straight-alpha
         // 字节；`render()` 不带跨帧状态，之后接着跑 `write_rgba_frames` 不受影响
         // （`renders_the_whole_timeline_without_panicking` 等既有测试也是同一个
         // `FrameSource` 反复调 `render()`，顺序不敏感）。
-        let mut fs = FrameSource::new(SHORT_VTT, "标题".into()).unwrap();
+        let branding = Branding {
+            brand: "测试品牌".into(),
+            watermark: Some("正文水印".into()),
+            watermark_cover: None,
+        };
+        let mut fs = FrameSource::new(SHORT_VTT, "标题".into(), &branding).unwrap();
         let pixmap = fs.render(CONTENT_FRAME).unwrap();
         let idx = pixmap
             .pixels()
             .iter()
             .position(|px| px.alpha() > 0 && px.alpha() < 255)
-            .expect("Content 帧应存在半透明的抗锯齿边缘像素（水印图标边缘）");
+            .expect("Content 帧应存在半透明的抗锯齿边缘像素（水印文字边缘）");
         let want = pixmap.pixels()[idx].demultiply();
         let want_bytes = [want.red(), want.green(), want.blue(), want.alpha()];
         assert_ne!(
@@ -560,7 +573,7 @@ mod tests {
                 Ok(())
             }
         }
-        let mut fs = FrameSource::new(VTT, "标题".into()).unwrap();
+        let mut fs = FrameSource::new(VTT, "标题".into(), &Branding::plain("测试品牌")).unwrap();
         let err = fs.write_rgba_frames(&mut FailAfter(3)).unwrap_err();
         assert!(
             format!("{err:#}").contains("管道"),

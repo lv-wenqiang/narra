@@ -32,7 +32,12 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
     // 不验证语音内容。
     let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:03.000\n第一条字幕。\n\n\
                2\n00:00:03.000 --> 00:00:06.000\n第二条字幕，稍微长一点点。\n";
-    let mut fs = panda::render::frame::FrameSource::new(vtt, "端到端测试标题".into()).unwrap();
+    let mut fs = panda::render::frame::FrameSource::new(
+        vtt,
+        "端到端测试标题".into(),
+        &panda::config::Branding::plain("测试品牌"),
+    )
+    .unwrap();
     let out = tmp.join("out.mp4");
 
     let total = fs.total_frames();

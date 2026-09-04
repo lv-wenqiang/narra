@@ -174,3 +174,202 @@ fn env_backed_paths_read_the_environment_and_fall_back() {
         std::env::remove_var("TTS_INPUT_FILE");
     }
 }
+
+/// 品牌名与两条水印文案的默认值。
+///
+/// **默认水印是「不画」而不是「画一段空字符串」**：`None` 与 `Some("")` 在
+/// 渲染层是两件事——后者会走完整条预渲染 + 贴图路径，画出一个零宽的墨迹块，
+/// 还会白付 `prepare_watermark` 的开销。这里把「未配置 = None」钉死。
+#[test]
+fn brand_and_watermarks_have_the_documented_defaults() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    // SAFETY: 同本文件其它测试，持有 ENV_LOCK 期间本进程串行。
+    unsafe {
+        std::env::remove_var("BRAND");
+        std::env::remove_var("WATERMARK");
+        std::env::remove_var("WATERMARK_COVER");
+    }
+    assert_eq!(panda::config::brand(), "墨风");
+    assert_eq!(panda::config::watermark(), None, "未配置时不画正文水印");
+    assert_eq!(
+        panda::config::watermark_cover(),
+        None,
+        "未配置时不画封面/片尾水印"
+    );
+}
+
+/// 鉴别性测试：三个变量各自只驱动一个函数。
+///
+/// 照 `each_material_env_var_is_wired_to_exactly_one_function` 的写法——
+/// 逐项断言抓不住「把 WATERMARK 与 WATERMARK_COVER 读反」这类错误，因为
+/// 对调后每一项单独看都仍然「像」一个合理的水印文案。这里改成「设一个、
+/// 断言只有对应那个变了、另外两个不变」。
+#[test]
+fn each_branding_env_var_is_wired_to_exactly_one_function() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let clear_all = || {
+        // SAFETY: 持有 ENV_LOCK，本文件内串行。
+        unsafe {
+            std::env::remove_var("BRAND");
+            std::env::remove_var("WATERMARK");
+            std::env::remove_var("WATERMARK_COVER");
+        }
+    };
+
+    clear_all();
+    unsafe { std::env::set_var("BRAND", "某某频道") };
+    assert_eq!(panda::config::brand(), "某某频道");
+    assert_eq!(panda::config::watermark(), None, "BRAND 不应影响正文水印");
+    assert_eq!(
+        panda::config::watermark_cover(),
+        None,
+        "BRAND 不应影响封面水印"
+    );
+
+    clear_all();
+    unsafe { std::env::set_var("WATERMARK", "正文水印") };
+    assert_eq!(panda::config::watermark().as_deref(), Some("正文水印"));
+    assert_eq!(panda::config::brand(), "墨风", "WATERMARK 不应影响品牌名");
+    assert_eq!(
+        panda::config::watermark_cover(),
+        None,
+        "WATERMARK 不应影响封面水印"
+    );
+
+    clear_all();
+    unsafe { std::env::set_var("WATERMARK_COVER", "封面水印") };
+    assert_eq!(
+        panda::config::watermark_cover().as_deref(),
+        Some("封面水印")
+    );
+    assert_eq!(panda::config::brand(), "墨风");
+    assert_eq!(
+        panda::config::watermark(),
+        None,
+        "WATERMARK_COVER 不应影响正文水印"
+    );
+
+    clear_all();
+}
+
+/// 三者都走 `non_empty_env` 的「空白视同未设置」语义。
+///
+/// 这条单独存在，是因为 `docs/follow-ups.md`「ffmpeg 合成 · 值得做 #2」记过
+/// 一模一样的缺口：四个素材路径函数的这条分支当时一条测试都没有，把
+/// `non_empty_env` 换成裸 `std::env::var().ok()` 的变异**存活**。新加的三个
+/// 函数不要重蹈覆辙。
+#[test]
+fn blank_branding_env_vars_are_treated_as_unset() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    // SAFETY: 持有 ENV_LOCK，本文件内串行。
+    unsafe {
+        std::env::set_var("BRAND", "   ");
+        std::env::set_var("WATERMARK", "\t \n");
+        std::env::set_var("WATERMARK_COVER", "  ");
+    }
+    assert_eq!(
+        panda::config::brand(),
+        "墨风",
+        "全空白的 BRAND 应回落默认值"
+    );
+    assert_eq!(
+        panda::config::watermark(),
+        None,
+        "全空白的 WATERMARK 应视同未配置"
+    );
+    assert_eq!(
+        panda::config::watermark_cover(),
+        None,
+        "全空白的 WATERMARK_COVER 应视同未配置"
+    );
+
+    // SAFETY: 同上。
+    unsafe {
+        std::env::remove_var("BRAND");
+        std::env::remove_var("WATERMARK");
+        std::env::remove_var("WATERMARK_COVER");
+    }
+}
+
+/// `Branding::resolve` 的三级兜底：`--flag` > 环境变量 > 默认值。
+///
+/// 覆盖两件此前零覆盖的事：
+///
+/// 1. **命令行参数的「全空白视同没给」**——`--brand "  "` 必须继续往下兜底，
+///    而不是产出一个空品牌名的片尾。把 `config::non_blank` 退化成恒等函数的
+///    变异，只有这条测得出来（`brand()` 那几条走的是 `non_empty_env`，是另
+///    一条路径）。
+/// 2. **哪个参数落进哪个字段**——三个入参同为 `Option<String>`，相邻两个
+///    对调不会编译失败。这里照
+///    `each_material_env_var_is_wired_to_exactly_one_function` 的写法，只给
+///    一个、断言只有对应那个字段变了。
+#[test]
+fn branding_resolve_prefers_cli_over_env_over_default() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    use panda::config::Branding;
+    // SAFETY: 持有 ENV_LOCK，本文件内串行。
+    let clear = || unsafe {
+        std::env::remove_var("BRAND");
+        std::env::remove_var("WATERMARK");
+        std::env::remove_var("WATERMARK_COVER");
+    };
+
+    clear();
+    assert_eq!(
+        Branding::resolve(None, None, None),
+        Branding::plain("墨风"),
+        "三项都没给时应是「默认品牌 + 两处都不画」"
+    );
+
+    // 环境变量层。
+    unsafe {
+        std::env::set_var("BRAND", "环境品牌");
+        std::env::set_var("WATERMARK", "环境正文水印");
+        std::env::set_var("WATERMARK_COVER", "环境封面水印");
+    }
+    let from_env = Branding::resolve(None, None, None);
+    assert_eq!(from_env.brand, "环境品牌");
+    assert_eq!(from_env.watermark.as_deref(), Some("环境正文水印"));
+    assert_eq!(from_env.watermark_cover.as_deref(), Some("环境封面水印"));
+
+    // 命令行优先于环境变量，且三个参数各落各的字段。
+    let from_cli = Branding::resolve(
+        Some("命令行品牌".into()),
+        Some("命令行正文水印".into()),
+        Some("命令行封面水印".into()),
+    );
+    assert_eq!(from_cli.brand, "命令行品牌");
+    assert_eq!(from_cli.watermark.as_deref(), Some("命令行正文水印"));
+    assert_eq!(from_cli.watermark_cover.as_deref(), Some("命令行封面水印"));
+
+    // 只给一个：另外两个必须仍来自环境变量，不能被这一个带偏。
+    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None);
+    assert_eq!(only_brand.brand, "只给品牌");
+    assert_eq!(only_brand.watermark.as_deref(), Some("环境正文水印"));
+    assert_eq!(only_brand.watermark_cover.as_deref(), Some("环境封面水印"));
+
+    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None);
+    assert_eq!(only_wm.watermark.as_deref(), Some("只给正文水印"));
+    assert_eq!(only_wm.brand, "环境品牌");
+    assert_eq!(only_wm.watermark_cover.as_deref(), Some("环境封面水印"));
+
+    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()));
+    assert_eq!(only_cover.watermark_cover.as_deref(), Some("只给封面水印"));
+    assert_eq!(only_cover.brand, "环境品牌");
+    assert_eq!(only_cover.watermark.as_deref(), Some("环境正文水印"));
+
+    // 全空白的命令行参数视同没给，继续往下兜底到环境变量。
+    let blank = Branding::resolve(Some("   ".into()), Some("\t".into()), Some("  \n".into()));
+    assert_eq!(
+        blank, from_env,
+        "全空白的命令行参数应视同没给，回落到环境变量层"
+    );
+
+    // 环境变量也清掉后，全空白的命令行参数应一路兜底到默认值。
+    clear();
+    assert_eq!(
+        Branding::resolve(Some("  ".into()), Some("  ".into()), Some("  ".into())),
+        Branding::plain("墨风"),
+        "全空白 + 无环境变量应一路兜底到默认值"
+    );
+}

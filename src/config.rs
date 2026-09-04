@@ -67,8 +67,96 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// 标题的最终兜底值（规格 §6 的三级兜底最后一级）。
-pub const DEFAULT_TITLE: &str = "熊猫智研社";
+/// 一条片子的品牌装备：品牌名与两处水印文案，整片恒定。
+///
+/// **为什么是一个结构体而不是三个平行参数**：三者同为 `String`/`Option<String>`，
+/// 平行传参时相邻两个对调不会编译失败，只会让成片上的字串默默换了位置——
+/// 本仓库为同一类风险写过 `each_material_env_var_is_wired_to_exactly_one_function`。
+/// 具名字段让构造处和使用处都由名字而非位置决定。
+///
+/// 三级兜底（`--flag` > 环境变量 > 默认值）在 `main.rs` 的构造处装配，与
+/// `ResolvedRenderPaths` 的四条素材路径同一套写法。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branding {
+    /// 画在 Cover 上排与 Outro 大字上，同时是标题兜底的最后一级。
+    pub brand: String,
+    /// Content 段左下角水印，`None` = 不画。
+    pub watermark: Option<String>,
+    /// Cover 与 Outro 段水印，`None` = 不画。
+    pub watermark_cover: Option<String>,
+}
+
+impl Branding {
+    /// 三级兜底：`--flag` > 环境变量 > 默认值，三项各自独立地走一遍。
+    ///
+    /// **住在 config 里而不是 `main.rs`**：它组合的三个函数（[`brand`]、
+    /// [`watermark`]、[`watermark_cover`]）都在这里，装配逻辑跟着它们走才
+    /// 测得到——放在 `main.rs`（bin crate）里，`tests/` 下的环境变量夹具
+    /// 够不着它，「哪个参数落进哪个字段」就成了零覆盖的装配层。
+    /// `docs/follow-ups.md`「ffmpeg 合成 · 值得做」里记过同一类缺口。
+    ///
+    /// 三个入参同为 `Option<String>`，位置传参时相邻两个对调既不编译失败也
+    /// 不在任何一次运行里报错，只会让文案默默画到另一处去——构造处用具名
+    /// 字段，测试用「设一个、断言只有对应那个变」的写法，两头一起堵。
+    pub fn resolve(
+        brand: Option<String>,
+        watermark: Option<String>,
+        watermark_cover: Option<String>,
+    ) -> Self {
+        Self {
+            brand: non_blank(brand).unwrap_or_else(self::brand),
+            watermark: non_blank(watermark).or_else(self::watermark),
+            watermark_cover: non_blank(watermark_cover).or_else(self::watermark_cover),
+        }
+    }
+
+    /// 只有品牌名、两处水印都不画的装备——也就是用户什么都没配时的形态。
+    ///
+    /// 生产路径上由 `main.rs` 的 `resolve_branding` 装配；这个构造子是给
+    /// 「只关心品牌名、不关心水印」的调用方（含大量测试）用的短写法。
+    pub fn plain(brand: &str) -> Self {
+        Self {
+            brand: brand.to_string(),
+            watermark: None,
+            watermark_cover: None,
+        }
+    }
+}
+
+/// 「全空白视同没给」——命令行参数侧的 `non_empty_env` 对应物（私有项，
+/// 故意不做 intra-doc 链接：链到私有项会让 `cargo rustdoc` 报
+/// `private_intra_doc_links` 告警）。
+///
+/// `--brand "  "` 应当继续往下兜底，而不是产出一个空品牌名的片尾；这与
+/// [`resolve_title`] 对 `--title` 的处理是同一条规矩。
+pub fn non_blank(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// 品牌名，默认「墨风」（`--brand` 覆盖）。
+///
+/// 画在 Cover 上排（logo 旁）与 Outro 大字上——「这是谁做的」。它同时是
+/// 标题三级兜底的最后一级（见 [`resolve_title`]）：没给标题时封面显示频道名。
+pub fn brand() -> String {
+    non_empty_env("BRAND").unwrap_or_else(|| "墨风".into())
+}
+
+/// 正文（Content 段）左下角水印文案，默认**不画**（`--watermark` 覆盖）。
+///
+/// **`None` 与 `Some("")` 不是一回事**：前者跳过整条预渲染 + 贴图路径，后者
+/// 会白付一次 `prepare_watermark` 再贴一张零宽的图。`non_empty_env` 的
+/// 「空白视同未设置」正好让 `WATERMARK=""` 落到 `None`。
+pub fn watermark() -> Option<String> {
+    non_empty_env("WATERMARK")
+}
+
+/// Cover 与 Outro 段的水印文案，默认**不画**（`--watermark-cover` 覆盖）。
+///
+/// 与 [`watermark`] 相互独立：两处的字号、颜色、位置本就不同（正文是白色
+/// 27%、24px、左下角；封面/片尾是深色 40%、28px、水平居中），文案也各配各的。
+pub fn watermark_cover() -> Option<String> {
+    non_empty_env("WATERMARK_COVER")
+}
 
 /// 背景视频，默认 `public/video/0.mp4`（`--bg` 覆盖）。
 pub fn bg_video_path() -> String {
@@ -90,12 +178,15 @@ pub fn video_output_path() -> String {
     non_empty_env("VIDEO_OUTPUT").unwrap_or_else(|| "output/video/video.mp4".into())
 }
 
-/// 标题三级兜底（规格 §6）：`--title` > `title.json` 的 `title` 字段 > 默认值。
+/// 标题三级兜底（规格 §6）：`--title` > `title.json` 的 `title` 字段 > 品牌名。
+///
+/// **最后一级是 [`brand`] 而不是一个独立常量**：没给标题时，封面显示频道名
+/// 是有意义的兜底；再多一个「默认标题」配置项只会让两处必须同步维护。
 ///
 /// 每一级都要求「非空白」才算数：`--title "  "` 与 `{"title": ""}` 都继续往下
 /// 兜底，而不是产出一个空标题的封面。JSON 解析失败也回落而非报错——标题文件
 /// 是可选素材，缺失或损坏不应让整条合成挂掉。
-pub fn resolve_title(cli: Option<&str>, json_text: Option<&str>) -> String {
+pub fn resolve_title(cli: Option<&str>, json_text: Option<&str>, brand: &str) -> String {
     if let Some(t) = cli.map(str::trim).filter(|s| !s.is_empty()) {
         return t.to_string();
     }
@@ -109,7 +200,7 @@ pub fn resolve_title(cli: Option<&str>, json_text: Option<&str>) -> String {
     {
         return t.to_string();
     }
-    DEFAULT_TITLE.to_string()
+    brand.to_string()
 }
 
 #[cfg(test)]
@@ -164,32 +255,54 @@ mod tests {
     // 都需要独立测试二进制来保证确定性与隔离，不能和本文件的纯函数测试混在
     // 一起（本文件与 src/tts/pipeline.rs 共享同一个 lib 测试二进制）。
 
+    /// 测试里用一个**不是**生产默认值的品牌名。
+    ///
+    /// 若这里写 "墨风"，`resolve_title` 把最后一级错写成硬编码 "墨风" 的变异
+    /// 就检不出来了——测试断言的必须是「回落到传进去的那个 brand」，而不是
+    /// 「回落到某个恰好等于默认值的字符串」。
+    const TEST_BRAND: &str = "测试品牌";
+
     #[test]
     fn title_prefers_cli_over_json_over_default() {
         let json = r#"{"title": "来自 JSON 的标题"}"#;
-        assert_eq!(resolve_title(Some("来自命令行"), Some(json)), "来自命令行");
-        assert_eq!(resolve_title(None, Some(json)), "来自 JSON 的标题");
-        assert_eq!(resolve_title(None, None), DEFAULT_TITLE);
+        assert_eq!(
+            resolve_title(Some("来自命令行"), Some(json), TEST_BRAND),
+            "来自命令行"
+        );
+        assert_eq!(
+            resolve_title(None, Some(json), TEST_BRAND),
+            "来自 JSON 的标题"
+        );
+        assert_eq!(resolve_title(None, None, TEST_BRAND), TEST_BRAND);
     }
 
     #[test]
     fn title_falls_through_blank_and_malformed_json() {
         // 空字符串不算「给了标题」，应继续往下兜底。
-        assert_eq!(resolve_title(Some("   "), None), DEFAULT_TITLE);
+        assert_eq!(resolve_title(Some("   "), None, TEST_BRAND), TEST_BRAND);
         // JSON 解析失败、缺 title 字段、title 为空，都应回落默认值而不是报错。
-        assert_eq!(resolve_title(None, Some("不是 JSON")), DEFAULT_TITLE);
-        assert_eq!(resolve_title(None, Some(r#"{"other": 1}"#)), DEFAULT_TITLE);
-        assert_eq!(resolve_title(None, Some(r#"{"title": ""}"#)), DEFAULT_TITLE);
         assert_eq!(
-            resolve_title(None, Some(r#"{"title": "  "}"#)),
-            DEFAULT_TITLE
+            resolve_title(None, Some("不是 JSON"), TEST_BRAND),
+            TEST_BRAND
+        );
+        assert_eq!(
+            resolve_title(None, Some(r#"{"other": 1}"#), TEST_BRAND),
+            TEST_BRAND
+        );
+        assert_eq!(
+            resolve_title(None, Some(r#"{"title": ""}"#), TEST_BRAND),
+            TEST_BRAND
+        );
+        assert_eq!(
+            resolve_title(None, Some(r#"{"title": "  "}"#), TEST_BRAND),
+            TEST_BRAND
         );
     }
 
     #[test]
     fn title_from_json_is_trimmed() {
         assert_eq!(
-            resolve_title(None, Some(r#"{"title": "  带空格  "}"#)),
+            resolve_title(None, Some(r#"{"title": "  带空格  "}"#), TEST_BRAND),
             "带空格"
         );
     }

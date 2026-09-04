@@ -1070,7 +1070,12 @@ mod tests {
         // 条测试真正想测的东西（ffmpeg 自己的 stderr 有没有被原样透出）。
         // 让 ffmpeg 报错的是不存在的 `bg`/`a`，不是输出路径。
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
-        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let mut fs = crate::render::frame::FrameSource::new(
+            vtt,
+            "标题".into(),
+            &crate::config::Branding::plain("测试品牌"),
+        )
+        .unwrap();
         let out_dir = std::env::temp_dir().join("panda_ffmpeg_stderr_test");
         let out = out_dir.join("out.mp4");
         let bg = std::path::Path::new("/nonexistent-bg-xyz.mp4");
@@ -1109,7 +1114,12 @@ mod tests {
         // ffmpeg 因参数错误立刻退出时，写帧线程会遇到 broken pipe。
         // 这条测试的全部要求就是：返回 Err，不 panic，不挂死。
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:20.000\n够长的一条，保证帧数多到写端会撞上已关闭的管道。\n";
-        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let mut fs = crate::render::frame::FrameSource::new(
+            vtt,
+            "标题".into(),
+            &crate::config::Branding::plain("测试品牌"),
+        )
+        .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         // 三个数值必须在 &mut fs 之前算好：否则 &mut fs 与 &fs 同时活着，借用检查不过。
         let total_frames = fs.total_frames();
@@ -1205,7 +1215,12 @@ mod tests {
             "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' 'x' 1>&2\ncat >/dev/null\nexit 0\n",
         );
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
-        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let mut fs = crate::render::frame::FrameSource::new(
+            vtt,
+            "标题".into(),
+            &crate::config::Branding::plain("测试品牌"),
+        )
+        .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         let out = std::env::temp_dir().join(format!(
             "panda_stderr_deadlock_test_{}.mp4",
@@ -1260,7 +1275,12 @@ mod tests {
         );
         // 字幕够长，保证 total_frames 对应的字节数远大于假 ffmpeg 会读的 100 字节。
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:05.000\n足够长，保证多于一帧要写，写端会在假 ffmpeg 提前退出后撞上已关闭的管道。\n";
-        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let mut fs = crate::render::frame::FrameSource::new(
+            vtt,
+            "标题".into(),
+            &crate::config::Branding::plain("测试品牌"),
+        )
+        .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         let out = std::env::temp_dir().join(format!(
             "panda_write_swallow_test_{}.mp4",
@@ -1323,7 +1343,12 @@ mod tests {
             "#!/bin/sh\ncat >/dev/null\nfor out; do :; done\n: > \"$out\" || exit 3\nexit 0\n",
         );
         let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
-        let mut fs = crate::render::frame::FrameSource::new(vtt, "标题".into()).unwrap();
+        let mut fs = crate::render::frame::FrameSource::new(
+            vtt,
+            "标题".into(),
+            &crate::config::Branding::plain("测试品牌"),
+        )
+        .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         // 特意让输出的父目录（两层，逼 create_dir_all 而不是单层 mkdir）
         // 在测试开始前不存在。
