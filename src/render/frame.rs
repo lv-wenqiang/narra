@@ -522,6 +522,7 @@ mod tests {
             brand: "测试品牌".into(),
             watermark: Some("正文水印".into()),
             watermark_cover: None,
+            watermark_icon: None,
         };
         let mut fs = FrameSource::new(SHORT_VTT, "标题".into(), &branding).unwrap();
         let pixmap = fs.render(CONTENT_FRAME).unwrap();

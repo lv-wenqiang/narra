@@ -12,6 +12,9 @@ futures-util = "0.3.34"
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 regex = "1.13.1"
+# 用户自备的 SVG 图标（`--watermark-icon`）光栅化。渲染后端就是 tiny-skia，
+# 与本项目的 2D 栈同源，不引入第二套图形依赖。
+resvg = "0.48.1"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"

@@ -48,6 +48,9 @@ enum Commands {
         /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
         #[arg(long)]
         watermark_cover: Option<String>,
+        /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
+        #[arg(long)]
+        watermark_icon: Option<String>,
         /// 输出目录
         #[arg(short, long)]
         out: PathBuf,
@@ -75,6 +78,9 @@ enum Commands {
         /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
         #[arg(long)]
         watermark_cover: Option<String>,
+        /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
+        #[arg(long)]
+        watermark_icon: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -104,6 +110,9 @@ enum Commands {
         /// 封面与片尾的水印文案；不给则取 $WATERMARK_COVER，再不给则不画
         #[arg(long)]
         watermark_cover: Option<String>,
+        /// 水印文字左侧的图标（.svg 或 .png，两处水印共用）；不给则取 $WATERMARK_ICON，再不给则不画
+        #[arg(long)]
+        watermark_icon: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -511,12 +520,13 @@ async fn main() -> Result<()> {
             brand,
             watermark,
             watermark_cover,
+            watermark_icon,
             out,
             frames,
         } => run_debug_frames(
             vtt,
             title,
-            Branding::resolve(brand, watermark, watermark_cover),
+            Branding::resolve(brand, watermark, watermark_cover, watermark_icon),
             out,
             frames,
         ),
@@ -527,13 +537,14 @@ async fn main() -> Result<()> {
             brand,
             watermark,
             watermark_cover,
+            watermark_icon,
             title_json,
             bg,
             bgm,
             out,
         } => {
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            let branding = Branding::resolve(brand, watermark, watermark_cover);
+            let branding = Branding::resolve(brand, watermark, watermark_cover, watermark_icon);
             compose_video(&compose_inputs(
                 &audio,
                 &vtt,
@@ -548,6 +559,7 @@ async fn main() -> Result<()> {
             brand,
             watermark,
             watermark_cover,
+            watermark_icon,
             title_json,
             bg,
             bgm,
@@ -559,7 +571,7 @@ async fn main() -> Result<()> {
             let outdir = run_tts(input, None, None, None).await?;
             let (audio, vtt) = tts_artifact_paths(&outdir);
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            let branding = Branding::resolve(brand, watermark, watermark_cover);
+            let branding = Branding::resolve(brand, watermark, watermark_cover, watermark_icon);
             compose_video(&compose_inputs(
                 &audio,
                 &vtt,

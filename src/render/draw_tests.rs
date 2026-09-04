@@ -36,6 +36,7 @@ fn branding_with(content: Option<&str>, cover: Option<&str>) -> Branding {
         brand: TEST_BRAND.to_string(),
         watermark: content.map(str::to_string),
         watermark_cover: cover.map(str::to_string),
+        watermark_icon: None,
     }
 }
 
@@ -991,7 +992,7 @@ fn cover_row_and_title_ink_heights(painter: &mut Painter, title: &str, p: &Pixma
 fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
     let mut renderer = TextRenderer::new().unwrap();
     let prepared =
-        prepare_watermark(&mut renderer, &cover_watermark_preset(TEST_COVER_WM)).unwrap();
+        prepare_watermark(&mut renderer, None, &cover_watermark_preset(TEST_COVER_WM)).unwrap();
     let (x0, y0, x1, y1) = non_transparent_bbox(&prepared.pixmap).expect("cover 水印应有墨迹");
     let canvas_x0 = prepared.origin_x + x0 as i32;
     let canvas_x1 = prepared.origin_x + x1 as i32;
@@ -1039,7 +1040,7 @@ fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
 fn separator_segment_is_drawn_at_reduced_opacity() {
     let mut renderer = TextRenderer::new().unwrap();
     let prepared =
-        prepare_watermark(&mut renderer, &cover_watermark_preset(WATERMARK_SEP)).unwrap();
+        prepare_watermark(&mut renderer, None, &cover_watermark_preset(WATERMARK_SEP)).unwrap();
     let max_alpha = max_alpha_of(&prepared.pixmap);
     assert!(
         (max_alpha as i32 - 77).abs() <= 3,
@@ -1052,7 +1053,7 @@ fn separator_segment_is_drawn_at_reduced_opacity() {
 #[test]
 fn non_separator_text_is_drawn_at_full_opacity() {
     let mut renderer = TextRenderer::new().unwrap();
-    let prepared = prepare_watermark(&mut renderer, &cover_watermark_preset("测试")).unwrap();
+    let prepared = prepare_watermark(&mut renderer, None, &cover_watermark_preset("测试")).unwrap();
     assert_eq!(
         max_alpha_of(&prepared.pixmap),
         102,
@@ -1092,6 +1093,97 @@ fn separator_splitting_isolates_each_middot() {
             ("c".to_string(), 1.0),
         ]
     );
+}
+
+/// 配了 `--watermark-icon` 时图标真的画到了水印上，且**保留自己的颜色**。
+///
+/// 判据用一个纯蓝方块图标配一个纯黑文字的 `cover` 预设：图标区若被按水印色
+/// （`rgb(23,23,23)` 近黑）重新着色，蓝色通道就不会显著高于红色通道。这条
+/// 同时钉住「图标画了」与「没被 tint」两件事——只断言「多了墨迹」的话，
+/// 恢复 `tint_icon` 的变异会存活。
+#[test]
+fn watermark_icon_is_drawn_and_keeps_its_own_colors() {
+    let dir = std::env::temp_dir().join(format!("panda_wm_icon_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("mark.png");
+    // 纯蓝不透明方块。
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0xff, 0xff]))
+        .save(&png)
+        .unwrap();
+
+    let branding = Branding {
+        brand: TEST_BRAND.to_string(),
+        watermark: None,
+        watermark_cover: Some(TEST_COVER_WM.to_string()),
+        watermark_icon: Some(png.to_string_lossy().into_owned()),
+    };
+    let mut painter = Painter::new(&branding).unwrap();
+    let mut p = Pixmap::new(1280, 720).unwrap();
+    painter.draw_cover(&mut p, "标题");
+
+    // 水印所在的 y 带里，找蓝色显著强于红色的像素——图标原色的证据。
+    let has_blue = (0..1280).any(|x| {
+        (550..620).any(|y| {
+            p.pixel(x, y)
+                .map(|c| c.blue() as i32 - c.red() as i32 > 20)
+                .unwrap_or(false)
+        })
+    });
+    assert!(
+        has_blue,
+        "图标应原样画出（蓝色保留）；若被按水印色重新着色，这里会是近灰的"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 没配图标时，水印整行只有文字——不给图标留空位。
+///
+/// 判据是「同一段文案，配图标的墨迹比不配图标的更宽」，且不配时墨迹左边缘
+/// 就是文字起点。只断言「不配时没有蓝色像素」是不够的：那对「留了空位但没
+/// 画东西」（整行右移、文字位置错了）完全无感。
+#[test]
+fn watermark_without_an_icon_starts_at_the_text() {
+    let dir = std::env::temp_dir().join(format!("panda_wm_noicon_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("mark.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0xff, 0xff]))
+        .save(&png)
+        .unwrap();
+
+    let mut renderer = TextRenderer::new().unwrap();
+    let preset = cover_watermark_preset(TEST_COVER_WM);
+    let icon = load_scaled_icon(&png, preset.icon_size_px).unwrap();
+
+    let bare = prepare_watermark(&mut renderer, None, &preset).unwrap();
+    let with_icon = prepare_watermark(&mut renderer, Some(&icon), &preset).unwrap();
+
+    // 图标虽是不透明的纯蓝，进水印后必须吃到预设的整体不透明度（cover =
+    // 102/255），与同一行的文字浓淡一致。少了这条，「图标按原样 100% 不透明
+    // 画上去」的变异检不出来——颜色仍是蓝的，只是浓得突兀。
+    assert_eq!(
+        max_alpha_of(&with_icon.pixmap),
+        102,
+        "图标应吃到水印预设的整体不透明度，而不是保持自身的 100% 不透明"
+    );
+
+    let bare_w = bare.pixmap.width();
+    let icon_w = with_icon.pixmap.width();
+    let expected_extra = preset.icon_size_px as f32 + preset.icon_gap_px;
+    assert!(
+        (icon_w as f32 - bare_w as f32 - expected_extra).abs() <= 3.0,
+        "配图标后整行应正好宽出「图标 + 间距」= {expected_extra}px，实得 {bare_w} → {icon_w}"
+    );
+
+    // 两者都水平居中，所以配了图标之后整行左边缘应当左移约一半的增量。
+    let shift = bare.origin_x - with_icon.origin_x;
+    assert!(
+        (shift as f32 - expected_extra / 2.0).abs() <= 3.0,
+        "整行仍应水平居中：左边缘应左移约 {}px，实得 {shift}",
+        expected_extra / 2.0
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **修复轮 1（M1）**：光标间距（advance 口径 4px）此前零覆盖（审查变异

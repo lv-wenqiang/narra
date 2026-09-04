@@ -13,6 +13,58 @@ pub fn logo_rgba() -> Result<(Vec<u8>, u32, u32)> {
     Ok((rgba.into_raw(), w, h))
 }
 
+/// 把用户自备的图标文件光栅化成 `size×size` 的 RGBA8，返回 (像素, 宽, 高)。
+///
+/// **按扩展名分流，不嗅探文件头**：`.svg` 走 `resvg`（矢量，按目标尺寸直接
+/// 渲染，任意尺寸都清晰），其余走 `image` 解码后缩放。扩展名写错时报「解析
+/// 失败」并点名那个文件，比默默按另一种格式猜要好——用户给的是自己的文件，
+/// 猜错的后果是水印上出现一块看不懂的东西而没有任何提示。
+///
+/// **不重新着色**：图标原样保留自己的颜色，水印预设的 alpha 由调用方作为
+/// 整体不透明度施加。用户给的多半是自家彩色 logo，按水印色重新着色会把它
+/// 拍成一块单色剪影。
+pub fn load_icon(path: &std::path::Path, size: u32) -> Result<(Vec<u8>, u32, u32)> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let bytes =
+        std::fs::read(path).with_context(|| format!("读取图标文件失败：{}", path.display()))?;
+
+    if ext == "svg" {
+        let opt = resvg::usvg::Options::default();
+        let tree = resvg::usvg::Tree::from_data(&bytes, &opt)
+            .with_context(|| format!("解析 SVG 图标失败：{}", path.display()))?;
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).context("创建图标画布失败")?;
+        let svg_size = tree.size();
+        let transform = resvg::tiny_skia::Transform::from_scale(
+            size as f32 / svg_size.width(),
+            size as f32 / svg_size.height(),
+        );
+        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        return Ok((pixmap.data().to_vec(), size, size));
+    }
+
+    if ext == "png" {
+        let img = image::load_from_memory(&bytes)
+            .with_context(|| format!("解码 PNG 图标失败：{}", path.display()))?;
+        let scaled = image::imageops::resize(
+            &img.to_rgba8(),
+            size,
+            size,
+            image::imageops::FilterType::Lanczos3,
+        );
+        return Ok((scaled.into_raw(), size, size));
+    }
+
+    anyhow::bail!(
+        "不认识的图标格式 `.{ext}`：{}（支持 .svg 与 .png）",
+        path.display()
+    )
+}
+
 /// 把两段内嵌音效写进 `dir`，返回 `(intro.mp3, intro_typewriter.mp3)` 的路径。
 ///
 /// ffmpeg 的四路音频里有两路是内嵌资源，而 stdin 已经被帧流占用，无法再从
@@ -57,6 +109,61 @@ mod tests {
         assert_eq!(px.len(), (w * h * 4) as usize);
         // 不能是全透明
         assert!(px.chunks(4).any(|p| p[3] > 0), "logo 全透明");
+    }
+
+    /// `load_icon` 按扩展名分流，两条路都要能光栅化到请求的尺寸。
+    ///
+    /// **SVG 走 resvg 按目标尺寸渲染**（矢量，任意尺寸都清晰）；**位图走
+    /// image 再缩放**。分流依据是扩展名而不是嗅探文件头：用户给的是自己的
+    /// 文件，扩展名写错时报「解析失败」比默默按另一种格式猜要好。
+    #[test]
+    fn load_icon_rasterizes_svg_and_png_at_the_requested_size() {
+        let dir = std::env::temp_dir().join(format!("panda_icon_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 一个最小的实心方块 SVG。
+        let svg = dir.join("mark.svg");
+        std::fs::write(
+            &svg,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#336699"/></svg>"##,
+        )
+        .unwrap();
+
+        // 一个 4x4 的不透明 PNG。
+        let png = dir.join("mark.png");
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0x33, 0x66, 0x99, 0xff]));
+        img.save(&png).unwrap();
+
+        for (label, path) in [("svg", &svg), ("png", &png)] {
+            let (px, w, h) =
+                load_icon(path, 32).unwrap_or_else(|e| panic!("{label} 应能加载：{e}"));
+            assert_eq!((w, h), (32, 32), "{label} 应光栅化到请求尺寸");
+            assert_eq!(px.len(), 32 * 32 * 4, "{label} 像素数据长度应为 w*h*4");
+            assert!(px.chunks_exact(4).any(|p| p[3] > 0), "{label} 不应全透明");
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 文件不存在、或扩展名不认识时报错而不是静默画个空图标。
+    #[test]
+    fn load_icon_reports_missing_files_and_unknown_extensions() {
+        let missing = std::path::Path::new("/nonexistent-icon-xyz.png");
+        let err = load_icon(missing, 32).unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent-icon-xyz.png"),
+            "报错应点名那个文件：{err}"
+        );
+
+        let dir = std::env::temp_dir().join(format!("panda_icon_ext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let weird = dir.join("mark.txt");
+        std::fs::write(&weird, b"not an image").unwrap();
+        assert!(
+            load_icon(&weird, 32).is_err(),
+            "不认识的扩展名应报错，而不是猜格式"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

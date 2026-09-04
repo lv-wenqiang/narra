@@ -188,6 +188,7 @@ fn brand_and_watermarks_have_the_documented_defaults() {
         std::env::remove_var("BRAND");
         std::env::remove_var("WATERMARK");
         std::env::remove_var("WATERMARK_COVER");
+        std::env::remove_var("WATERMARK_ICON");
     }
     assert_eq!(panda::config::brand(), "墨风");
     assert_eq!(panda::config::watermark(), None, "未配置时不画正文水印");
@@ -196,6 +197,7 @@ fn brand_and_watermarks_have_the_documented_defaults() {
         None,
         "未配置时不画封面/片尾水印"
     );
+    assert_eq!(panda::config::watermark_icon(), None, "未配置时不画图标");
 }
 
 /// 鉴别性测试：三个变量各自只驱动一个函数。
@@ -213,6 +215,7 @@ fn each_branding_env_var_is_wired_to_exactly_one_function() {
             std::env::remove_var("BRAND");
             std::env::remove_var("WATERMARK");
             std::env::remove_var("WATERMARK_COVER");
+            std::env::remove_var("WATERMARK_ICON");
         }
     };
 
@@ -266,6 +269,7 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         std::env::set_var("BRAND", "   ");
         std::env::set_var("WATERMARK", "\t \n");
         std::env::set_var("WATERMARK_COVER", "  ");
+        std::env::set_var("WATERMARK_ICON", " \t ");
     }
     assert_eq!(
         panda::config::brand(),
@@ -282,12 +286,18 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         None,
         "全空白的 WATERMARK_COVER 应视同未配置"
     );
+    assert_eq!(
+        panda::config::watermark_icon(),
+        None,
+        "全空白的 WATERMARK_ICON 应视同未配置"
+    );
 
     // SAFETY: 同上。
     unsafe {
         std::env::remove_var("BRAND");
         std::env::remove_var("WATERMARK");
         std::env::remove_var("WATERMARK_COVER");
+        std::env::remove_var("WATERMARK_ICON");
     }
 }
 
@@ -312,13 +322,14 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         std::env::remove_var("BRAND");
         std::env::remove_var("WATERMARK");
         std::env::remove_var("WATERMARK_COVER");
+        std::env::remove_var("WATERMARK_ICON");
     };
 
     clear();
     assert_eq!(
-        Branding::resolve(None, None, None),
+        Branding::resolve(None, None, None, None),
         Branding::plain("墨风"),
-        "三项都没给时应是「默认品牌 + 两处都不画」"
+        "四项都没给时应是「默认品牌 + 两处水印与图标都不画」"
     );
 
     // 环境变量层。
@@ -326,40 +337,56 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         std::env::set_var("BRAND", "环境品牌");
         std::env::set_var("WATERMARK", "环境正文水印");
         std::env::set_var("WATERMARK_COVER", "环境封面水印");
+        std::env::set_var("WATERMARK_ICON", "/env/mark.svg");
     }
-    let from_env = Branding::resolve(None, None, None);
+    let from_env = Branding::resolve(None, None, None, None);
     assert_eq!(from_env.brand, "环境品牌");
     assert_eq!(from_env.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(from_env.watermark_cover.as_deref(), Some("环境封面水印"));
+    assert_eq!(from_env.watermark_icon.as_deref(), Some("/env/mark.svg"));
 
     // 命令行优先于环境变量，且三个参数各落各的字段。
     let from_cli = Branding::resolve(
         Some("命令行品牌".into()),
         Some("命令行正文水印".into()),
         Some("命令行封面水印".into()),
+        Some("/cli/mark.png".into()),
     );
     assert_eq!(from_cli.brand, "命令行品牌");
     assert_eq!(from_cli.watermark.as_deref(), Some("命令行正文水印"));
     assert_eq!(from_cli.watermark_cover.as_deref(), Some("命令行封面水印"));
+    assert_eq!(from_cli.watermark_icon.as_deref(), Some("/cli/mark.png"));
 
     // 只给一个：另外两个必须仍来自环境变量，不能被这一个带偏。
-    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None);
+    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None, None);
     assert_eq!(only_brand.brand, "只给品牌");
     assert_eq!(only_brand.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(only_brand.watermark_cover.as_deref(), Some("环境封面水印"));
+    assert_eq!(only_brand.watermark_icon.as_deref(), Some("/env/mark.svg"));
 
-    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None);
+    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None, None);
     assert_eq!(only_wm.watermark.as_deref(), Some("只给正文水印"));
     assert_eq!(only_wm.brand, "环境品牌");
     assert_eq!(only_wm.watermark_cover.as_deref(), Some("环境封面水印"));
 
-    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()));
+    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()), None);
     assert_eq!(only_cover.watermark_cover.as_deref(), Some("只给封面水印"));
     assert_eq!(only_cover.brand, "环境品牌");
     assert_eq!(only_cover.watermark.as_deref(), Some("环境正文水印"));
 
+    let only_icon = Branding::resolve(None, None, None, Some("/只给图标.png".into()));
+    assert_eq!(only_icon.watermark_icon.as_deref(), Some("/只给图标.png"));
+    assert_eq!(only_icon.brand, "环境品牌");
+    assert_eq!(only_icon.watermark.as_deref(), Some("环境正文水印"));
+    assert_eq!(only_icon.watermark_cover.as_deref(), Some("环境封面水印"));
+
     // 全空白的命令行参数视同没给，继续往下兜底到环境变量。
-    let blank = Branding::resolve(Some("   ".into()), Some("\t".into()), Some("  \n".into()));
+    let blank = Branding::resolve(
+        Some("   ".into()),
+        Some("\t".into()),
+        Some("  \n".into()),
+        Some(" ".into()),
+    );
     assert_eq!(
         blank, from_env,
         "全空白的命令行参数应视同没给，回落到环境变量层"
@@ -368,7 +395,12 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
     // 环境变量也清掉后，全空白的命令行参数应一路兜底到默认值。
     clear();
     assert_eq!(
-        Branding::resolve(Some("  ".into()), Some("  ".into()), Some("  ".into())),
+        Branding::resolve(
+            Some("  ".into()),
+            Some("  ".into()),
+            Some("  ".into()),
+            Some("  ".into()),
+        ),
         Branding::plain("墨风"),
         "全空白 + 无环境变量应一路兜底到默认值"
     );

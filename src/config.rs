@@ -84,6 +84,8 @@ pub struct Branding {
     pub watermark: Option<String>,
     /// Cover 与 Outro 段水印，`None` = 不画。
     pub watermark_cover: Option<String>,
+    /// 水印文字左侧的图标文件路径，两处共用，`None` = 不画图标。
+    pub watermark_icon: Option<String>,
 }
 
 impl Branding {
@@ -102,11 +104,13 @@ impl Branding {
         brand: Option<String>,
         watermark: Option<String>,
         watermark_cover: Option<String>,
+        watermark_icon: Option<String>,
     ) -> Self {
         Self {
             brand: non_blank(brand).unwrap_or_else(self::brand),
             watermark: non_blank(watermark).or_else(self::watermark),
             watermark_cover: non_blank(watermark_cover).or_else(self::watermark_cover),
+            watermark_icon: non_blank(watermark_icon).or_else(self::watermark_icon),
         }
     }
 
@@ -119,6 +123,7 @@ impl Branding {
             brand: brand.to_string(),
             watermark: None,
             watermark_cover: None,
+            watermark_icon: None,
         }
     }
 }
@@ -148,6 +153,16 @@ pub fn brand() -> String {
 /// 「空白视同未设置」正好让 `WATERMARK=""` 落到 `None`。
 pub fn watermark() -> Option<String> {
     non_empty_env("WATERMARK")
+}
+
+/// 水印文字左侧的图标文件（`.svg` 或 `.png`），默认**不画**
+/// （`--watermark-icon` 覆盖）。
+///
+/// **两处水印共用一个**：文案两处不同是因为长短场合不同，但品牌标记就一个。
+/// 各自缩到自己预设的尺寸（正文 28px、封面/片尾 32px）。图标只在对应那处的
+/// **文案也配了**的时候才会出现——没有文案就没有水印，图标自然无处可挂。
+pub fn watermark_icon() -> Option<String> {
+    non_empty_env("WATERMARK_ICON")
 }
 
 /// Cover 与 Outro 段的水印文案，默认**不画**（`--watermark-cover` 覆盖）。

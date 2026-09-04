@@ -16,6 +16,8 @@ use tiny_skia::{
     Color, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, Transform,
 };
 
+use std::path::Path;
+
 use crate::assets::logo_rgba;
 use crate::config::Branding;
 use crate::render::anim::{interpolate, interpolate3, spring};
@@ -67,12 +69,18 @@ const WATERMARK_COLOR: [u8; 4] = [255, 255, 255, 69];
 const WATERMARK_LETTER_SPACING_EM: f32 = 0.01;
 /// 水印只有一行，换行宽度给一个远大于画布宽度的值以避免意外换行。
 const WATERMARK_MAX_WIDTH_PX: f32 = 2000.0;
+/// 正文水印图标的尺寸与它到文字的间距（规格 §8.6）。
+const WATERMARK_ICON_SIZE_PX: u32 = 28;
+const WATERMARK_ICON_GAP_PX: f32 = 10.0;
 
 /// `cover` 段水印（规格 §8.6，Task 6）：`rgba(23,23,23,0.4)`，垂直中心见
 /// `cover_watermark_preset` 文档注释（`576`，不是规格字面的 `432`）。
 const COVER_WATERMARK_CENTER_Y_PX: f32 = 576.0;
 const COVER_WATERMARK_FONT_SIZE_PX: f32 = 28.0;
 const COVER_WATERMARK_COLOR: [u8; 4] = [23, 23, 23, 102];
+/// 封面/片尾水印图标的尺寸与它到文字的间距（规格 §8.6）。
+const COVER_WATERMARK_ICON_SIZE_PX: u32 = 32;
+const COVER_WATERMARK_ICON_GAP_PX: f32 = 12.0;
 /// 文案里的 `·` 分隔符单独降到 0.75 倍不透明度。
 ///
 /// 这是**排版规则而非写死的文案**：对任何含 `·` 的水印文案都成立，见
@@ -193,6 +201,17 @@ const OUTRO_TITLE_TRANSLATE_Y_RANGE: [f64; 2] = [-50.0, 0.0];
 const OUTRO_FADE_OUT_FRAMES: [f64; 2] = [105.0, 119.0];
 const OUTRO_FADE_OUT_RANGE: [f64; 2] = [1.0, 0.0];
 
+/// 把用户自备的图标文件加载成目标尺寸的预乘 `Pixmap`，可直接 `draw_pixmap`。
+///
+/// `assets::load_icon` 返回 straight-alpha，`Pixmap::from_vec` 要的是预乘，
+/// 中间必须过一次 [`premultiply_in_place`]——跳过它会让半透明边缘的颜色偏亮。
+fn load_scaled_icon(path: &Path, size: u32) -> anyhow::Result<Pixmap> {
+    let (mut rgba, w, h) = crate::assets::load_icon(path, size)?;
+    premultiply_in_place(&mut rgba);
+    Pixmap::from_vec(rgba, IntSize::from_wh(w, h).context("图标尺寸非零")?)
+        .context("图标像素数据长度应与 width*height*4 一致")
+}
+
 /// 把一段 straight-alpha RGBA8 像素原地转换为 `tiny_skia::Pixmap` 要求的
 /// 预乘 alpha（`Pixmap::from_vec`/`decode_png` 内部都是这么做的，见
 /// `tiny_skia::Pixmap::decode_png` 源码）。
@@ -303,6 +322,11 @@ enum WatermarkAnchor {
 /// `Painter` 的新字段，就能画出 cover 水印——不需要改 `draw_content`，
 /// 也不需要复制 `layout_and_draw_watermark`/`draw_watermark` 里的任何绘制代码。
 struct WatermarkPreset {
+    /// 图标的目标边长与它到文字的间距。**图标画不画由 `Painter` 那边的
+    /// `Option<Pixmap>` 决定**，不由这两个数决定——预设只描述「若有图标，
+    /// 它多大、离文字多远」。
+    icon_size_px: u32,
+    icon_gap_px: f32,
     font_size_px: f32,
     color: [u8; 4],
     /// 字距，像素（`content` = `24 * 0.01em = 0.24px`，由调用方从 em 换算好再填入）。
@@ -336,6 +360,8 @@ fn split_on_separator(text: &str) -> Vec<(String, f32)> {
 
 fn content_watermark_preset(text: &str) -> WatermarkPreset {
     WatermarkPreset {
+        icon_size_px: WATERMARK_ICON_SIZE_PX,
+        icon_gap_px: WATERMARK_ICON_GAP_PX,
         font_size_px: WATERMARK_FONT_SIZE_PX,
         color: WATERMARK_COLOR,
         letter_spacing_px: WATERMARK_FONT_SIZE_PX * WATERMARK_LETTER_SPACING_EM,
@@ -356,6 +382,8 @@ fn content_watermark_preset(text: &str) -> WatermarkPreset {
 /// Cover 主标题）。
 fn cover_watermark_preset(text: &str) -> WatermarkPreset {
     WatermarkPreset {
+        icon_size_px: COVER_WATERMARK_ICON_SIZE_PX,
+        icon_gap_px: COVER_WATERMARK_ICON_GAP_PX,
         font_size_px: COVER_WATERMARK_FONT_SIZE_PX,
         color: COVER_WATERMARK_COLOR,
         letter_spacing_px: 0.0,
@@ -366,12 +394,20 @@ fn cover_watermark_preset(text: &str) -> WatermarkPreset {
     }
 }
 
-/// 按预设把水印分段文字画到 `pixmap` 上。**唯一一份水印绘制逻辑**：
-/// `content`/`cover`/`outro` 的区别只在传入的 `WatermarkPreset`（字号、颜色、
-/// 锚点都由调用方按预设准备好），本函数不认得任何具体预设的名字。
+/// 按预设把水印（可选图标 + 分段文字）画到 `pixmap` 上。**唯一一份水印绘制
+/// 逻辑**：`content`/`cover`/`outro` 的区别只在传入的 `WatermarkPreset`
+/// （字号、颜色、锚点、图标尺寸都由调用方按预设准备好），本函数不认得任何
+/// 具体预设的名字。
+///
+/// `icon` 为 `None` 时整行只有文字，行首就是文字起点——不留图标的空位。
+///
+/// **图标不重新着色**：原样画上去，只把预设颜色的 alpha 当作它的整体不透明
+/// 度（`PixmapPaint::opacity`），这样彩色 logo 保住自己的颜色，而浓淡仍与
+/// 同一行的文字一致。
 fn layout_and_draw_watermark(
     renderer: &mut TextRenderer,
     pixmap: &mut Pixmap,
+    icon: Option<&Pixmap>,
     preset: &WatermarkPreset,
 ) {
     let style = TextStyle {
@@ -397,7 +433,10 @@ fn layout_and_draw_watermark(
         .map(|(text, _)| renderer.measure(text, &style).1)
         .unwrap_or(0.0);
 
-    let row_height = text_h;
+    // 有图标时行高取「文字与图标的较大者」，让两者在行内垂直居中对齐。
+    let icon_extent = icon.map_or(0.0, |_| preset.icon_size_px as f32);
+    let icon_advance = icon.map_or(0.0, |_| preset.icon_size_px as f32 + preset.icon_gap_px);
+    let row_height = text_h.max(icon_extent);
 
     let (row_left, row_center_y) = match preset.anchor {
         WatermarkAnchor::BottomLeft {
@@ -408,12 +447,27 @@ fn layout_and_draw_watermark(
             (margin_left_px, row_bottom - row_height / 2.0)
         }
         WatermarkAnchor::Centered { center_y_px } => {
-            let total_width = seg_widths.iter().sum::<f32>();
+            let total_width = icon_advance + seg_widths.iter().sum::<f32>();
             (CANVAS_W / 2.0 - total_width / 2.0, center_y_px)
         }
     };
 
-    let mut cursor_x = row_left;
+    if let Some(icon) = icon {
+        let icon_top = row_center_y - icon_extent / 2.0;
+        pixmap.draw_pixmap(
+            row_left.round() as i32,
+            icon_top.round() as i32,
+            icon.as_ref(),
+            &PixmapPaint {
+                opacity: f32::from(preset.color[3]) / 255.0,
+                ..PixmapPaint::default()
+            },
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let mut cursor_x = row_left + icon_advance;
     for (seg, &w) in preset.segments.iter().zip(seg_widths.iter()) {
         let (text, opacity_mul) = seg;
         if !text.is_empty() {
@@ -452,11 +506,12 @@ struct PreparedWatermark {
 /// 逐字节相同（I2 要求的等价性，报告里有实测比对）。
 fn prepare_watermark(
     renderer: &mut TextRenderer,
+    icon: Option<&Pixmap>,
     preset: &WatermarkPreset,
 ) -> anyhow::Result<PreparedWatermark> {
     let mut scratch =
         Pixmap::new(CANVAS_W as u32, CANVAS_H as u32).context("水印预渲染暂存画布分配失败")?;
-    layout_and_draw_watermark(renderer, &mut scratch, preset);
+    layout_and_draw_watermark(renderer, &mut scratch, icon, preset);
 
     let Some((x0, y0, x1, y1)) = non_transparent_bbox(&scratch) else {
         // 预设没有画出任何东西（理论上不会发生，防御性兜底）：1x1 透明占位，
@@ -546,15 +601,37 @@ impl Painter {
     /// 路径只会让「到底画没画」多一种说法。
     pub fn new(branding: &Branding) -> anyhow::Result<Self> {
         let mut renderer = TextRenderer::new()?;
+        // 图标按两处各自的目标尺寸分别加载一次。**共用一个配置项、但不是
+        // 共用一张位图**：正文 28px、封面/片尾 32px，各自按目标尺寸光栅化
+        // （SVG 走矢量渲染、PNG 走 Lanczos3 缩放）比缩一张再二次缩放清晰。
+        let icon_path = branding.watermark_icon.as_deref().map(Path::new);
+        let content_icon = icon_path
+            .map(|p| load_scaled_icon(p, WATERMARK_ICON_SIZE_PX))
+            .transpose()?;
+        let cover_icon = icon_path
+            .map(|p| load_scaled_icon(p, COVER_WATERMARK_ICON_SIZE_PX))
+            .transpose()?;
         let content_watermark = branding
             .watermark
             .as_deref()
-            .map(|t| prepare_watermark(&mut renderer, &content_watermark_preset(t)))
+            .map(|t| {
+                prepare_watermark(
+                    &mut renderer,
+                    content_icon.as_ref(),
+                    &content_watermark_preset(t),
+                )
+            })
             .transpose()?;
         let cover_watermark = branding
             .watermark_cover
             .as_deref()
-            .map(|t| prepare_watermark(&mut renderer, &cover_watermark_preset(t)))
+            .map(|t| {
+                prepare_watermark(
+                    &mut renderer,
+                    cover_icon.as_ref(),
+                    &cover_watermark_preset(t),
+                )
+            })
             .transpose()?;
         let logo_36 = scaled_logo(COVER_LOGO_SIZE_PX)?;
         let logo_216 = scaled_logo(OUTRO_LOGO_SIZE_PX)?;
