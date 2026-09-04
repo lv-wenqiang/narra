@@ -69,6 +69,26 @@ enum Commands {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// 文稿 → TTS → 成片，一条龙
+    Make {
+        /// 文稿路径，默认与 panda tts 相同
+        input: Option<PathBuf>,
+        /// 标题，优先级最高
+        #[arg(long)]
+        title: Option<String>,
+        /// 标题 JSON，默认 public/video/title.json
+        #[arg(long)]
+        title_json: Option<PathBuf>,
+        /// 背景视频，默认 public/video/0.mp4
+        #[arg(long)]
+        bg: Option<PathBuf>,
+        /// 背景音乐，默认 public/bgm/0.mp3
+        #[arg(long)]
+        bgm: Option<PathBuf>,
+        /// 成片输出，默认 output/video/video.mp4
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
 }
 
 /// 默认标题：VTT 上游没有专门的标题字段，`--title` 缺省时用品牌名占位。
@@ -137,6 +157,52 @@ fn run_debug_frames(
     Ok(())
 }
 
+/// TTS 流水线的两个产物在输出目录下的固定文件名（见
+/// `tts::pipeline::process_narration_file` 里的 `output_dir.join(..)`）。
+/// `make` 靠这个约定把 TTS 的输出接到合成的输入上。
+fn tts_artifact_paths(outdir: &Path) -> (PathBuf, PathBuf) {
+    (outdir.join("audio.mp3"), outdir.join("audio.vtt"))
+}
+
+/// 跑一遍 TTS 流水线，返回**实际使用的输出目录**——`make` 需要它来定位
+/// `audio.mp3`/`audio.vtt`，所以兜底后的目录必须由本函数交回调用方，而不是
+/// 让调用方各自再算一遍（两处各算一次就是两个真相源）。
+///
+/// `panda tts` 与 `panda make` 共用这一条 TTS 路径：音色、并发段数、超时的
+/// 环境变量兜底只在这里出现一次。
+async fn run_tts(
+    input: Option<PathBuf>,
+    outdir: Option<PathBuf>,
+    voice: Option<String>,
+    batch_size: Option<usize>,
+) -> Result<PathBuf> {
+    let input = input.unwrap_or_else(|| PathBuf::from(config::tts_input_file()));
+    let outdir = outdir.unwrap_or_else(|| PathBuf::from(config::tts_output_dir()));
+
+    let voice_raw = voice
+        .or_else(|| std::env::var("EDGE_TTS_VOICE").ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| config::DEFAULT_VOICE.to_string());
+
+    let opts = ProcessOptions {
+        voice: panda::tts::edge::normalize_voice_for_edge(&voice_raw),
+        speed_factor: config::SPEED_FACTOR,
+        batch_size: match batch_size {
+            Some(n) => config::resolve_batch_size_from_value(Some(n)),
+            None => {
+                config::resolve_batch_size(std::env::var("EDGE_TTS_BATCH_SIZE").ok().as_deref())
+            }
+        },
+        timeout: Duration::from_millis(config::resolve_timeout_ms(
+            std::env::var("EDGE_TTS_TIMEOUT_MS").ok().as_deref(),
+        )),
+    };
+
+    process_narration_file(&input, &outdir, &opts).await?;
+    Ok(outdir)
+}
+
 /// 标题三级兜底的 IO 外壳：读文件（缺失或不可读视作「没有 JSON」），
 /// 纯粹的优先级逻辑交给 `config::resolve_title`。
 fn read_title(cli: Option<&str>, json_path: &Path) -> String {
@@ -187,6 +253,19 @@ fn check_render_inputs_exist(audio: &Path, vtt: &Path, bg: &Path, bgm: &Path) ->
     Ok(())
 }
 
+/// 内嵌音效的临时目录。除 pid 之外再带一个随机后缀：`render` 与 `make`
+/// 共用 `compose_video`，同一个进程里跑两次合成（并发的单测、将来的批量
+/// 合成）时，只带 pid 的目录名会被两次合成共用，先结束的那次
+/// `cleanup_tmp_and_propagate` 会删掉另一次仍被 ffmpeg 读取的音效文件，
+/// 表现为偶发失败。取名方式沿用 `tts::pipeline` 里的 `unique_tmp_dir`。
+fn unique_tmp_audio_dir() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "panda_render_{}_{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
+}
+
 /// 落盘两段内嵌音效，并按文件名确认没有被对调。
 ///
 /// `assets::write_embedded_audio` 的返回顺序是 `(intro, typewriter)`，而
@@ -218,7 +297,7 @@ fn write_embedded_audio_checked(tmp_dir: &Path) -> Result<(PathBuf, PathBuf)> {
 /// 本计划里 Task 3（TTS/BGM 处理链对调）、Task 4（输入顺序）、Task 6（环境
 /// 变量名对调）反复出现同一类回归。纯函数，不碰文件系统、不起进程，可以用
 /// 互不相同的哑值单测直接钉住这条接线；真正的 ffmpeg 调用留给
-/// `Commands::Render`（Task 8 的 `compose_video` 预期会复用这个函数）。
+/// `compose_video`。
 fn build_render_inputs<'a>(
     source: &FrameSource,
     bg: &'a Path,
@@ -286,6 +365,30 @@ struct ComposeVideoInputs<'a> {
     out: &'a Path,
 }
 
+/// `render` 与 `make` 收敛到同一条合成路径的那个汇合点：把「音频 / 字幕 /
+/// 标题」这三个来源不同的输入（`render` 来自命令行，`make` 来自刚跑完的
+/// TTS）与四条已兜底的素材路径拼成 `ComposeVideoInputs`。
+///
+/// 两个分支都只经由本函数构造合成输入，装配错位（`audio`/`vtt` 对调、
+/// `bg`/`bgm` 对调、`title_json`/`out` 对调）就只有一处可能发生，一条单测
+/// 同时守住两个分支。
+fn compose_inputs<'a>(
+    audio: &'a Path,
+    vtt: &'a Path,
+    title: Option<&'a str>,
+    paths: &'a ResolvedRenderPaths,
+) -> ComposeVideoInputs<'a> {
+    ComposeVideoInputs {
+        audio,
+        vtt,
+        title,
+        title_json: &paths.title_json,
+        bg: &paths.bg,
+        bgm: &paths.bgm,
+        out: &paths.out,
+    }
+}
+
 /// `Commands::Render` 分支体的可测核心：把「检查输入是否存在 → 读标题/
 /// 字幕 → 落盘内嵌音效 → 构造 `FrameSource` → 组装 `RenderInputs`」这条
 /// 调用链跑一遍，最后一步不硬编码调用 `panda::ffmpeg::run_render`，而是
@@ -304,7 +407,8 @@ struct ComposeVideoInputs<'a> {
 ///   那一个，而不是被换了标签的另一个）。
 ///
 /// 生产路径的 `runner` 就是 `panda::ffmpeg::run_render` 本身，见
-/// `compose_video`；`panda make`（Task 8）预期直接复用 `compose_video`。
+/// `compose_video`；`panda render` 与 `panda make` 都经由 `compose_video`
+/// 走这一条路径，没有第二条合成路径。
 fn compose_video_with_runner(
     inputs: &ComposeVideoInputs,
     runner: impl FnOnce(&mut FrameSource, &panda::ffmpeg::RenderInputs) -> Result<()>,
@@ -327,7 +431,7 @@ fn compose_video_with_runner(
 
     // 两段内嵌音效落到临时目录，供 ffmpeg 作为输入文件读取——stdin
     // 已经被帧流占用，没法再从管道喂第二、第三份数据。
-    let tmp = std::env::temp_dir().join(format!("panda_render_{}", std::process::id()));
+    let tmp = unique_tmp_audio_dir();
     std::fs::create_dir_all(&tmp)
         .with_context(|| format!("创建临时目录失败：{}", tmp.display()))?;
     let (intro, typewriter) = write_embedded_audio_checked(&tmp)?;
@@ -351,9 +455,10 @@ fn compose_video_with_runner(
     Ok(())
 }
 
-/// `compose_video_with_runner` 接上真正的 ffmpeg 执行器。
-/// `Commands::Render` 分支体只是它的一层薄胶水（构造 `ComposeVideoInputs`
-/// 后调用它），`panda make`（Task 8）预期直接复用本函数。
+/// `compose_video_with_runner` 接上真正的 ffmpeg 执行器。全仓库唯一的一条
+/// 合成路径：`Commands::Render` 与 `Commands::Make` 的分支体都只是它的一层
+/// 薄胶水（备齐输入 → `compose_inputs` → 调用本函数），区别仅在音频/字幕
+/// 是命令行给的还是刚跑完的 TTS 产的。
 fn compose_video(inputs: &ComposeVideoInputs) -> Result<()> {
     compose_video_with_runner(inputs, panda::ffmpeg::run_render)
 }
@@ -367,30 +472,8 @@ async fn main() -> Result<()> {
             voice,
             batch_size,
         } => {
-            let input = input.unwrap_or_else(|| PathBuf::from(config::tts_input_file()));
-            let outdir = outdir.unwrap_or_else(|| PathBuf::from(config::tts_output_dir()));
-
-            let voice_raw = voice
-                .or_else(|| std::env::var("EDGE_TTS_VOICE").ok())
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| config::DEFAULT_VOICE.to_string());
-
-            let opts = ProcessOptions {
-                voice: panda::tts::edge::normalize_voice_for_edge(&voice_raw),
-                speed_factor: config::SPEED_FACTOR,
-                batch_size: match batch_size {
-                    Some(n) => config::resolve_batch_size_from_value(Some(n)),
-                    None => config::resolve_batch_size(
-                        std::env::var("EDGE_TTS_BATCH_SIZE").ok().as_deref(),
-                    ),
-                },
-                timeout: Duration::from_millis(config::resolve_timeout_ms(
-                    std::env::var("EDGE_TTS_TIMEOUT_MS").ok().as_deref(),
-                )),
-            };
-
-            process_narration_file(&input, &outdir, &opts).await
+            run_tts(input, outdir, voice, batch_size).await?;
+            Ok(())
         }
         Commands::DebugFrames {
             vtt,
@@ -407,22 +490,24 @@ async fn main() -> Result<()> {
             bgm,
             out,
         } => {
-            let ResolvedRenderPaths {
-                title_json,
-                bg,
-                bgm,
-                out,
-            } = resolve_render_paths(title_json, bg, bgm, out);
-
-            compose_video(&ComposeVideoInputs {
-                audio: &audio,
-                vtt: &vtt,
-                title: title.as_deref(),
-                title_json: &title_json,
-                bg: &bg,
-                bgm: &bgm,
-                out: &out,
-            })
+            let paths = resolve_render_paths(title_json, bg, bgm, out);
+            compose_video(&compose_inputs(&audio, &vtt, title.as_deref(), &paths))
+        }
+        Commands::Make {
+            input,
+            title,
+            title_json,
+            bg,
+            bgm,
+            out,
+        } => {
+            // TTS 的输出目录不走命令行：`make` 的 TTS 产物是中间物，位置由
+            // `panda tts` 的既有约定（$TTS_OUTPUT_DIR 或 output/tts）决定，
+            // 用户要关心的只有最后那个 `-o`。
+            let outdir = run_tts(input, None, None, None).await?;
+            let (audio, vtt) = tts_artifact_paths(&outdir);
+            let paths = resolve_render_paths(title_json, bg, bgm, out);
+            compose_video(&compose_inputs(&audio, &vtt, title.as_deref(), &paths))
         }
     }
 }
@@ -823,5 +908,86 @@ mod tests {
         assert!(!msg.contains("音频"), "vtt 缺失时不应误报“音频”：{msg}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn make_defaults_the_tts_output_paths_under_the_output_dir() {
+        // make 把 TTS 的产物喂给合成，两者的路径约定必须一致：
+        // audio.mp3 与 audio.vtt 都在 TTS 输出目录下。
+        let dir = std::path::Path::new("/tmp/some-tts-out");
+        let (a, v) = tts_artifact_paths(dir);
+        assert_eq!(a, std::path::Path::new("/tmp/some-tts-out/audio.mp3"));
+        assert_eq!(v, std::path::Path::new("/tmp/some-tts-out/audio.vtt"));
+    }
+
+    /// 变异实验：`compose_inputs` 里把 `audio`/`vtt`、`bg`/`bgm` 或
+    /// `title_json`/`out` 任意一对填反。这是 `render` 与 `make` 唯一的合成
+    /// 输入装配点，一条测试同时守住两个分支。
+    #[test]
+    fn compose_inputs_wires_the_resolved_paths_without_swapping() {
+        let paths = resolve_render_paths(
+            Some(PathBuf::from("/given/title.json")),
+            Some(PathBuf::from("/given/bg.mp4")),
+            Some(PathBuf::from("/given/bgm.mp3")),
+            Some(PathBuf::from("/given/out.mp4")),
+        );
+        let audio = PathBuf::from("/given/audio.mp3");
+        let vtt = PathBuf::from("/given/audio.vtt");
+
+        let inputs = compose_inputs(&audio, &vtt, Some("标题"), &paths);
+
+        assert_eq!(inputs.audio, audio.as_path());
+        assert_eq!(inputs.vtt, vtt.as_path());
+        assert_eq!(inputs.title, Some("标题"));
+        assert_eq!(inputs.title_json, paths.title_json.as_path());
+        assert_eq!(inputs.bg, paths.bg.as_path());
+        assert_eq!(inputs.bgm, paths.bgm.as_path());
+        assert_eq!(inputs.out, paths.out.as_path());
+    }
+
+    /// `make` 侧的接线：TTS 跑完之后，喂给合成的 `audio`/`vtt` 必须正是
+    /// `tts_artifact_paths` 约定的那两个文件，且顺序没有对调（mp3 进
+    /// `audio`、vtt 进 `vtt`）——两者都是 `&Path`，编译器分不出来。
+    /// 素材与输出路径则和 `render` 完全同源（同一个 `ResolvedRenderPaths`），
+    /// 这就是「两个子命令一条合成路径」在测试里的体现。
+    #[test]
+    fn make_feeds_the_tts_artifacts_into_the_shared_compose_inputs() {
+        let outdir = PathBuf::from("/tmp/panda-make-tts-out");
+        let (audio, vtt) = tts_artifact_paths(&outdir);
+        let paths = resolve_render_paths(None, None, None, None);
+
+        let inputs = compose_inputs(&audio, &vtt, None, &paths);
+
+        assert_eq!(
+            inputs.audio,
+            Path::new("/tmp/panda-make-tts-out/audio.mp3"),
+            "audio 应指向 TTS 的 mp3 产物"
+        );
+        assert_eq!(
+            inputs.vtt,
+            Path::new("/tmp/panda-make-tts-out/audio.vtt"),
+            "vtt 应指向 TTS 的 vtt 产物"
+        );
+        // 与 render 分支相同的素材兜底，不是 make 自己另算一份。
+        assert_eq!(inputs.bg, Path::new(&config::bg_video_path()));
+        assert_eq!(inputs.bgm, Path::new(&config::bgm_path()));
+        assert_eq!(inputs.out, Path::new(&config::video_output_path()));
+    }
+
+    /// 裁定 R-T8-4：`render` 与 `make` 共用 `compose_video` 之后，只带 pid
+    /// 的临时目录名在同进程内不唯一——两次合成会共用一个目录，先结束的那
+    /// 次清理会删掉另一次仍被 ffmpeg 读取的内嵌音效。
+    #[test]
+    fn unique_tmp_audio_dir_differs_within_the_same_process() {
+        let a = unique_tmp_audio_dir();
+        let b = unique_tmp_audio_dir();
+        assert_ne!(a, b, "同一进程内两次调用必须给出不同目录：{a:?}");
+        assert_eq!(a.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(
+            a.file_name()
+                .and_then(|f| f.to_str())
+                .is_some_and(|n| n.starts_with("panda_render_")),
+            "目录名应保留 panda_render_ 前缀便于人工辨认：{a:?}"
+        );
     }
 }

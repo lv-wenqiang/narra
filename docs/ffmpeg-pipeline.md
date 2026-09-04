@@ -552,3 +552,100 @@ Task 5 如果最终决定用 `shortest=1`，请在报告里明确说明如何堵
   第 7 节）。另外顺带修正了 5.3 节"60 秒成片=1860 帧"的口径歧义（区分
   "60 秒纯视频=1800 帧"与"`A=60` 音频驱动的完整成片=2100 帧"）和一处
   中英混排笔误。
+
+## 9. `panda make` / `panda render` 端到端实测（Task 8，2026-09-04）
+
+> 本节记录 Task 8 用真实素材跑通 `panda make` 后、用 `ffprobe`/`volumedetect`
+> 核验过的管道形态与吞吐。命令行本身由 `src/ffmpeg.rs` 的 `build_render_args` /
+> `audio_filter_graph` 生成（第 1–8 节记的是 Task 0 探针的简化版滤镜图，本节是
+> 生产代码的真实四路音频版本）；下面把这次真实运行实际取到的参数
+> （`A=16.276s`、Outro 起点 `22.300s`、`total=26.300s`）代入后原样列出。数字
+> 与 `.superpowers/sdd/2026-09-03-ffmpeg-compose/task-8-report.md` §4.1/§4.10
+> 的实测一致。
+
+### 9.1 本次运行
+
+```
+$ printf '大家好，欢迎收看本期节目。\n今天我们来聊一个有意思的话题，这段话稍微长一点，用来测试字幕换行和字号规则，也顺便验证背景音乐的淡出时机。\n希望这期内容对你有帮助，我们下期再见。\n' > /tmp/e2e.txt
+$ ./target/release/panda make /tmp/e2e.txt --title "端到端验收标题" \
+    --bg ../panda-video-ts/public/video/0.mp4 \
+    --bgm ../panda-video-ts/public/bgm/0.mp3 \
+    -o /tmp/final.mp4
+```
+
+真实 Edge TTS 网络往返一次成功（3 段句子），没有降级。TTS 产出
+`output/tts/audio.mp3`（加速后约 16.28s）与 `output/tts/audio.vtt`；VTT
+末条字幕结束时间即 `A = 16.276s`。
+
+### 9.2 实测通过的完整命令行（含四路音频与视频滤镜链）
+
+背景视频循环 + rawvideo 帧流 `overlay` + 四路音频 `amix` 的完整参数——
+`filter_complex` 里的输入编号固定为 `0` 背景视频、`1` stdin 帧流、`2` TTS、
+`3` BGM、`4` 打字机音效、`5` 片尾音效：
+
+```
+ffmpeg -y \
+  -stream_loop -1 -i ../panda-video-ts/public/video/0.mp4 \
+  -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - \
+  -i output/tts/audio.mp3 \
+  -stream_loop -1 -i ../panda-video-ts/public/bgm/0.mp3 \
+  -i assets/intro_typewriter.mp3 \
+  -i assets/intro.mp3 \
+  -filter_complex "\
+[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
+[bg][1:v]overlay=shortest=0[v];\
+[2:a]adelay=4000:all=1,volume=1[a_tts];\
+[3:a]adelay=4000:all=1,volume=0.15,afade=t=out:st=18.276:d=2[a_bgm];\
+[4:a]adelay=500:all=1,volume=0.6[a_type];\
+[5:a]adelay=22300:all=1,volume=0.6[a_intro];\
+[a_tts][a_bgm][a_type][a_intro]amix=inputs=4:normalize=0:duration=longest[a]" \
+  -map "[v]" -map "[a]" \
+  -t 26.3 \
+  -c:v libx264 -crf 23 -pix_fmt yuv420p \
+  -c:a aac -b:a 192k \
+  /tmp/final.mp4
+```
+
+三个关键数字的来源（都能从这次真实运行的 `A`/帧数反推出来）：
+
+- **`st=18.276`**（BGM 淡出起点）：`CONTENT_START_SECS(4.0) + A(16.276) −
+  BGM_FADE_SECS(2.0)`——规格 §9.3「Content 段内 `[A-2, A]`」换算成全片
+  绝对时间后的起点（裁定 R2）。
+- **`adelay=22300`**（片尾音效延迟到 Outro 起点）：
+  `content_frames = ceil((16.276+2)×30) = 549`，
+  `Outro 起点 = (120 + 549) / 30 = 22.300s → 22300ms`。
+- **`-t 26.3`**：`total_frames(789) / 30 = 26.300`。
+
+### 9.3 产物规格（`ffprobe` 实测）
+
+```
+$ ffprobe -v error -show_format -show_streams /tmp/final.mp4
+codec_name=h264  width=1280  height=720  pix_fmt=yuv420p  r_frame_rate=30/1
+nb_frames=789    duration=26.300000
+codec_name=aac   sample_rate=24000  channels=1  duration=26.300000
+size=3771709
+```
+
+段落切分（帧号 / 全局绝对时间，`content_frames=549` 代入段落公式后的结果）：
+
+| 段落 | 帧 | 绝对时间 |
+|---|---|---|
+| Cover | 0–14 | 0.000–0.500 |
+| Intro | 15–119 | 0.500–4.000 |
+| Content | 120–668 | 4.000–22.300 |
+| Outro | 669–788 | 22.300–26.300 |
+
+### 9.4 吞吐
+
+| 运行 | 帧数 | 挂钟耗时 | 端到端 fps |
+|---|---|---|---|
+| `panda make`（含 Edge TTS 3 段网络往返 + 合并 + 合成） | 789 | **16.698s** | — |
+| `panda render`（纯合成，静音对照那次） | 789 | **15.474s** | **51.0 fps** |
+
+`panda render` 该次的 `time`：`user 52.03s / sys 6.43s / 377% cpu`——
+tiny-skia 渲染与 ffmpeg 编码并行、吃了约 3.8 个核。
+
+与第 5 节 Task 0 探针 **142 fps** 的落差（约 2.8×）：探针的写帧线程只是内存
+`memcpy`（无真实渲染），本次是「tiny-skia 逐帧真实渲染 + 反预乘 + 写入
+stdin」与编码并行，与第 5.3 节当时的预判——「Task 5 真实管道每帧要先跑一遍
+tiny-skia 渲染，挂钟耗时会明显拉长」——一致，不是回归。
