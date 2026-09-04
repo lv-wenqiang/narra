@@ -1,4 +1,5 @@
-use crate::render::timeline::{COVER_FRAMES, FPS, HEIGHT, INTRO_FRAMES, WIDTH};
+use crate::render::canvas::Canvas;
+use crate::render::timeline::{COVER_FRAMES, FPS, INTRO_FRAMES};
 use anyhow::{Context, Result, bail};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -207,6 +208,9 @@ pub struct RenderInputs<'a> {
     pub total_frames: u32,
     pub audio_secs: f64,
     pub content_frames: u32,
+    /// 本次渲染的画布尺寸：决定 `-s`（stdin 帧流的宽高）与背景视频
+    /// `scale`/`crop` 滤镜的目标尺寸。
+    pub canvas: Canvas,
 }
 
 /// 构造完整的 ffmpeg 参数向量（不含程序名）。
@@ -230,9 +234,10 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
     let outro_start_secs = (CONTENT_START_SECS * FPS as f64 + i.content_frames as f64) / FPS as f64;
     let total_secs = i.total_frames as f64 / FPS as f64;
 
+    let (w, h) = (i.canvas.w, i.canvas.h);
     let filter = format!(
-        "[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,\
-         crop={WIDTH}:{HEIGHT},colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
+        "[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,\
+         crop={w}:{h},colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
          [bg][1:v]overlay=shortest=0[v];{}",
         audio_filter_graph(i.audio_secs, outro_start_secs)
     );
@@ -251,7 +256,7 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
         "-pix_fmt".into(),
         "rgba".into(),
         "-s".into(),
-        format!("{WIDTH}x{HEIGHT}"),
+        format!("{w}x{h}"),
         "-r".into(),
         FPS.to_string(),
         "-i".into(),
@@ -830,6 +835,7 @@ mod tests {
             total_frames: 600,
             audio_secs: 10.0,
             content_frames: 360,
+            canvas: Canvas::BASE,
         })
     }
 
@@ -903,7 +909,10 @@ mod tests {
             Some("rgba"),
             "帧流是 straight-alpha RGBA8"
         );
-        assert_eq!(value_after(&args, "-s").as_deref(), Some("1280x720"));
+        assert_eq!(
+            value_after(&args, "-s").as_deref(),
+            Some(format!("{}x{}", Canvas::BASE.w, Canvas::BASE.h).as_str())
+        );
         assert_eq!(value_after(&args, "-r").as_deref(), Some("30"));
     }
 
@@ -911,11 +920,14 @@ mod tests {
     fn background_uses_cover_scaling_and_multiplicative_brightness() {
         let args = sample_args();
         let g = value_after(&args, "-filter_complex").expect("应有 filter_complex");
+        let (w, h) = (Canvas::BASE.w, Canvas::BASE.h);
         assert!(
-            g.contains("scale=1280:720:force_original_aspect_ratio=increase"),
+            g.contains(&format!(
+                "scale={w}:{h}:force_original_aspect_ratio=increase"
+            )),
             "objectFit:cover 的等价是 increase + crop：{g}"
         );
-        assert!(g.contains("crop=1280:720"), "{g}");
+        assert!(g.contains(&format!("crop={w}:{h}")), "{g}");
         assert!(
             g.contains("colorchannelmixer=rr=0.8:gg=0.8:bb=0.8"),
             "CSS brightness(0.8) 是乘性的：{g}"
@@ -937,10 +949,13 @@ mod tests {
         // 把整条链当一个连续子串断言，把顺序钉死。
         let args = sample_args();
         let g = value_after(&args, "-filter_complex").unwrap();
-        let expected = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,colorchannelmixer=rr=0.8:gg=0.8:bb=0.8";
+        let (w, h) = (Canvas::BASE.w, Canvas::BASE.h);
+        let expected = format!(
+            "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},colorchannelmixer=rr=0.8:gg=0.8:bb=0.8"
+        );
         assert!(
-            g.contains(expected),
-            "背景处理必须按 scale→crop→colorchannelmixer 的顺序连续出现；先裁后缩会对非 1280x720 的源裁错区域、破坏 cover 语义：{g}"
+            g.contains(&expected),
+            "背景处理必须按 scale→crop→colorchannelmixer 的顺序连续出现；先裁后缩会对非 {w}x{h} 的源裁错区域、破坏 cover 语义：{g}"
         );
     }
 
@@ -980,6 +995,7 @@ mod tests {
             total_frames: 330,
             audio_secs: 1.0,
             content_frames: 90,
+            canvas: Canvas::BASE,
         });
         let g = value_after(&args, "-filter_complex").unwrap();
         assert!(
@@ -1139,6 +1155,7 @@ mod tests {
             vtt,
             "标题".into(),
             &crate::config::Branding::plain("测试品牌"),
+            Canvas::BASE,
         )
         .unwrap();
         let out_dir_guard =
@@ -1163,6 +1180,7 @@ mod tests {
                 total_frames,
                 audio_secs,
                 content_frames,
+                canvas: Canvas::BASE,
             },
         )
         .unwrap_err();
@@ -1258,6 +1276,7 @@ mod tests {
             vtt,
             "标题".into(),
             &crate::config::Branding::plain("测试品牌"),
+            Canvas::BASE,
         )
         .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
@@ -1285,6 +1304,7 @@ mod tests {
                 total_frames,
                 audio_secs,
                 content_frames,
+                canvas: Canvas::BASE,
             };
             run_render_with_ffmpeg_binary(&script_for_run, &mut fs, &inputs)
                 .map_err(|e| format!("{e:#}"))
@@ -1319,6 +1339,7 @@ mod tests {
             vtt,
             "标题".into(),
             &crate::config::Branding::plain("测试品牌"),
+            Canvas::BASE,
         )
         .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
@@ -1345,6 +1366,7 @@ mod tests {
                 total_frames,
                 audio_secs,
                 content_frames,
+                canvas: Canvas::BASE,
             };
             run_render_with_ffmpeg_binary(&script_for_run, &mut fs, &inputs)
                 .map_err(|e| format!("{e:#}"))
@@ -1387,6 +1409,7 @@ mod tests {
             vtt,
             "标题".into(),
             &crate::config::Branding::plain("测试品牌"),
+            Canvas::BASE,
         )
         .unwrap();
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
@@ -1415,6 +1438,7 @@ mod tests {
                 total_frames,
                 audio_secs,
                 content_frames,
+                canvas: Canvas::BASE,
             };
             run_render_with_ffmpeg_binary(&script_for_run, &mut fs, &inputs)
                 .map_err(|e| format!("{e:#}"))

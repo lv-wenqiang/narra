@@ -26,26 +26,17 @@ use crate::render::metrics::Metrics;
 use crate::render::text::{TextRenderer, TextStyle};
 use crate::vtt::Caption;
 
-/// 画布参数（规格 §8.1）。
-const CANVAS_W: f32 = 1280.0;
-const CANVAS_H: f32 = 720.0;
 const FPS: f64 = 30.0;
 
-/// 字幕居中于画面正中。
-const CAPTION_CENTER_X: f32 = CANVAS_W / 2.0;
-const CAPTION_CENTER_Y: f32 = CANVAS_H / 2.0;
-/// 字幕最大宽度：画面 80% 的容器再减去左右各 40px 的 padding = 944px。
+/// 字幕最大宽度：画面 80% 的容器再减去左右各 40px 的 padding = BASE 上 944px。
 /// TS 的 `Content.tsx` 在**同一个** div 上同时写了 `width:'80%'` 与
 /// `padding:'20px 40px'`，而 tailwindcss v4 的 preflight 给所有元素设了
 /// `box-sizing: border-box`，所以内容宽度是 `1024 - 80 = 944`，不是 1024。
-/// 与 `COVER_TITLE_MAX_WIDTH_PX` / `INTRO_TITLE_MAX_WIDTH_PX` 是同一套换算。
-const CAPTION_PADDING_X_PX: f32 = 40.0;
-const CAPTION_MAX_WIDTH_PX: f32 = CANVAS_W * 0.8 - CAPTION_PADDING_X_PX * 2.0;
+/// 与 `Metrics::cover_title_max_width` / `Metrics::intro_title_max_width` 是
+/// 同一套换算——三者现在都是 `Metrics::for_canvas` 里的字段（Task 7 之前是
+/// 画布宽度写死的 `const`）。
 /// 长字幕判定阈值：去除空白后的字符数超过此值即用小字号。
 const CAPTION_LONG_CHAR_THRESHOLD: usize = 50;
-const CAPTION_FONT_SIZE_LONG: f32 = 52.0;
-const CAPTION_FONT_SIZE_SHORT: f32 = 80.0;
-const CAPTION_STROKE_WIDTH_PX: f32 = 6.0;
 /// 默认行高倍数（相对字号）。字幕与水印当前都用它——M2 改名前叫
 /// `CAPTION_LINE_HEIGHT`，水印那处复用名不副实；Tasks 6/7 的 cover/outro
 /// 水印预设也会用到它。
@@ -57,29 +48,20 @@ const ENTRANCE_MAX_MS: f64 = 500.0;
 const ENTRANCE_DURATION_RATIO: f64 = 0.3;
 const ENTRANCE_SCALE_RANGE: [f64; 2] = [1.2, 1.0];
 const ENTRANCE_OPACITY_RANGE: [f64; 2] = [0.0, 1.0];
-const ENTRANCE_TRANSLATE_X_RANGE: [f64; 2] = [100.0, 0.0];
-const ENTRANCE_LETTER_SPACING_RANGE: [f64; 2] = [8.0, 0.0];
+// 位移/字距的入场终点是 0（归位），起点是像素量纲，随画布缩放
+// （`Metrics::entrance_translate_x_from` / `entrance_letter_spacing_from`），
+// 所以不再是 `const` range，由 `draw_caption` 现拼 `[m.xxx_from, 0.0]`。
 
 /// 左下角水印（`content` 预设，规格 §8.6）：无中文后缀，`bold: false` +
 /// `stroke: None`（brief 明确指出：合成粗体会让半透明水印在三遍重叠处叠加变浓）。
-const WATERMARK_MARGIN_LEFT_PX: f32 = 40.0;
-const WATERMARK_MARGIN_BOTTOM_PX: f32 = 40.0;
-const WATERMARK_FONT_SIZE_PX: f32 = 24.0;
 /// `rgba(255, 255, 255, 0.27)`：alpha 由颜色自身携带（`0.27 * 255 ≈ 69`），
 /// `draw_centered` 的 `opacity` 参数固定传 `1.0`——两者是两件事（brief 提醒 1）。
 const WATERMARK_COLOR: [u8; 4] = [255, 255, 255, 69];
 const WATERMARK_LETTER_SPACING_EM: f32 = 0.01;
-/// 正文水印图标的尺寸与它到文字的间距（规格 §8.6）。
-const WATERMARK_ICON_SIZE_PX: u32 = 28;
-const WATERMARK_ICON_GAP_PX: f32 = 10.0;
 
 /// `cover` 段水印（规格 §8.6，Task 6）：`rgba(23,23,23,0.4)`，垂直中心见
 /// `cover_watermark_preset` 文档注释（重构前写死 `576 = 0.8 × 720`，现由 Metrics 计算）。
-const COVER_WATERMARK_FONT_SIZE_PX: f32 = 28.0;
 const COVER_WATERMARK_COLOR: [u8; 4] = [23, 23, 23, 102];
-/// 封面/片尾水印图标的尺寸与它到文字的间距（规格 §8.6）。
-const COVER_WATERMARK_ICON_SIZE_PX: u32 = 32;
-const COVER_WATERMARK_ICON_GAP_PX: f32 = 12.0;
 /// 文案里的 `·` 分隔符单独降到 0.75 倍不透明度。
 ///
 /// 这是**排版规则而非写死的文案**：对任何含 `·` 的水印文案都成立，见
@@ -88,42 +70,21 @@ const WATERMARK_SEP_OPACITY_MUL: f32 = 0.75;
 /// 水印文案的分隔符字面量。
 const WATERMARK_SEP: &str = "·";
 
-/// Cover 居中容器（规格 §8.4「Cover」小节 + 协调者交接的精确排版）：
-/// 宽度 80% = 1024px，水平居中，整个容器（上排 + 主标题）垂直居中于画布中心。
-const COVER_CONTAINER_WIDTH_PX: f32 = CANVAS_W * 0.8;
-const COVER_CONTAINER_LEFT_PX: f32 = (CANVAS_W - COVER_CONTAINER_WIDTH_PX) / 2.0;
-
-/// Cover 居中容器的垂直中心：画布高度的一半。
-///
-/// **重构前这里写死 `360.0`**，而 `CANVAS_H / 2 = 720 / 2` 恰好等于 360——
-/// 两种写法在 BASE 上给出相同的数，所以这个错误在 1280×720 下怎么测都测
-/// 不出来。换尺寸才会暴露：1080 高下应为 540（写死值偏上 180px），
-/// 1920 高下应为 960（偏上 600px）。旁边的 `CAPTION_CENTER_Y` 与
-/// `INTRO_TITLE_CENTER_Y` 一直是 `CANVAS_H / 2.0`，只有它掉了队。
-fn cover_container_center_y(canvas: Canvas) -> f32 {
-    canvas.h_f32() / 2.0
-}
+// Cover 居中容器（规格 §8.4「Cover」小节 + 协调者交接的精确排版）：
+// 宽度 80%，水平居中，整个容器（上排 + 主标题）垂直居中于画布中心。BASE 上
+// 宽度 = 1024px。数值现由 `Metrics::cover_container_width` /
+// `cover_container_left` / `cover_container_center_y` 提供（Task 7 之前是
+// 画布宽度写死的 `const`/自由函数，见这几个字段的文档注释）。
 
 /// 上排（logo + 品牌名）：左对齐（不是居中），左偏移 40px，
-/// 整体不透明度 0.30。
-const COVER_ROW_MARGIN_LEFT_PX: f32 = 40.0;
-const COVER_ROW_LEFT_PX: f32 = COVER_CONTAINER_LEFT_PX + COVER_ROW_MARGIN_LEFT_PX;
-const COVER_LOGO_SIZE_PX: u32 = 36;
-const COVER_LOGO_MARGIN_PX: f32 = 8.0;
-/// 上排行高：logo 尺寸 + 四周 margin（`36 + 8*2 = 52`）。
-const COVER_ROW_HEIGHT_PX: f32 = COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX * 2.0;
-/// 品牌名左边缘：`row_left + logo_margin + logo_size + logo_margin`。
-const COVER_ROW_TEXT_LEFT_PX: f32 =
-    COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX + COVER_LOGO_SIZE_PX as f32 + COVER_LOGO_MARGIN_PX;
-const COVER_ROW_TEXT_FONT_SIZE_PX: f32 = 38.0;
+/// 整体不透明度 0.30。左边缘/行高/品牌名左边缘现由
+/// `Metrics::cover_row_left` / `cover_row_height` / `cover_row_text_left`
+/// 提供。
 const COVER_ROW_OPACITY: f32 = 0.30;
 
-/// 主标题：100px 粗体，左右 padding 40px（`max_width = 1024 - 80 = 944`），
-/// 水平居中于 x=640。
-const COVER_TITLE_FONT_SIZE_PX: f32 = 100.0;
-const COVER_TITLE_PADDING_PX: f32 = 40.0;
-const COVER_TITLE_MAX_WIDTH_PX: f32 = COVER_CONTAINER_WIDTH_PX - COVER_TITLE_PADDING_PX * 2.0;
-const COVER_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
+// 主标题：100px 粗体，左右 padding 40px（BASE 上 `max_width = 1024 - 80 =
+// 944`），水平居中于画布中心。数值现由 `Metrics::cover_title_max_width` /
+// `cover_title_center_x` 提供。
 
 /// Cover 主标题、Cover 上排品牌名、Intro 标题一律用黑色、无描边
 /// （协调者裁定：TS 原版这三处都没指定 `color`，浏览器在白底上按默认色渲染
@@ -131,12 +92,10 @@ const COVER_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
 const TITLE_COLOR_BLACK: [u8; 4] = [0, 0, 0, 255];
 
 /// Intro（打字机片头，规格 §8.4「Intro」小节）：标题 70px 粗体，居中，
-/// 宽度 80%、左右 padding 40px（与 Cover 主标题同一套换算，`max_width=944`），
-/// 垂直居中于画布中心。
-const INTRO_TITLE_FONT_SIZE_PX: f32 = 70.0;
-const INTRO_TITLE_MAX_WIDTH_PX: f32 = CANVAS_W * 0.8 - 80.0;
-const INTRO_TITLE_CENTER_X: f32 = CANVAS_W / 2.0;
-const INTRO_TITLE_CENTER_Y: f32 = CANVAS_H / 2.0;
+/// 宽度 80%、左右 padding 40px（与 Cover 主标题同一套换算，BASE 上
+/// `max_width=944`），垂直居中于画布中心。数值现由
+/// `Metrics::intro_title_max_width` / `intro_title_center_x` /
+/// `intro_title_center_y` 提供。
 /// 打字机 2 秒内打完（brief 数值，逐字照用）。
 const INTRO_TYPEWRITER_SECONDS: f64 = 2.0;
 /// 光标只在打字未完成时显示：`local_frame < INTRO_TYPEWRITER_SECONDS * FPS`。
@@ -150,7 +109,6 @@ const INTRO_TYPEWRITER_FRAMES: u32 = (INTRO_TYPEWRITER_SECONDS * FPS) as u32;
 /// 不再是字面量 `[0.0, 7.5, 15.0]`。
 const INTRO_CURSOR_BLINK_PERIOD_FRAMES: u32 = (FPS / 2.0) as u32;
 const INTRO_CURSOR_TEXT: &str = "|";
-const INTRO_CURSOR_GAP_PX: f32 = 4.0;
 /// 3.0s -> 3.5s 线性淡出（brief 数值，逐字照用）。
 const INTRO_FADE_OUT_RANGE: [f64; 2] = [90.0, 104.0];
 
@@ -181,19 +139,19 @@ const OUTRO_RING_OUT_PROGRESS_MAX: f64 = 0.99;
 const OUTRO_LOGO_SCALE_IN_FRAMES: [f64; 2] = [0.0, 24.0];
 const OUTRO_LOGO_SCALE_RANGE: [f64; 2] = [0.2, 1.0];
 
-/// 品牌名（`Painter::brand`，默认「墨风」）：70px 粗体黑色，紧随 logo 淡入之后（`[24, 39]` 帧）
-/// 淡入 + 上移 50px 归位。TS 原版 `whiteSpace: nowrap`（不换行）——沿用既有
-/// 代码里表达「不换行」的惯例，给一个远大于画布宽度的 `max_width_px`
-/// （现由 Metrics 计算，见陷阱 3）。
-const OUTRO_TITLE_FONT_SIZE_PX: f32 = 70.0;
-/// logo（未缩放的原生 216px 布局盒）与标题之间的纵向间距（TS `marginTop:40px`）。
-/// **CSS `transform: scale()` 不改变布局盒尺寸**：logo 的缩放动画只在其自身
-/// 中心原地放大/缩小，纵向组的布局高度按 logo 的 216px 原尺寸计算，标题位置
-/// 不随 logo 缩放动画上下移动。
-const OUTRO_TITLE_GAP_PX: f32 = 40.0;
+/// 品牌名（`Painter::brand`，默认「墨风」）：70px 粗体黑色（`Metrics::outro_title_font_size`），
+/// 紧随 logo 淡入之后（`[24, 39]` 帧）淡入 + 上移归位（起点像素量见
+/// `Metrics::outro_title_translate_y_from`）。TS 原版 `whiteSpace: nowrap`
+/// （不换行）——沿用既有代码里表达「不换行」的惯例，给一个远大于画布宽度的
+/// `max_width_px`（`Metrics::no_wrap_width`，见陷阱 3）。
+/// logo（未缩放的原生尺寸布局盒）与标题之间的纵向间距，像素量见
+/// `Metrics::outro_title_gap`。**CSS `transform: scale()` 不改变布局盒尺寸**：
+/// logo 的缩放动画只在其自身中心原地放大/缩小，纵向组的布局高度按 logo 的
+/// 原尺寸计算，标题位置不随 logo 缩放动画上下移动。
 const OUTRO_TITLE_FADE_IN_FRAMES: [f64; 2] = [24.0, 39.0];
 const OUTRO_TITLE_OPACITY_RANGE: [f64; 2] = [0.0, 1.0];
-const OUTRO_TITLE_TRANSLATE_Y_RANGE: [f64; 2] = [-50.0, 0.0];
+// 归位终点固定是 0；起点是像素量纲，随画布缩放（`Metrics::outro_title_translate_y_from`），
+// 由 `draw_outro` 现拼 `[m.outro_title_translate_y_from, 0.0]`。
 
 /// 整体淡出（`[105, 119]` 帧，规格字面值）：作用于圆环、logo、标题、水印
 /// 四者，白底不受影响（与 Cover/Intro 的白底恒定不透明一致）。
@@ -382,37 +340,40 @@ fn split_on_separator(text: &str) -> Vec<(String, f32)> {
     out
 }
 
-fn content_watermark_preset(text: &str) -> WatermarkPreset {
+fn content_watermark_preset(text: &str, m: &Metrics) -> WatermarkPreset {
     WatermarkPreset {
-        icon_size_px: WATERMARK_ICON_SIZE_PX,
-        icon_gap_px: WATERMARK_ICON_GAP_PX,
-        font_size_px: WATERMARK_FONT_SIZE_PX,
+        icon_size_px: m.watermark_icon_size,
+        icon_gap_px: m.watermark_icon_gap,
+        font_size_px: m.watermark_font_size,
         color: WATERMARK_COLOR,
-        letter_spacing_px: WATERMARK_FONT_SIZE_PX * WATERMARK_LETTER_SPACING_EM,
+        letter_spacing_px: m.watermark_font_size * WATERMARK_LETTER_SPACING_EM,
         segments: split_on_separator(text),
         anchor: WatermarkAnchor::BottomLeft {
-            margin_left_px: WATERMARK_MARGIN_LEFT_PX,
-            margin_bottom_px: WATERMARK_MARGIN_BOTTOM_PX,
+            margin_left_px: m.watermark_margin_left,
+            margin_bottom_px: m.watermark_margin_bottom,
         },
     }
 }
 
-/// `cover` 预设（规格 §8.4/§8.6，Task 6）：水平居中、垂直中心由参数指定。
+/// `cover` 预设（规格 §8.4/§8.6，Task 6）：水平居中、垂直中心取
+/// `m.cover_watermark_center_y`。
 ///
 /// **垂直中心的由来**（协调者交接，不是规格字面值）：规格写「自顶部偏移
 /// 432px」，那是从 TS 版 `marginTop:'432px'`（配合 `inset:0` 的居中 flex
 /// 容器）原样搬来的，语义是「在 y=432 以下的剩余区域里垂直居中」，即
 /// `432 + (H-432)/2 = 0.8H`，不是把水印中心直接放在 y=432（那样会压进
 /// Cover 主标题）。重构前写死 `576 = 0.8 × 720`，现由 Metrics 计算。
-fn cover_watermark_preset(text: &str, center_y_px: f32) -> WatermarkPreset {
+fn cover_watermark_preset(text: &str, m: &Metrics) -> WatermarkPreset {
     WatermarkPreset {
-        icon_size_px: COVER_WATERMARK_ICON_SIZE_PX,
-        icon_gap_px: COVER_WATERMARK_ICON_GAP_PX,
-        font_size_px: COVER_WATERMARK_FONT_SIZE_PX,
+        icon_size_px: m.cover_watermark_icon_size,
+        icon_gap_px: m.cover_watermark_icon_gap,
+        font_size_px: m.cover_watermark_font_size,
         color: COVER_WATERMARK_COLOR,
         letter_spacing_px: 0.0,
         segments: split_on_separator(text),
-        anchor: WatermarkAnchor::Centered { center_y_px },
+        anchor: WatermarkAnchor::Centered {
+            center_y_px: m.cover_watermark_center_y,
+        },
     }
 }
 
@@ -432,6 +393,7 @@ fn layout_and_draw_watermark(
     icon: Option<&Pixmap>,
     preset: &WatermarkPreset,
     max_width_px: f32,
+    canvas: Canvas,
 ) {
     let style = TextStyle {
         size_px: preset.font_size_px,
@@ -466,12 +428,12 @@ fn layout_and_draw_watermark(
             margin_left_px,
             margin_bottom_px,
         } => {
-            let row_bottom = CANVAS_H - margin_bottom_px;
+            let row_bottom = canvas.h_f32() - margin_bottom_px;
             (margin_left_px, row_bottom - row_height / 2.0)
         }
         WatermarkAnchor::Centered { center_y_px } => {
             let total_width = icon_advance + seg_widths.iter().sum::<f32>();
-            (CANVAS_W / 2.0 - total_width / 2.0, center_y_px)
+            (canvas.w_f32() / 2.0 - total_width / 2.0, center_y_px)
         }
     };
 
@@ -532,10 +494,10 @@ fn prepare_watermark(
     icon: Option<&Pixmap>,
     preset: &WatermarkPreset,
     max_width_px: f32,
+    canvas: Canvas,
 ) -> anyhow::Result<PreparedWatermark> {
-    let mut scratch =
-        Pixmap::new(CANVAS_W as u32, CANVAS_H as u32).context("水印预渲染暂存画布分配失败")?;
-    layout_and_draw_watermark(renderer, &mut scratch, icon, preset, max_width_px);
+    let mut scratch = Pixmap::new(canvas.w, canvas.h).context("水印预渲染暂存画布分配失败")?;
+    layout_and_draw_watermark(renderer, &mut scratch, icon, preset, max_width_px, canvas);
 
     let Some((x0, y0, x1, y1)) = non_transparent_bbox(&scratch) else {
         // 预设没有画出任何东西（理论上不会发生，防御性兜底）：1x1 透明占位，
@@ -600,6 +562,11 @@ fn draw_watermark(pixmap: &mut Pixmap, watermark: &PreparedWatermark, opacity: f
 /// 里现造。
 pub struct Painter {
     renderer: TextRenderer,
+    /// 按传入的画布一次算好的版式量表，也是画布本身唯一的落脚点
+    /// （`Metrics::canvas`）——`Painter` 不另存一份 `canvas` 字段：两个字段
+    /// 记同一件事，只会带来「改一处忘改另一处」这一类本次重构本要根除的
+    /// 缺陷（`m.canvas` 就是需要画布尺寸时该读的地方）。
+    m: Metrics,
     /// 品牌名，画在 Cover 上排与 Outro 大字上。整片恒定，故存在这里而不是
     /// 逐帧当参数传——`draw_content` 用不到它，当参数传会让三个 `draw_*`
     /// 的签名各不相同。
@@ -611,30 +578,30 @@ pub struct Painter {
     /// `None` = 未配置 `--watermark-cover`/`$WATERMARK_COVER`，Cover 与
     /// Outro 都不画。
     cover_watermark: Option<PreparedWatermark>,
-    /// Cover 上排用的 36px logo，`new()` 里用 Lanczos3 缩好一次缓存起来
-    /// （Task 6；Task 7 的 outro 216px 版本是并列的另一个字段，见 `logo_216`）。
+    /// Cover 上排用的 logo，`new()` 里用 Lanczos3 缩好一次缓存起来
+    /// （Task 6；Task 7 的 outro 版本是并列的另一个字段，见 `logo_216`）。
     logo_36: Pixmap,
-    /// Outro 用的 216px logo（Task 7），同样在 `new()` 里缩好一次缓存起来。
+    /// Outro 用的 logo（Task 7），同样在 `new()` 里缩好一次缓存起来。
     logo_216: Pixmap,
 }
 
 impl Painter {
-    /// 未配置的水印**不预渲染**：`prepare_watermark` 要分配一张 1280×720 的
+    /// 未配置的水印**不预渲染**：`prepare_watermark` 要分配一张与画布同尺寸的
     /// 暂存画布、排版一次再裁剪，为一段空文案付这笔开销没有意义，而且
     /// `Some(空白预设)` 与 `None` 在成片上都是「什么都不画」——留两条等价
     /// 路径只会让「到底画没画」多一种说法。
-    pub fn new(branding: &Branding) -> anyhow::Result<Self> {
+    pub fn new(branding: &Branding, canvas: Canvas) -> anyhow::Result<Self> {
         let mut renderer = TextRenderer::new()?;
-        let m = Metrics::for_canvas(Canvas::BASE);
+        let m = Metrics::for_canvas(canvas);
         // 图标按两处各自的目标尺寸分别加载一次。**共用一个配置项、但不是
-        // 共用一张位图**：正文 28px、封面/片尾 32px，各自按目标尺寸光栅化
+        // 共用一张位图**：正文/封面各自的图标尺寸不同，各自按目标尺寸光栅化
         // （SVG 走矢量渲染、PNG 走 Lanczos3 缩放）比缩一张再二次缩放清晰。
         let icon_path = branding.watermark_icon.as_deref().map(Path::new);
         let content_icon = icon_path
-            .map(|p| load_scaled_icon(p, WATERMARK_ICON_SIZE_PX))
+            .map(|p| load_scaled_icon(p, m.watermark_icon_size))
             .transpose()?;
         let cover_icon = icon_path
-            .map(|p| load_scaled_icon(p, COVER_WATERMARK_ICON_SIZE_PX))
+            .map(|p| load_scaled_icon(p, m.cover_watermark_icon_size))
             .transpose()?;
         let content_watermark = branding
             .watermark
@@ -643,8 +610,9 @@ impl Painter {
                 prepare_watermark(
                     &mut renderer,
                     content_icon.as_ref(),
-                    &content_watermark_preset(t),
+                    &content_watermark_preset(t, &m),
                     m.no_wrap_width,
+                    canvas,
                 )
             })
             .transpose()?;
@@ -655,17 +623,19 @@ impl Painter {
                 prepare_watermark(
                     &mut renderer,
                     cover_icon.as_ref(),
-                    &cover_watermark_preset(t, m.cover_watermark_center_y),
+                    &cover_watermark_preset(t, &m),
                     m.no_wrap_width,
+                    canvas,
                 )
             })
             .transpose()?;
         let logo_src =
             load_logo_source(branding.logo.as_deref().map(Path::new), m.outro_logo_size)?;
-        let logo_36 = scaled_logo(&logo_src, COVER_LOGO_SIZE_PX)?;
+        let logo_36 = scaled_logo(&logo_src, m.cover_logo_size)?;
         let logo_216 = scaled_logo(&logo_src, m.outro_logo_size)?;
         Ok(Self {
             renderer,
+            m,
             brand: branding.brand.clone(),
             content_watermark,
             cover_watermark,
@@ -702,25 +672,33 @@ impl Painter {
         let p = spring(elapsed_frames, FPS, entrance_frames, 0.0);
         let scale = interpolate(p, [0.0, 1.0], ENTRANCE_SCALE_RANGE) as f32;
         let opacity = interpolate(p, [0.0, 1.0], ENTRANCE_OPACITY_RANGE) as f32;
-        let translate_x = interpolate(p, [0.0, 1.0], ENTRANCE_TRANSLATE_X_RANGE) as f32;
-        let letter_spacing = interpolate(p, [0.0, 1.0], ENTRANCE_LETTER_SPACING_RANGE) as f32;
+        let translate_x = interpolate(
+            p,
+            [0.0, 1.0],
+            [self.m.entrance_translate_x_from as f64, 0.0],
+        ) as f32;
+        let letter_spacing = interpolate(
+            p,
+            [0.0, 1.0],
+            [self.m.entrance_letter_spacing_from as f64, 0.0],
+        ) as f32;
 
         // M1 修复：先 trim 再决定字号/排版/绘制——见 `trim_caption_text` 文档注释。
         let text = trim_caption_text(&caption.text);
 
         let non_whitespace_chars = text.chars().filter(|c| !c.is_whitespace()).count();
         let size_px = if non_whitespace_chars > CAPTION_LONG_CHAR_THRESHOLD {
-            CAPTION_FONT_SIZE_LONG
+            self.m.caption_font_size_long
         } else {
-            CAPTION_FONT_SIZE_SHORT
+            self.m.caption_font_size_short
         };
 
         let style = TextStyle {
             size_px,
             color: [255, 255, 255, 255],
-            stroke: Some(([0, 0, 0, 255], CAPTION_STROKE_WIDTH_PX)),
+            stroke: Some(([0, 0, 0, 255], self.m.caption_stroke_width)),
             letter_spacing_px: letter_spacing,
-            max_width_px: CAPTION_MAX_WIDTH_PX,
+            max_width_px: self.m.caption_max_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
@@ -728,8 +706,8 @@ impl Painter {
         self.renderer.draw_centered(
             pixmap,
             &text,
-            CAPTION_CENTER_X + translate_x,
-            CAPTION_CENTER_Y,
+            self.m.caption_center_x + translate_x,
+            self.m.caption_center_y,
             &style,
             opacity,
             scale,
@@ -744,28 +722,28 @@ impl Painter {
     /// （logo 36px + 上下 margin 各 8px），主标题紧随其后，容器总高
     /// = 52 + 主标题排版高度，容器顶 = 360 - 总高/2。
     pub fn draw_cover(&mut self, pixmap: &mut Pixmap, title: &str) {
-        let m = Metrics::for_canvas(Canvas::BASE);
         pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
 
         let title_style = TextStyle {
-            size_px: COVER_TITLE_FONT_SIZE_PX,
+            size_px: self.m.cover_title_font_size,
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: COVER_TITLE_MAX_WIDTH_PX,
+            max_width_px: self.m.cover_title_max_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
         let (_, title_h) = self.renderer.measure(title, &title_style);
 
-        let container_h = COVER_ROW_HEIGHT_PX + title_h;
-        let container_top = cover_container_center_y(Canvas::BASE) - container_h / 2.0;
-        let row_center_y = container_top + COVER_ROW_HEIGHT_PX / 2.0;
-        let title_center_y = container_top + COVER_ROW_HEIGHT_PX + title_h / 2.0;
+        let row_height = self.m.cover_row_height;
+        let container_h = row_height + title_h;
+        let container_top = self.m.cover_container_center_y - container_h / 2.0;
+        let row_center_y = container_top + row_height / 2.0;
+        let title_center_y = container_top + row_height + title_h / 2.0;
 
-        // 上排：logo（左对齐，四周 margin 8px，整体 0.30 透明度）。
-        let logo_left = COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX;
-        let logo_top = row_center_y - COVER_LOGO_SIZE_PX as f32 / 2.0;
+        // 上排：logo（左对齐，四周 margin，整体 0.30 透明度）。
+        let logo_left = self.m.cover_row_left + self.m.cover_logo_margin;
+        let logo_top = row_center_y - self.m.cover_logo_size as f32 / 2.0;
         pixmap.draw_pixmap(
             logo_left.round() as i32,
             logo_top.round() as i32,
@@ -778,20 +756,19 @@ impl Painter {
             None,
         );
 
-        // 上排：「熊猫智研社」（左对齐，与 logo 在这 52px 行内垂直居中，
-        // 38px 粗体，整体 0.30 透明度——与 logo 不重叠，逐元素施加等价于
-        // 整体施加）。
+        // 上排：「熊猫智研社」（左对齐，与 logo 在这一行内垂直居中，粗体，
+        // 整体 0.30 透明度——与 logo 不重叠，逐元素施加等价于整体施加）。
         let row_text_style = TextStyle {
-            size_px: COVER_ROW_TEXT_FONT_SIZE_PX,
+            size_px: self.m.cover_row_text_font_size,
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: m.no_wrap_width,
+            max_width_px: self.m.no_wrap_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
         let (row_text_w, _) = self.renderer.measure(&self.brand, &row_text_style);
-        let row_text_center_x = COVER_ROW_TEXT_LEFT_PX + row_text_w / 2.0;
+        let row_text_center_x = self.m.cover_row_text_left + row_text_w / 2.0;
         self.renderer.draw_centered(
             pixmap,
             &self.brand,
@@ -802,11 +779,11 @@ impl Painter {
             1.0,
         );
 
-        // 主标题：100px 粗体，水平居中，支持换行，不透明。
+        // 主标题：粗体，水平居中，支持换行，不透明。
         self.renderer.draw_centered(
             pixmap,
             title,
-            COVER_TITLE_CENTER_X,
+            self.m.cover_title_center_x,
             title_center_y,
             &title_style,
             1.0,
@@ -842,11 +819,11 @@ impl Painter {
         let display_text: String = title_chars[..visible].iter().collect();
 
         let style = TextStyle {
-            size_px: INTRO_TITLE_FONT_SIZE_PX,
+            size_px: self.m.intro_title_font_size,
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+            max_width_px: self.m.intro_title_max_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
@@ -854,8 +831,8 @@ impl Painter {
         self.renderer.draw_centered(
             pixmap,
             &display_text,
-            INTRO_TITLE_CENTER_X,
-            INTRO_TITLE_CENTER_Y,
+            self.m.intro_title_center_x,
+            self.m.intro_title_center_y,
             &style,
             fade_opacity,
             1.0,
@@ -873,7 +850,7 @@ impl Painter {
                 let (right_edge_x, last_line_center_y) =
                     self.intro_last_line_anchor(&display_text, &style);
                 let (cursor_w, _) = self.renderer.measure(INTRO_CURSOR_TEXT, &style);
-                let cursor_center_x = right_edge_x + INTRO_CURSOR_GAP_PX + cursor_w / 2.0;
+                let cursor_center_x = right_edge_x + self.m.intro_cursor_gap + cursor_w / 2.0;
                 self.renderer.draw_centered(
                     pixmap,
                     INTRO_CURSOR_TEXT,
@@ -907,10 +884,10 @@ impl Painter {
         else {
             // 没有任何 layout run（理论上只有空文本才会走到这里）：视为一行
             // 零宽度，光标落在标题中心正右侧。
-            return (INTRO_TITLE_CENTER_X, INTRO_TITLE_CENTER_Y);
+            return (self.m.intro_title_center_x, self.m.intro_title_center_y);
         };
-        let right_edge_x = INTRO_TITLE_CENTER_X + last_w / 2.0;
-        let last_line_center_y = INTRO_TITLE_CENTER_Y + last_top_rel / 2.0;
+        let right_edge_x = self.m.intro_title_center_x + last_w / 2.0;
+        let last_line_center_y = self.m.intro_title_center_y + last_top_rel / 2.0;
         (right_edge_x, last_line_center_y)
     }
 
@@ -920,12 +897,14 @@ impl Painter {
     pub fn draw_outro(&mut self, pixmap: &mut Pixmap, local_frame: u32) {
         pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
 
-        let m = Metrics::for_canvas(Canvas::BASE);
         let frame = local_frame as f64;
         let fade_opacity = interpolate(frame, OUTRO_FADE_OUT_FRAMES, OUTRO_FADE_OUT_RANGE) as f32;
         if fade_opacity <= 0.0 {
             return;
         }
+
+        let canvas_w = self.m.canvas.w_f32();
+        let canvas_h = self.m.canvas.h_f32();
 
         // 同心圆环：5 个白色实心圆，倒序绘制（大的先画）。白底上的白色实心圆
         // 视觉不可见，但仍照规格忠实画出（协调者裁定，见 `OUTRO_RING_COUNT`
@@ -937,12 +916,12 @@ impl Painter {
             ring_paint.set_color_rgba8(255, 255, 255, ring_alpha);
             ring_paint.anti_alias = true;
             for i in (0..OUTRO_RING_COUNT).rev() {
-                let radius = m.outro_ring_radius_step as f64 * f64::from(i) * ring_scale;
+                let radius = self.m.outro_ring_radius_step as f64 * f64::from(i) * ring_scale;
                 if radius <= 0.0 {
                     continue; // i=0：半径 0，`from_circle` 对非正半径返回 None
                 }
                 if let Some(path) =
-                    PathBuilder::from_circle(CANVAS_W / 2.0, CANVAS_H / 2.0, radius as f32)
+                    PathBuilder::from_circle(canvas_w / 2.0, canvas_h / 2.0, radius as f32)
                 {
                     pixmap.fill_path(
                         &path,
@@ -957,24 +936,24 @@ impl Painter {
 
         // logo + 标题的纵向组：整体垂直居中于画布中心，`justify-center
         // items-center` + `flexDirection: column` 语义。布局盒尺寸按 logo 的
-        // 216px **原尺寸**计算（`transform: scale()` 不改变布局盒尺寸），
-        // 标题位置因此不随 logo 的缩放动画上下移动。
+        // **原尺寸**计算（`transform: scale()` 不改变布局盒尺寸），标题位置
+        // 因此不随 logo 的缩放动画上下移动。
         let title_style = TextStyle {
-            size_px: OUTRO_TITLE_FONT_SIZE_PX,
+            size_px: self.m.outro_title_font_size,
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: m.no_wrap_width,
+            max_width_px: self.m.no_wrap_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
         let (_, title_h) = self.renderer.measure(&self.brand, &title_style);
-        let logo_size = m.outro_logo_size as f32;
-        let group_h = logo_size + OUTRO_TITLE_GAP_PX + title_h;
-        let group_top = CANVAS_H / 2.0 - group_h / 2.0;
-        let logo_center_x = CANVAS_W / 2.0;
+        let logo_size = self.m.outro_logo_size as f32;
+        let group_h = logo_size + self.m.outro_title_gap + title_h;
+        let group_top = canvas_h / 2.0 - group_h / 2.0;
+        let logo_center_x = canvas_w / 2.0;
         let logo_center_y = group_top + logo_size / 2.0;
-        let title_top = group_top + logo_size + OUTRO_TITLE_GAP_PX;
+        let title_top = group_top + logo_size + self.m.outro_title_gap;
 
         // Logo：以自身中心缩放，`scale` 0.2 -> 1.0。
         let logo_scale =
@@ -1011,13 +990,13 @@ impl Painter {
         let translate_y = interpolate(
             frame,
             OUTRO_TITLE_FADE_IN_FRAMES,
-            OUTRO_TITLE_TRANSLATE_Y_RANGE,
+            [self.m.outro_title_translate_y_from as f64, 0.0],
         ) as f32;
         let title_center_y = title_top + title_h / 2.0 + translate_y;
         self.renderer.draw_centered(
             pixmap,
             &self.brand,
-            CANVAS_W / 2.0,
+            canvas_w / 2.0,
             title_center_y,
             &title_style,
             title_opacity,

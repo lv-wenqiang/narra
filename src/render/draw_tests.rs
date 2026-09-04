@@ -80,8 +80,8 @@ fn count_visible(p: &Pixmap) -> usize {
 
 #[test]
 fn content_background_stays_transparent() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut p, 30, &caps());
     // 四角必须仍是全透明——Content 段不能画底
     for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
@@ -95,10 +95,10 @@ fn content_background_stays_transparent() {
 
 #[test]
 fn picks_the_caption_covering_the_current_time() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     // frame 30 → 1000ms → 第一条；frame 105 → 3500ms → 第二条
-    let mut a = Pixmap::new(1280, 720).unwrap();
-    let mut b = Pixmap::new(1280, 720).unwrap();
+    let mut a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut a, 30, &caps());
     painter.draw_content(&mut b, 105, &caps());
     // 两条字幕文本不同，像素分布必然不同
@@ -111,8 +111,8 @@ fn picks_the_caption_covering_the_current_time() {
 /// 只要有人给 `content_watermark` 塞一个非 `None` 的兜底，这条就会变红。
 #[test]
 fn draws_nothing_when_no_caption_covers_the_time_and_no_watermark_is_configured() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut past_end = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut past_end = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut past_end, 300, &caps()); // 10000ms，超出最后一条
     assert_eq!(
         count_visible(&past_end),
@@ -124,9 +124,10 @@ fn draws_nothing_when_no_caption_covers_the_time_and_no_watermark_is_configured(
 /// 配置了正文水印时，字幕结束后只剩水印。
 #[test]
 fn draws_nothing_but_watermark_when_no_caption_covers_the_time() {
-    let mut painter = Painter::new(&branding_with(Some(TEST_CONTENT_WM), None)).unwrap();
-    let mut with_cap = Pixmap::new(1280, 720).unwrap();
-    let mut past_end = Pixmap::new(1280, 720).unwrap();
+    let mut painter =
+        Painter::new(&branding_with(Some(TEST_CONTENT_WM), None), Canvas::BASE).unwrap();
+    let mut with_cap = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut past_end = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut with_cap, 30, &caps());
     painter.draw_content(&mut past_end, 300, &caps()); // 10000ms，超出最后一条
     assert!(
@@ -138,8 +139,9 @@ fn draws_nothing_but_watermark_when_no_caption_covers_the_time() {
 
 #[test]
 fn watermark_sits_in_the_lower_left_corner() {
-    let mut painter = Painter::new(&branding_with(Some(TEST_CONTENT_WM), None)).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter =
+        Painter::new(&branding_with(Some(TEST_CONTENT_WM), None), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut p, 300, &caps()); // 无字幕，只剩水印
     // 水印在左下：距左 40px、距下 40px 附近应有像素，右上角不应有
     let has_in = (30..400)
@@ -152,11 +154,11 @@ fn watermark_sits_in_the_lower_left_corner() {
 
 #[test]
 fn caption_entrance_animation_changes_over_time() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     // 入场动画持续 min(500ms, 时长*0.3)。第一条时长 2000ms → 500ms → 15 帧
-    let mut f0 = Pixmap::new(1280, 720).unwrap();
-    let mut f7 = Pixmap::new(1280, 720).unwrap();
-    let mut f20 = Pixmap::new(1280, 720).unwrap();
+    let mut f0 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f7 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f20 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut f0, 0, &caps());
     painter.draw_content(&mut f7, 7, &caps());
     painter.draw_content(&mut f20, 20, &caps());
@@ -166,7 +168,7 @@ fn caption_entrance_animation_changes_over_time() {
 
 #[test]
 fn long_caption_uses_smaller_font() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     // 去空白后 > 50 字 → 52px；否则 80px
     let short = vec![Caption {
         text: "短句。".into(),
@@ -179,8 +181,8 @@ fn long_caption_uses_smaller_font() {
         start_ms: 0,
         end_ms: 5000,
     }];
-    let mut a = Pixmap::new(1280, 720).unwrap();
-    let mut b = Pixmap::new(1280, 720).unwrap();
+    let mut a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut a, 20, &short);
     painter.draw_content(&mut b, 20, &long);
     // 仅断言两者渲染结果不同即可——字号差异由实现保证，这里防的是"忘了实现字号规则"
@@ -243,30 +245,30 @@ fn caps_varied_length() -> Vec<Caption> {
     ]
 }
 
-/// **终审修复波次（第 2 项的固化断言，复审裁定必须加）**：`CAPTION_MAX_WIDTH_PX`
-/// 是 `1024 - 2*40 = 944`，不是 `CANVAS_W * 0.8 = 1024`——TS 的 `Content.tsx`
-/// 在同一个 div 上同时写了 `width:'80%'` 与 `padding:'20px 40px'`，
+/// **终审修复波次（第 2 项的固化断言，复审裁定必须加）**：`Metrics::caption_max_width`
+/// 在 BASE 上是 `1024 - 2*40 = 944`，不是 `CANVAS_W * 0.8 = 1024`——TS 的
+/// `Content.tsx` 在同一个 div 上同时写了 `width:'80%'` 与 `padding:'20px 40px'`，
 /// tailwindcss v4 preflight 的 `box-sizing: border-box` 下内容宽度是 944。
 ///
 /// 加这条断言的理由不是"怕值算错"，而是**没有测试守着的正确值会被改回错值**：
-/// `CANVAS_W * 0.8` 这个看起来更"自然"的写法就在 `INTRO_TITLE_MAX_WIDTH_PX`
+/// `画布宽度 * 0.8` 这个看起来更"自然"的写法就在 `Metrics::intro_title_max_width`
 /// 旁边，回退成本极低；实测把常量改回 1024 跑全量套件是 134 passed / 0 failed，
 /// 944 与 1024 对改动前的套件**完全等价**。
 ///
 /// 上下限是**推导**出来的、不是把当前输出抄成期望值（所以不是变更探测器）：
-/// 墨迹宽 = 排版宽度上限 + 描边外扩。上限 `950 = 944 + 6`（`CAPTION_STROKE_WIDTH_PX`
-/// 是 6px，左右各外扩半个描边宽）；下限 `920` 只是要求这段文本确实把 944 用满，
+/// 墨迹宽 = 排版宽度上限 + 描边外扩。上限 `950 = 944 + 6`（`Metrics::caption_stroke_width`
+/// 在 BASE 上是 6px，左右各外扩半个描边宽）；下限 `920` 只是要求这段文本确实把 944 用满，
 /// 否则"墨迹 <= 950"这个约束会因为文本太短而自动成立、失去鉴别力。
 #[test]
 fn long_caption_wraps_inside_the_944px_content_box_not_the_1024px_container() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let text = "这是一段专门用来触发换行的长字幕文本总共超过五十个字符会走五十二像素的小字号分支并且必然需要折成好几行来显示效果";
     let caps = vec![Caption {
         text: text.into(),
         start_ms: 0,
         end_ms: 5000,
     }];
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut p, 90, &caps);
     let (x0, _, x1, _) = bbox_excluding_watermark(&p, CAPTION_SCAN_Y_MAX).expect("长字幕应有墨迹");
     let ink_w = x1 - x0 + 1;
@@ -282,9 +284,9 @@ fn long_caption_wraps_inside_the_944px_content_box_not_the_1024px_container() {
 
 #[test]
 fn translate_x_shifts_caption_center_by_about_70px_from_frame_1_to_15() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f1 = Pixmap::new(1280, 720).unwrap();
-    let mut f15 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f1 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f15 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut f1, 1, &caps());
     painter.draw_content(&mut f15, 15, &caps());
     let b1 = bbox_excluding_watermark(&f1, CAPTION_SCAN_Y_MAX).expect("f=1 应有墨迹");
@@ -300,9 +302,9 @@ fn translate_x_shifts_caption_center_by_about_70px_from_frame_1_to_15() {
 
 #[test]
 fn scale_shrinks_caption_height_ratio_by_about_1_14_from_frame_1_to_15() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f1 = Pixmap::new(1280, 720).unwrap();
-    let mut f15 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f1 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f15 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut f1, 1, &caps());
     painter.draw_content(&mut f15, 15, &caps());
     let b1 = bbox_excluding_watermark(&f1, CAPTION_SCAN_Y_MAX).expect("f=1 应有墨迹");
@@ -323,11 +325,11 @@ fn scale_shrinks_caption_height_ratio_by_about_1_14_from_frame_1_to_15() {
 /// 不是恒定值/提前封顶/整体反向"这条要害。
 #[test]
 fn opacity_increases_and_saturates_at_255_by_frame_15() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let mut alphas = [0u8; 15];
     let mut prev = 0u8;
     for f in 1..=15u32 {
-        let mut p = Pixmap::new(1280, 720).unwrap();
+        let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
         painter.draw_content(&mut p, f, &caps());
         let alpha = max_alpha_excluding_watermark(&p, CAPTION_SCAN_Y_MAX);
         assert!(
@@ -392,9 +394,9 @@ fn bbox_at_relative_alpha(p: &Pixmap, y_max: u32, frac: f32) -> Option<(u32, u32
 
 #[test]
 fn letter_spacing_narrows_ink_width_after_normalizing_out_scale() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f2 = Pixmap::new(1280, 720).unwrap();
-    let mut f14 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f2 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f14 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut f2, 2, &caps());
     painter.draw_content(&mut f14, 14, &caps());
     let b2 = bbox_at_relative_alpha(&f2, CAPTION_SCAN_Y_MAX, 0.5).expect("f=2 应有墨迹");
@@ -451,7 +453,7 @@ fn first_ink_row_height(p: &Pixmap, y_max: u32) -> Option<u32> {
 
 #[test]
 fn long_caption_font_height_ratio_matches_52_over_80() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     // 10 字在 80px 下单行即可容纳（10*80=800px < 1024px），干净的单行基准。
     let short_text = "长".repeat(10);
     // 51 非空白字符：超过 50 阈值 → 52px，会换行，取第一行做同样干净的基准。
@@ -466,8 +468,8 @@ fn long_caption_font_height_ratio_matches_52_over_80() {
         start_ms: 0,
         end_ms: 5000,
     }];
-    let mut a = Pixmap::new(1280, 720).unwrap();
-    let mut b = Pixmap::new(1280, 720).unwrap();
+    let mut a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut a, 20, &short);
     painter.draw_content(&mut b, 20, &long);
     let ha = first_ink_row_height(&a, CAPTION_SCAN_Y_MAX).expect("80px 基准应有墨迹") as f32;
@@ -493,7 +495,7 @@ fn font_size_threshold_ignores_whitespace_padding() {
     // 顶上那一横的高度，不是整行高度（实测：84 vs 18，见变异验证记录）。
     // "长"已经在 `long_caption_font_height_ratio_matches_52_over_80` 里验证过
     // 单行内不会有这种内部断层。
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let base = vec![Caption {
         text: "长长长".into(),
         start_ms: 0,
@@ -505,8 +507,8 @@ fn font_size_threshold_ignores_whitespace_padding() {
         start_ms: 0,
         end_ms: 5000,
     }];
-    let mut a = Pixmap::new(1280, 720).unwrap();
-    let mut b = Pixmap::new(1280, 720).unwrap();
+    let mut a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut a, 20, &base);
     painter.draw_content(&mut b, 20, &padded);
     // 中间 60 个空格会在 80px 下把行撑到远超 max_width（换行），两边整块
@@ -523,8 +525,8 @@ fn font_size_threshold_ignores_whitespace_padding() {
 
 #[test]
 fn caption_shows_both_stroke_and_fill_colors() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut p, 20, &caps());
     let (mut has_white, mut has_black) = (false, false);
     for y in 0..CAPTION_SCAN_Y_MAX {
@@ -548,11 +550,11 @@ fn caption_shows_both_stroke_and_fill_colors() {
 
 #[test]
 fn caption_start_end_boundary_is_half_open() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let caps = caps_varied_length();
-    let mut f59 = Pixmap::new(1280, 720).unwrap();
-    let mut f60 = Pixmap::new(1280, 720).unwrap();
-    let mut f61 = Pixmap::new(1280, 720).unwrap();
+    let mut f59 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f60 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f61 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut f59, 59, &caps);
     painter.draw_content(&mut f60, 60, &caps);
     painter.draw_content(&mut f61, 61, &caps);
@@ -601,13 +603,13 @@ fn overlapping_caps() -> Vec<Caption> {
 
 #[test]
 fn overlapping_captions_pick_the_first_match_in_the_list() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let caps = overlapping_caps();
     let only_first = vec![caps[0].clone()];
 
     // frame 45 -> 1500ms：同时落在两条区间 [0,3000) 与 [1000,2000) 内。
-    let mut with_both = Pixmap::new(1280, 720).unwrap();
-    let mut with_first_only = Pixmap::new(1280, 720).unwrap();
+    let mut with_both = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut with_first_only = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut with_both, 45, &caps);
     painter.draw_content(&mut with_first_only, 45, &only_first);
 
@@ -620,21 +622,22 @@ fn overlapping_captions_pick_the_first_match_in_the_list() {
 
 /// 正文水印的墨迹几何与 alpha 精确值。
 ///
-/// 图标移除后文字直接从 `WATERMARK_MARGIN_LEFT_PX` 起排，所以左边缘就是
-/// 40；`maxAlpha` 精确 69（`rgba(255,255,255,0.27)`，且未被合成粗体或描边
-/// 叠厚——`content` 预设特意用 `bold: false` + `stroke: None`，三遍重叠会让
-/// 半透明水印在交叠处变浓）。
+/// 图标移除后文字直接从 `Metrics::watermark_margin_left` 起排，BASE 上是
+/// 40，所以左边缘就是 40；`maxAlpha` 精确 69（`rgba(255,255,255,0.27)`，
+/// 且未被合成粗体或描边叠厚——`content` 预设特意用 `bold: false` +
+/// `stroke: None`，三遍重叠会让半透明水印在交叠处变浓）。
 ///
 /// **墨宽区间钉的是「文案 + 字号」而不是某个写死的字符串**：文案由
-/// `TEST_CONTENT_WM` 给，改字号（`WATERMARK_FONT_SIZE_PX` 24→其它）会让它
-/// 落到区间外。
+/// `TEST_CONTENT_WM` 给，改字号（`Metrics::watermark_font_size` BASE 上
+/// 24→其它）会让它落到区间外。
 #[test]
 fn watermark_ink_geometry_and_alpha_are_exact() {
-    let mut painter = Painter::new(&branding_with(Some(TEST_CONTENT_WM), None)).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter =
+        Painter::new(&branding_with(Some(TEST_CONTENT_WM), None), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut p, 300, &caps()); // 无字幕，只剩水印
     let (x0, _y0, x1, y1) = non_transparent_bbox(&p).expect("水印应有墨迹");
-    // 行首在 x=40（`WATERMARK_MARGIN_LEFT_PX`），墨迹起点还要加上首字形的
+    // 行首在 x=40（`Metrics::watermark_margin_left`，BASE 上是 40），墨迹起点还要加上首字形的
     // 左边距（left side bearing），所以是「贴着 40 但不等于 40」。图标时代
     // 这里能精确取 40，是因为图标位图铺满自己的框、没有边距。
     assert!(
@@ -659,7 +662,7 @@ fn watermark_ink_geometry_and_alpha_are_exact() {
 
 #[test]
 fn trailing_spaces_in_caption_do_not_shift_rendering() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let base = vec![Caption {
         text: "文字".into(),
         start_ms: 0,
@@ -670,8 +673,8 @@ fn trailing_spaces_in_caption_do_not_shift_rendering() {
         start_ms: 0,
         end_ms: 5000,
     }];
-    let mut a = Pixmap::new(1280, 720).unwrap();
-    let mut b = Pixmap::new(1280, 720).unwrap();
+    let mut a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut a, 20, &base);
     painter.draw_content(&mut b, 20, &padded);
     assert_eq!(
@@ -687,8 +690,8 @@ fn trailing_spaces_in_caption_do_not_shift_rendering() {
 
 #[test]
 fn cover_paints_an_opaque_white_background() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "测试标题");
     for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
         let c = p.pixel(x, y).unwrap();
@@ -702,8 +705,8 @@ fn cover_paints_an_opaque_white_background() {
 
 #[test]
 fn intro_paints_an_opaque_white_background() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut p, 60, "测试标题");
     let c = p.pixel(0, 0).unwrap();
     assert_eq!(c.alpha(), 255);
@@ -712,11 +715,11 @@ fn intro_paints_an_opaque_white_background() {
 
 #[test]
 fn intro_typewriter_reveals_more_characters_over_time() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "这是一个比较长的测试标题用来看打字机效果";
-    let mut early = Pixmap::new(1280, 720).unwrap();
-    let mut mid = Pixmap::new(1280, 720).unwrap();
-    let mut done = Pixmap::new(1280, 720).unwrap();
+    let mut early = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut mid = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut done = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut early, 5, title);
     painter.draw_intro(&mut mid, 30, title);
     painter.draw_intro(&mut done, 62, title); // 2 秒 = 60 帧后打完
@@ -736,10 +739,10 @@ fn intro_typewriter_reveals_more_characters_over_time() {
 
 #[test]
 fn intro_fades_out_at_the_end() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "淡出测试";
-    let mut before = Pixmap::new(1280, 720).unwrap();
-    let mut last = Pixmap::new(1280, 720).unwrap();
+    let mut before = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut last = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut before, 89, title); // 淡出开始前
     painter.draw_intro(&mut last, 104, title); // 淡出终点
     let ink = |p: &Pixmap| {
@@ -756,9 +759,9 @@ fn intro_fades_out_at_the_end() {
 
 #[test]
 fn cover_shows_the_given_title() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut a = Pixmap::new(1280, 720).unwrap();
-    let mut b = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut a, "标题甲");
     painter.draw_cover(&mut b, "标题乙完全不同");
     assert_ne!(a.data(), b.data(), "不同标题应渲染出不同画面");
@@ -828,42 +831,44 @@ fn ink_bbox_in_y_range(p: &Pixmap, y0: u32, y1: u32) -> Option<(u32, u32, u32, u
 /// 锯齿边缘。
 fn cover_dynamic_windows(painter: &mut Painter, title: &str) -> (u32, u32, u32, u32) {
     let title_style = TextStyle {
-        size_px: COVER_TITLE_FONT_SIZE_PX,
+        size_px: painter.m.cover_title_font_size,
         color: TITLE_COLOR_BLACK,
         stroke: None,
         letter_spacing_px: 0.0,
-        max_width_px: COVER_TITLE_MAX_WIDTH_PX,
+        max_width_px: painter.m.cover_title_max_width,
         line_height: DEFAULT_LINE_HEIGHT,
         bold: true,
     };
     let (_, title_h) = painter.renderer.measure(title, &title_style);
-    let container_h = COVER_ROW_HEIGHT_PX + title_h;
-    let container_top = cover_container_center_y(Canvas::BASE) - container_h / 2.0;
-    let row_bottom = container_top + COVER_ROW_HEIGHT_PX;
+    let row_height = painter.m.cover_row_height;
+    let container_h = row_height + title_h;
+    let container_top = painter.m.cover_container_center_y - container_h / 2.0;
+    let row_bottom = container_top + row_height;
     let title_bottom = row_bottom + title_h;
+    let canvas_h = painter.m.canvas.h_f32();
 
     const MARGIN: f32 = 8.0;
     (
         (container_top - MARGIN).max(0.0).floor() as u32,
         (row_bottom + MARGIN).ceil() as u32,
         (row_bottom + MARGIN).ceil() as u32,
-        (title_bottom + MARGIN).ceil().min(CANVAS_H) as u32,
+        (title_bottom + MARGIN).ceil().min(canvas_h) as u32,
     )
 }
 
 /// Cover 上排品牌名的整体不透明度应精确为 0.30
 /// （黑字合成到白底：`darkness ≈ round(255*0.30) = 76`），而不是 255
-/// （忘了施加整体透明度）。只扫文字所在的 x 范围（`COVER_ROW_TEXT_LEFT_PX`
-/// 起，用常量而非字面量——避开 logo 颜色未知会污染这个精确数值，同时
-/// logo 尺寸变化时这个常量本身也会跟着动，不会读到过时的边界）。
+/// （忘了施加整体透明度）。只扫文字所在的 x 范围（`Metrics::cover_row_text_left`
+/// 起，用字段而非字面量——避开 logo 颜色未知会污染这个精确数值，同时
+/// logo 尺寸变化时这个字段本身也会跟着动，不会读到过时的边界）。
 #[test]
 fn cover_top_row_opacity_is_about_76_not_opaque() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "标题");
     let (row_y0, row_y1, _, _) = cover_dynamic_windows(&mut painter, "标题");
-    let max_darkness =
-        max_darkness_in_rect(&p, COVER_ROW_TEXT_LEFT_PX as u32, 1000, row_y0, row_y1);
+    let row_text_left = painter.m.cover_row_text_left as u32;
+    let max_darkness = max_darkness_in_rect(&p, row_text_left, 1000, row_y0, row_y1);
     assert!(
         (max_darkness as i32 - 76).abs() <= 8,
         "上排文字 darkness 应约为 76（0.30 组透明度合成到白底），实得 {max_darkness}"
@@ -874,8 +879,8 @@ fn cover_top_row_opacity_is_about_76_not_opaque() {
 /// Cover 应该画出 logo：logo 占据的 36x36 区域内应有非白像素。
 #[test]
 fn cover_draws_a_logo_in_the_top_row() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "标题");
     // logo 左边缘 x=176，尺寸 36px；容器顶 <= 274（见上一条推导），
     // 故 logo 顶 <= 274+8=282，给足够宽的窗口。
@@ -891,12 +896,12 @@ fn cover_draws_a_logo_in_the_top_row() {
 /// 深浅）。这里对 logo 自身的像素区域做同样精确的 darkness 断言。
 #[test]
 fn cover_logo_opacity_is_about_76_not_opaque() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "标题");
     let (row_y0, row_y1, _, _) = cover_dynamic_windows(&mut painter, "标题");
-    let logo_x0 = COVER_ROW_LEFT_PX as u32 + COVER_LOGO_MARGIN_PX as u32;
-    let logo_x1 = logo_x0 + COVER_LOGO_SIZE_PX;
+    let logo_x0 = painter.m.cover_row_left as u32 + painter.m.cover_logo_margin as u32;
+    let logo_x1 = logo_x0 + painter.m.cover_logo_size;
     let max_darkness = max_darkness_in_rect(&p, logo_x0, logo_x1, row_y0, row_y1);
     assert!(
         (max_darkness as i32 - 76).abs() <= 10,
@@ -913,16 +918,17 @@ fn cover_logo_opacity_is_about_76_not_opaque() {
 /// 上排（logo）是这一带最左侧的元素，直接断言该窗口内最左侧墨迹的 x 坐标。
 #[test]
 fn cover_top_row_left_edge_is_176() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "标题");
     let (row_y0, row_y1, _, _) = cover_dynamic_windows(&mut painter, "标题");
     let (x0, _, _, _) = ink_bbox_in_y_range(&p, row_y0, row_y1).expect("上排应有墨迹");
-    // 故意用字面量 176（而不是 `COVER_ROW_LEFT_PX + COVER_LOGO_MARGIN_PX`）
-    // 做期望值——审查实测就是 176。若改用这两个常量相加，当
-    // `COVER_ROW_MARGIN_LEFT_PX`（marginLeft 40）被错误改掉时，`expected`
-    // 会跟着"一起错"，测试变成永远自证成立、测不出任何东西（这正是
-    // 变异验证时抓到的真实教训：用同一个被改动的常量算期望值，等于没测）。
+    // 故意用字面量 176（而不是 `Metrics::cover_row_left + cover_logo_margin`）
+    // 做期望值——审查实测就是 176。若改用这两个字段相加，当
+    // `Metrics::cover_row_margin_left`（marginLeft 40）被错误改掉时，
+    // `expected` 会跟着"一起错"，测试变成永远自证成立、测不出任何东西
+    // （这正是变异验证时抓到的真实教训：用同一个被改动的量算期望值，
+    // 等于没测）。
     assert!(
         (x0 as i32 - 176).abs() <= 2,
         "上排（logo）左边缘应≈176，实得 {x0}"
@@ -933,8 +939,8 @@ fn cover_top_row_left_edge_is_176() {
 /// 应约为 100/38（±10%）。
 #[test]
 fn cover_title_font_size_matches_100px() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     let title = "短标题"; // 短标题，单行，不换行
     painter.draw_cover(&mut p, title);
     let (top_h, title_h) = cover_row_and_title_ink_heights(&mut painter, title, &p);
@@ -988,9 +994,9 @@ fn cover_row_and_title_ink_heights(painter: &mut Painter, title: &str, p: &Pixma
 ///
 /// **墨宽的窄区间**沿用原修复轮 1（M1）的口径，数值随「文案可配置 + 图标已
 /// 移除」重新实测。它覆盖字号这个此前零覆盖的精确参数：把
-/// `COVER_WATERMARK_FONT_SIZE_PX` 28→24 会显著改变墨宽。渲染全程确定性
-/// （同一份字体 + 同一套矢量排版，无随机性来源），容差只需覆盖裁剪/取整的
-/// 量级，给 ±3。
+/// `Metrics::cover_watermark_font_size`（BASE 上 28）改成 24 会显著改变墨宽。
+/// 渲染全程确定性（同一份字体 + 同一套矢量排版，无随机性来源），容差只需
+/// 覆盖裁剪/取整的量级，给 ±3。
 #[test]
 fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
     let mut renderer = TextRenderer::new().unwrap();
@@ -998,8 +1004,9 @@ fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
     let prepared = prepare_watermark(
         &mut renderer,
         None,
-        &cover_watermark_preset(TEST_COVER_WM, m.cover_watermark_center_y),
+        &cover_watermark_preset(TEST_COVER_WM, &m),
         m.no_wrap_width,
+        Canvas::BASE,
     )
     .unwrap();
     let (x0, y0, x1, y1) = non_transparent_bbox(&prepared.pixmap).expect("cover 水印应有墨迹");
@@ -1025,8 +1032,9 @@ fn cover_watermark_is_centered_at_640_576_with_alpha_102() {
     );
 
     // 确认 draw_cover 真的调用了它，不只是 Painter::new() 里预渲染了但没贴图。
-    let mut painter = Painter::new(&branding_with(None, Some(TEST_COVER_WM))).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter =
+        Painter::new(&branding_with(None, Some(TEST_COVER_WM)), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "标题");
     assert!(
         ink_bbox_in_y_range(&p, 550, 720).is_some(),
@@ -1052,8 +1060,9 @@ fn separator_segment_is_drawn_at_reduced_opacity() {
     let prepared = prepare_watermark(
         &mut renderer,
         None,
-        &cover_watermark_preset(WATERMARK_SEP, m.cover_watermark_center_y),
+        &cover_watermark_preset(WATERMARK_SEP, &m),
         m.no_wrap_width,
+        Canvas::BASE,
     )
     .unwrap();
     let max_alpha = max_alpha_of(&prepared.pixmap);
@@ -1072,8 +1081,9 @@ fn non_separator_text_is_drawn_at_full_opacity() {
     let prepared = prepare_watermark(
         &mut renderer,
         None,
-        &cover_watermark_preset("测试", m.cover_watermark_center_y),
+        &cover_watermark_preset("测试", &m),
         m.no_wrap_width,
+        Canvas::BASE,
     )
     .unwrap();
     assert_eq!(
@@ -1140,8 +1150,8 @@ fn watermark_icon_is_drawn_and_keeps_its_own_colors() {
         watermark_icon: Some(png.to_string_lossy().into_owned()),
         logo: None,
     };
-    let mut painter = Painter::new(&branding).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&branding, Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut p, "标题");
 
     // 水印所在的 y 带里，找蓝色显著强于红色的像素——图标原色的证据。
@@ -1176,12 +1186,19 @@ fn watermark_without_an_icon_starts_at_the_text() {
 
     let mut renderer = TextRenderer::new().unwrap();
     let m = Metrics::for_canvas(Canvas::BASE);
-    let preset = cover_watermark_preset(TEST_COVER_WM, m.cover_watermark_center_y);
+    let preset = cover_watermark_preset(TEST_COVER_WM, &m);
     let icon = load_scaled_icon(&png, preset.icon_size_px).unwrap();
 
-    let bare = prepare_watermark(&mut renderer, None, &preset, m.no_wrap_width).unwrap();
-    let with_icon =
-        prepare_watermark(&mut renderer, Some(&icon), &preset, m.no_wrap_width).unwrap();
+    let bare =
+        prepare_watermark(&mut renderer, None, &preset, m.no_wrap_width, Canvas::BASE).unwrap();
+    let with_icon = prepare_watermark(
+        &mut renderer,
+        Some(&icon),
+        &preset,
+        m.no_wrap_width,
+        Canvas::BASE,
+    )
+    .unwrap();
 
     // 图标虽是不透明的纯蓝，进水印后必须吃到预设的整体不透明度（cover =
     // 102/255），与同一行的文字浓淡一致。少了这条，「图标按原样 100% 不透明
@@ -1217,7 +1234,7 @@ fn watermark_without_an_icon_starts_at_the_text() {
 /// 审查实测视觉间隙约 12px，故给一个覆盖两者的合理区间而不是精确值。
 #[test]
 fn cursor_gap_from_last_line_is_within_expected_range() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "标题文字"; // 4 字，chars_per_sec=2.0，纯 CJK 不涉及 word-wrap
     let (cursor_bbox, last_line_bbox) = cursor_and_last_line_bboxes(&mut painter, 15, title);
     let cursor = cursor_bbox.expect("frame 15 应有光标（f%15=0，最亮）");
@@ -1235,10 +1252,10 @@ fn cursor_gap_from_last_line_is_within_expected_range() {
 /// 的长标题，断言两处的墨宽都不超过 944px（留一点描边/字距的余量）。
 #[test]
 fn cover_and_intro_titles_wrap_within_944px() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let long_title = "长".repeat(30); // 100px/70px 字号下必然远超 944px，需要换行
 
-    let mut cover_p = Pixmap::new(1280, 720).unwrap();
+    let mut cover_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut cover_p, &long_title);
     let (_, _, title_y0, title_y1) = cover_dynamic_windows(&mut painter, &long_title);
     let (cx0, _, cx1, _) =
@@ -1249,7 +1266,7 @@ fn cover_and_intro_titles_wrap_within_944px() {
         "Cover 主标题墨宽应 ≤944px（含少量描边/字距余量），实得 {cover_w}"
     );
 
-    let mut intro_p = Pixmap::new(1280, 720).unwrap();
+    let mut intro_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut intro_p, 70, &long_title); // 70 帧：打字已完成、尚未开始淡出
     let (ix0, _, ix1, _) = ink_bbox_in_y_range(&intro_p, 0, 720).expect("Intro 标题应有墨迹");
     let intro_w = ix1 - ix0;
@@ -1274,8 +1291,8 @@ fn cover_and_intro_titles_wrap_within_944px() {
 /// 覆盖了同一类关注点的另一半：正向证明每一帧"不多画任何东西"）。
 #[test]
 fn intro_has_no_watermark() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut p, 30, "标题");
     assert!(
         ink_bbox_in_y_range(&p, 600, 720).is_none(),
@@ -1295,27 +1312,27 @@ fn intro_has_no_watermark() {
 /// `intro_has_no_watermark` 的既有口径与它记录的已知盲区。
 #[test]
 fn no_segment_draws_a_watermark_when_neither_is_configured() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
 
-    let mut content = Pixmap::new(1280, 720).unwrap();
+    let mut content = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_content(&mut content, 300, &caps()); // 无字幕
     assert_eq!(count_visible(&content), 0, "Content 段不应有水印");
 
-    let mut cover = Pixmap::new(1280, 720).unwrap();
+    let mut cover = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut cover, "标题");
     assert!(
         ink_bbox_in_y_range(&cover, 550, 720).is_none(),
         "Cover 下半部不应有水印墨迹"
     );
 
-    let mut intro = Pixmap::new(1280, 720).unwrap();
+    let mut intro = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut intro, 30, "标题");
     assert!(
         ink_bbox_in_y_range(&intro, 600, 720).is_none(),
         "Intro 下半部不应有水印墨迹"
     );
 
-    let mut outro = Pixmap::new(1280, 720).unwrap();
+    let mut outro = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut outro, 60);
     assert!(
         ink_bbox_in_y_range(&outro, 620, 720).is_none(),
@@ -1331,11 +1348,12 @@ fn no_segment_draws_a_watermark_when_neither_is_configured() {
 #[test]
 fn the_two_watermark_settings_are_independent() {
     // 只配正文水印：Content 有，Cover 没有。
-    let mut only_content = Painter::new(&branding_with(Some(TEST_CONTENT_WM), None)).unwrap();
-    let mut c = Pixmap::new(1280, 720).unwrap();
+    let mut only_content =
+        Painter::new(&branding_with(Some(TEST_CONTENT_WM), None), Canvas::BASE).unwrap();
+    let mut c = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     only_content.draw_content(&mut c, 300, &caps());
     assert!(count_visible(&c) > 0, "配了 watermark，Content 段应有水印");
-    let mut cov = Pixmap::new(1280, 720).unwrap();
+    let mut cov = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     only_content.draw_cover(&mut cov, "标题");
     assert!(
         ink_bbox_in_y_range(&cov, 550, 720).is_none(),
@@ -1343,15 +1361,16 @@ fn the_two_watermark_settings_are_independent() {
     );
 
     // 只配封面水印：Cover 有，Content 没有。
-    let mut only_cover = Painter::new(&branding_with(None, Some(TEST_COVER_WM))).unwrap();
-    let mut c2 = Pixmap::new(1280, 720).unwrap();
+    let mut only_cover =
+        Painter::new(&branding_with(None, Some(TEST_COVER_WM)), Canvas::BASE).unwrap();
+    let mut c2 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     only_cover.draw_content(&mut c2, 300, &caps());
     assert_eq!(
         count_visible(&c2),
         0,
         "没配 watermark，Content 段不该因为配了 watermark_cover 就长出水印"
     );
-    let mut cov2 = Pixmap::new(1280, 720).unwrap();
+    let mut cov2 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     only_cover.draw_cover(&mut cov2, "标题");
     assert!(
         ink_bbox_in_y_range(&cov2, 550, 720).is_some(),
@@ -1366,11 +1385,11 @@ fn the_two_watermark_settings_are_independent() {
 /// 字面量的变异会让两次渲染完全一致，这条随即变红。
 #[test]
 fn cover_row_and_outro_title_render_the_configured_brand() {
-    let mut short = Painter::new(&Branding::plain("墨风")).unwrap();
-    let mut long = Painter::new(&Branding::plain("另一个更长的品牌")).unwrap();
+    let mut short = Painter::new(&Branding::plain("墨风"), Canvas::BASE).unwrap();
+    let mut long = Painter::new(&Branding::plain("另一个更长的品牌"), Canvas::BASE).unwrap();
 
-    let mut cover_a = Pixmap::new(1280, 720).unwrap();
-    let mut cover_b = Pixmap::new(1280, 720).unwrap();
+    let mut cover_a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut cover_b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     short.draw_cover(&mut cover_a, "同一个标题");
     long.draw_cover(&mut cover_b, "同一个标题");
     assert_ne!(
@@ -1381,8 +1400,8 @@ fn cover_row_and_outro_title_render_the_configured_brand() {
 
     // Outro 取一个大字已经完全淡入、整体淡出尚未开始的帧（淡入 [24,39]、
     // 淡出 [105,119]）。
-    let mut outro_a = Pixmap::new(1280, 720).unwrap();
-    let mut outro_b = Pixmap::new(1280, 720).unwrap();
+    let mut outro_a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut outro_b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     short.draw_outro(&mut outro_a, 60);
     long.draw_outro(&mut outro_b, 60);
     assert_ne!(
@@ -1406,15 +1425,18 @@ fn cover_and_outro_use_the_configured_logo() {
         .save(&png)
         .unwrap();
 
-    let mut embedded = Painter::new(&test_branding()).unwrap();
-    let mut custom = Painter::new(&Branding {
-        logo: Some(png.to_string_lossy().into_owned()),
-        ..test_branding()
-    })
+    let mut embedded = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut custom = Painter::new(
+        &Branding {
+            logo: Some(png.to_string_lossy().into_owned()),
+            ..test_branding()
+        },
+        Canvas::BASE,
+    )
     .unwrap();
 
-    let mut cover_a = Pixmap::new(1280, 720).unwrap();
-    let mut cover_b = Pixmap::new(1280, 720).unwrap();
+    let mut cover_a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut cover_b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     embedded.draw_cover(&mut cover_a, "同一个标题");
     custom.draw_cover(&mut cover_b, "同一个标题");
     assert_ne!(
@@ -1423,8 +1445,8 @@ fn cover_and_outro_use_the_configured_logo() {
         "Cover 上排应换成配置的 logo"
     );
 
-    let mut outro_a = Pixmap::new(1280, 720).unwrap();
-    let mut outro_b = Pixmap::new(1280, 720).unwrap();
+    let mut outro_a = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut outro_b = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     embedded.draw_outro(&mut outro_a, 60);
     custom.draw_outro(&mut outro_b, 60);
     assert_ne!(outro_a.data(), outro_b.data(), "Outro 应换成配置的 logo");
@@ -1448,12 +1470,12 @@ fn cover_and_outro_use_the_configured_logo() {
 /// 阶梯上升，且打完（frame>=60）后与整串标题的墨宽一致（±4px）。
 #[test]
 fn typewriter_ink_width_steps_up_and_matches_full_title_when_done() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "六个字标题呀"; // 6 字，不会换行
-    let mut f5 = Pixmap::new(1280, 720).unwrap();
-    let mut f15 = Pixmap::new(1280, 720).unwrap();
-    let mut f30 = Pixmap::new(1280, 720).unwrap();
-    let mut f70 = Pixmap::new(1280, 720).unwrap();
+    let mut f5 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f15 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f30 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f70 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut f5, 5, title);
     painter.draw_intro(&mut f15, 15, title);
     painter.draw_intro(&mut f30, 30, title);
@@ -1474,7 +1496,7 @@ fn typewriter_ink_width_steps_up_and_matches_full_title_when_done() {
     // `darkness()` 把「透明像素」（premultiplied rgb 恒为 0）误判成
     // 「纯黑」（`darkness=255`），不填白底会让 `ink_bbox_in_y_range`
     // 把整张画布都当成墨迹（红色阶段实测：这条测试当场因此失败）。
-    let mut full = Pixmap::new(1280, 720).unwrap();
+    let mut full = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     full.fill(Color::from_rgba8(255, 255, 255, 255));
     let style = TextStyle {
         size_px: 70.0,
@@ -1506,10 +1528,10 @@ fn typewriter_ink_width_steps_up_and_matches_full_title_when_done() {
 /// 实际颜色深浅明显不同）。
 #[test]
 fn cursor_exists_blinks_and_disappears_once_typing_completes() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "标题"; // 2 字：chars_per_sec=1.0，frame<30 时 visible 恒为 0
-    let mut bright = Pixmap::new(1280, 720).unwrap();
-    let mut dim = Pixmap::new(1280, 720).unwrap();
+    let mut bright = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut dim = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut bright, 0, title); // visible=0，f%15=0 → blink=1.0（最亮）
     painter.draw_intro(&mut dim, 14, title); // visible=0，f%15=14 → blink≈0.133（最暗）
     let darkness_sum = |p: &Pixmap| -> u64 {
@@ -1533,9 +1555,9 @@ fn cursor_exists_blinks_and_disappears_once_typing_completes() {
     // 打完（local_frame>=60）后不应有光标：与整串标题单独渲染逐字节一致。
     // 同样必须先填白底（原因见上一条测试的注释）。
     let title2 = "六个字标题呀";
-    let mut done = Pixmap::new(1280, 720).unwrap();
+    let mut done = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut done, 60, title2);
-    let mut full = Pixmap::new(1280, 720).unwrap();
+    let mut full = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     full.fill(Color::from_rgba8(255, 255, 255, 255));
     let style = TextStyle {
         size_px: 70.0,
@@ -1566,13 +1588,13 @@ fn cursor_exists_blinks_and_disappears_once_typing_completes() {
 /// `draw_intro` 实际使用的完全一致。
 #[test]
 fn intro_frame_matches_hand_composited_reference_exactly() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "标题文字标题文字标题"; // 10 字，chars_per_sec=5.0，覆盖多个 visible 台阶
     for f in [0u32, 5, 10, 15, 29, 45, 59, 60] {
-        let mut actual = Pixmap::new(1280, 720).unwrap();
+        let mut actual = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
         painter.draw_intro(&mut actual, f, title);
 
-        let mut expected = Pixmap::new(1280, 720).unwrap();
+        let mut expected = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
         expected.fill(Color::from_rgba8(255, 255, 255, 255));
 
         let title_chars: Vec<char> = title.chars().collect();
@@ -1581,21 +1603,23 @@ fn intro_frame_matches_hand_composited_reference_exactly() {
         let visible = ((f as f64 * chars_per_sec / FPS).floor() as usize).min(total);
         let display_text: String = title_chars[..visible].iter().collect();
         let style = TextStyle {
-            size_px: INTRO_TITLE_FONT_SIZE_PX,
+            size_px: painter.m.intro_title_font_size,
             color: TITLE_COLOR_BLACK,
             stroke: None,
             letter_spacing_px: 0.0,
-            max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+            max_width_px: painter.m.intro_title_max_width,
             line_height: DEFAULT_LINE_HEIGHT,
             bold: true,
         };
+        let intro_center_x = painter.m.intro_title_center_x;
+        let intro_center_y = painter.m.intro_title_center_y;
         let fade_opacity = interpolate(f as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
         if fade_opacity > 0.0 {
             painter.renderer.draw_centered(
                 &mut expected,
                 &display_text,
-                INTRO_TITLE_CENTER_X,
-                INTRO_TITLE_CENTER_Y,
+                intro_center_x,
+                intro_center_y,
                 &style,
                 fade_opacity,
                 1.0,
@@ -1614,14 +1638,12 @@ fn intro_frame_matches_hand_composited_reference_exactly() {
                         .renderer
                         .last_line_metrics(&display_text, &style)
                         .map(|(w, top_rel, _)| {
-                            (
-                                INTRO_TITLE_CENTER_X + w / 2.0,
-                                INTRO_TITLE_CENTER_Y + top_rel / 2.0,
-                            )
+                            (intro_center_x + w / 2.0, intro_center_y + top_rel / 2.0)
                         })
-                        .unwrap_or((INTRO_TITLE_CENTER_X, INTRO_TITLE_CENTER_Y));
+                        .unwrap_or((intro_center_x, intro_center_y));
                     let (cursor_w, _) = painter.renderer.measure(INTRO_CURSOR_TEXT, &style);
-                    let cursor_center_x = right_edge_x + INTRO_CURSOR_GAP_PX + cursor_w / 2.0;
+                    let cursor_center_x =
+                        right_edge_x + painter.m.intro_cursor_gap + cursor_w / 2.0;
                     painter.renderer.draw_centered(
                         &mut expected,
                         INTRO_CURSOR_TEXT,
@@ -1679,7 +1701,7 @@ fn cursor_and_last_line_bboxes(
     local_frame: u32,
     title: &str,
 ) -> (Option<Bbox>, Option<Bbox>) {
-    let mut with_cursor = Pixmap::new(1280, 720).unwrap();
+    let mut with_cursor = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut with_cursor, local_frame, title);
 
     let title_chars: Vec<char> = title.chars().collect();
@@ -1688,24 +1710,25 @@ fn cursor_and_last_line_bboxes(
     let visible = ((local_frame as f64 * chars_per_sec / FPS).floor() as usize).min(total);
     let display_text: String = title_chars[..visible].iter().collect();
     let style = TextStyle {
-        size_px: INTRO_TITLE_FONT_SIZE_PX,
+        size_px: painter.m.intro_title_font_size,
         color: TITLE_COLOR_BLACK,
         stroke: None,
         letter_spacing_px: 0.0,
-        max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+        max_width_px: painter.m.intro_title_max_width,
         line_height: DEFAULT_LINE_HEIGHT,
         bold: true,
     };
+    let intro_center_y = painter.m.intro_title_center_y;
     let fade_opacity = interpolate(local_frame as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
 
-    let mut text_only = Pixmap::new(1280, 720).unwrap();
+    let mut text_only = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     text_only.fill(Color::from_rgba8(255, 255, 255, 255));
     if fade_opacity > 0.0 {
         painter.renderer.draw_centered(
             &mut text_only,
             &display_text,
-            INTRO_TITLE_CENTER_X,
-            INTRO_TITLE_CENTER_Y,
+            painter.m.intro_title_center_x,
+            intro_center_y,
             &style,
             fade_opacity,
             1.0,
@@ -1717,7 +1740,7 @@ fn cursor_and_last_line_bboxes(
         .renderer
         .last_line_metrics(&display_text, &style)
         .and_then(|(_, top_rel, h)| {
-            let center_y = INTRO_TITLE_CENTER_Y + top_rel / 2.0;
+            let center_y = intro_center_y + top_rel / 2.0;
             let y0 = (center_y - h / 2.0).max(0.0) as u32;
             let y1 = ((center_y + h / 2.0).min(719.0) as u32) + 1;
             ink_bbox_in_y_range(&text_only, y0, y1)
@@ -1767,7 +1790,7 @@ fn cursor_and_last_line_bboxes_narrow(
     local_frame: u32,
     title: &str,
 ) -> (Option<Bbox>, Option<Bbox>) {
-    let mut with_cursor = Pixmap::new(1280, 720).unwrap();
+    let mut with_cursor = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut with_cursor, local_frame, title);
 
     let title_chars: Vec<char> = title.chars().collect();
@@ -1776,14 +1799,17 @@ fn cursor_and_last_line_bboxes_narrow(
     let visible = ((local_frame as f64 * chars_per_sec / FPS).floor() as usize).min(total);
     let display_text: String = title_chars[..visible].iter().collect();
     let style = TextStyle {
-        size_px: INTRO_TITLE_FONT_SIZE_PX,
+        size_px: painter.m.intro_title_font_size,
         color: TITLE_COLOR_BLACK,
         stroke: None,
         letter_spacing_px: 0.0,
-        max_width_px: INTRO_TITLE_MAX_WIDTH_PX,
+        max_width_px: painter.m.intro_title_max_width,
         line_height: DEFAULT_LINE_HEIGHT,
         bold: true,
     };
+    let intro_center_x = painter.m.intro_title_center_x;
+    let intro_center_y = painter.m.intro_title_center_y;
+    let canvas_h = painter.m.canvas.h_f32();
     let fade_opacity = interpolate(local_frame as f64, INTRO_FADE_OUT_RANGE, [1.0, 0.0]) as f32;
 
     // 扫描窗口：`measure()` 给出的文本块整体高度，上下各留 40px 安全
@@ -1791,22 +1817,22 @@ fn cursor_and_last_line_bboxes_narrow(
     // 70px 字号 * 1.2 行高 = 84px 的量级）。
     let (_, total_h) = painter.renderer.measure(&display_text, &style);
     const BAND_MARGIN_PX: f32 = 40.0;
-    let band_y0 = (INTRO_TITLE_CENTER_Y - total_h / 2.0 - BAND_MARGIN_PX)
+    let band_y0 = (intro_center_y - total_h / 2.0 - BAND_MARGIN_PX)
         .max(0.0)
         .floor() as u32;
-    let band_y1 = ((INTRO_TITLE_CENTER_Y + total_h / 2.0 + BAND_MARGIN_PX)
-        .min(CANVAS_H)
+    let band_y1 = ((intro_center_y + total_h / 2.0 + BAND_MARGIN_PX)
+        .min(canvas_h)
         .ceil() as u32)
         .max(band_y0 + 1);
 
-    let mut text_only = Pixmap::new(1280, 720).unwrap();
+    let mut text_only = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     text_only.fill(Color::from_rgba8(255, 255, 255, 255));
     if fade_opacity > 0.0 {
         painter.renderer.draw_centered(
             &mut text_only,
             &display_text,
-            INTRO_TITLE_CENTER_X,
-            INTRO_TITLE_CENTER_Y,
+            intro_center_x,
+            intro_center_y,
             &style,
             fade_opacity,
             1.0,
@@ -1818,7 +1844,7 @@ fn cursor_and_last_line_bboxes_narrow(
         .renderer
         .last_line_metrics(&display_text, &style)
         .and_then(|(_, top_rel, h)| {
-            let center_y = INTRO_TITLE_CENTER_Y + top_rel / 2.0;
+            let center_y = intro_center_y + top_rel / 2.0;
             let y0 = (center_y - h / 2.0).max(0.0) as u32;
             let y1 = ((center_y + h / 2.0).min(719.0) as u32) + 1;
             ink_bbox_in_y_range(&text_only, y0, y1)
@@ -1855,7 +1881,7 @@ fn cursor_and_last_line_bboxes_narrow(
 /// "压字"的失败模式是水平方向上光标落进了文字的包围盒内。
 #[test]
 fn cursor_never_overlaps_word_wrapped_last_line_ink() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let titles = [
         "Panda Video Generator automated engine for long titles wrapping",
         "熊猫视频自动化引擎 Panda Video Generator 全流程演示标题",
@@ -1891,10 +1917,10 @@ fn cursor_never_overlaps_word_wrapped_last_line_ink() {
 /// 宽度以内的窄带。
 #[test]
 fn cursor_blinking_does_not_shift_text_pixels() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "标题文字"; // 4 字：chars_per_sec=2.0，每 15 帧显示一个字符
-    let mut bright = Pixmap::new(1280, 720).unwrap();
-    let mut dim = Pixmap::new(1280, 720).unwrap();
+    let mut bright = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut dim = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut bright, 15, title); // visible=1，f%15=0 → 光标全亮
     painter.draw_intro(&mut dim, 29, title); // visible=1，f%15=14 → 光标近乎全暗
     let mut diff_x0 = u32::MAX;
@@ -1928,10 +1954,10 @@ fn fade_out_endpoints_match_interpolate_exactly() {
     assert_eq!(interpolate(104.0, [90.0, 104.0], [1.0, 0.0]), 0.0);
     assert_eq!(interpolate(89.0, [90.0, 104.0], [1.0, 0.0]), 1.0);
 
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let title = "淡出端点测试";
-    let mut f89 = Pixmap::new(1280, 720).unwrap();
-    let mut f104 = Pixmap::new(1280, 720).unwrap();
+    let mut f89 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f104 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_intro(&mut f89, 89, title);
     painter.draw_intro(&mut f104, 104, title);
     assert!(
@@ -1950,8 +1976,8 @@ fn fade_out_endpoints_match_interpolate_exactly() {
 
 #[test]
 fn outro_paints_an_opaque_white_background() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut p, 0);
     let c = p.pixel(0, 0).unwrap();
     assert_eq!(c.alpha(), 255);
@@ -1960,9 +1986,9 @@ fn outro_paints_an_opaque_white_background() {
 
 #[test]
 fn outro_logo_grows_during_the_first_08_seconds() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f0 = Pixmap::new(1280, 720).unwrap();
-    let mut f24 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f0 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f24 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut f0, 0);
     painter.draw_outro(&mut f24, 24);
     assert_ne!(f0.data(), f24.data(), "logo 应从 0.2 倍放大到 1.0 倍");
@@ -1970,9 +1996,9 @@ fn outro_logo_grows_during_the_first_08_seconds() {
 
 #[test]
 fn outro_title_fades_in_after_the_logo() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f24 = Pixmap::new(1280, 720).unwrap();
-    let mut f39 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f24 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f39 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut f24, 24);
     painter.draw_outro(&mut f39, 39);
     assert_ne!(f24.data(), f39.data(), "标题应在第 24~39 帧淡入");
@@ -1980,7 +2006,7 @@ fn outro_title_fades_in_after_the_logo() {
 
 #[test]
 fn outro_fades_out_at_the_end() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let ink = |p: &Pixmap| {
         (0..p.height())
             .flat_map(|y| (0..p.width()).map(move |x| (x, y)))
@@ -1990,8 +2016,8 @@ fn outro_fades_out_at_the_end() {
             })
             .count()
     };
-    let mut f100 = Pixmap::new(1280, 720).unwrap();
-    let mut f119 = Pixmap::new(1280, 720).unwrap();
+    let mut f100 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f119 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut f100, 100);
     painter.draw_outro(&mut f119, 119);
     assert!(ink(&f119) < ink(&f100), "第 119 帧应比第 100 帧淡");
@@ -2021,7 +2047,7 @@ fn outro_fades_out_at_the_end() {
 /// 本身留白/描边的影响。
 #[test]
 fn outro_logo_pixmap_is_scaled_to_216px() {
-    let painter = Painter::new(&test_branding()).unwrap();
+    let painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     assert_eq!(painter.logo_216.width(), 216, "outro logo 应缩放到 216px");
     assert_eq!(painter.logo_216.height(), 216, "outro logo 应缩放到 216px");
 }
@@ -2077,9 +2103,9 @@ fn outro_ring_scale_is_finite_and_clamps_to_100_from_frame_45() {
 /// logo 的墨迹纵向跨度（等价于直径）直接量，不依赖任何字体测量。
 #[test]
 fn outro_logo_diameter_grows_from_about_43px_to_full_size() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f0 = Pixmap::new(1280, 720).unwrap();
-    let mut f24 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f0 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f24 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut f0, 0);
     painter.draw_outro(&mut f24, 24);
 
@@ -2111,13 +2137,13 @@ fn outro_logo_diameter_grows_from_about_43px_to_full_size() {
 /// 排除了字形差异带来的噪声。
 #[test]
 fn outro_title_font_size_matches_70px() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
 
-    let mut cover_p = Pixmap::new(1280, 720).unwrap();
+    let mut cover_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_cover(&mut cover_p, "任意标题");
     let (row_h_38px, _) = cover_row_and_title_ink_heights(&mut painter, "任意标题", &cover_p);
 
-    let mut outro_p = Pixmap::new(1280, 720).unwrap();
+    let mut outro_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut outro_p, 60); // 标题淡入已完成、尚未开始整体淡出
     // 窗口 [420,555]：logo（≈y192..403）与水印（≈y560..591，`cover`
     // 预设垂直中心 576）之间的区间，宽松覆盖标题实际墨迹带（实测
@@ -2135,7 +2161,7 @@ fn outro_title_font_size_matches_70px() {
 }
 
 /// **N: 标题下移 40→0**。logo 与标题在纵向组里的墨迹纵向间隙应能反映
-/// `OUTRO_TITLE_GAP_PX`（40px 的布局盒间距）——用字面量而不是常量算期望
+/// `Metrics::outro_title_gap`（BASE 上 40px 的布局盒间距）——用字面量而不是常量算期望
 /// 值（Task 6 `cover_top_row_left_edge_is_176` 记录过的教训：用同一个
 /// 被改动的常量算期望值等于没测）。logo 是近乎顶满 216 盒子的圆形
 /// （见报告实测），标题墨迹顶部因为字体上伸空间会比布局盒顶低几像素——
@@ -2143,8 +2169,8 @@ fn outro_title_font_size_matches_70px() {
 /// 但仍能被「间距归零」清晰打破的区间。
 #[test]
 fn outro_title_sits_a_visible_gap_below_the_logo() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut p = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut p, 60); // 稳态：logo 满尺寸、标题淡入完成
 
     // logo 与标题分别落在上半屏（0..500，避开水印）里的两段独立墨迹
@@ -2189,9 +2215,9 @@ fn outro_title_sits_a_visible_gap_below_the_logo() {
 /// 其中一帧落入"仍在动画中"而另一帧"已稳定"，产生字节差异。
 #[test]
 fn outro_is_pixel_identical_between_settled_frames_40_and_104() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
-    let mut f40 = Pixmap::new(1280, 720).unwrap();
-    let mut f104 = Pixmap::new(1280, 720).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
+    let mut f40 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
+    let mut f104 = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
     painter.draw_outro(&mut f40, 40);
     painter.draw_outro(&mut f104, 104);
     // 不用 `assert_eq!` 直接比 921600 字节：失败时会把两个完整数组打进
@@ -2229,9 +2255,9 @@ fn outro_is_pixel_identical_between_settled_frames_40_and_104() {
 /// 45, 59, 60]`）。
 #[test]
 fn outro_renders_representative_frames_without_panicking() {
-    let mut painter = Painter::new(&test_branding()).unwrap();
+    let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     for f in [0u32, 23, 24, 29, 30, 44, 45, 46, 60, 104, 105, 118, 119] {
-        let mut p = Pixmap::new(1280, 720).unwrap();
+        let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
         painter.draw_outro(&mut p, f); // 不 panic 即通过
         assert_eq!(p.width(), 1280);
     }
@@ -2241,8 +2267,8 @@ fn outro_renders_representative_frames_without_panicking() {
 /// 不能是写死的 360。
 ///
 /// 720 / 2 恰好等于 360，所以这个错误在 BASE 上**完全看不出来**——判据必须
-/// 用一个非 720 高的画布。这里不渲染，直接对推导式取值断言：渲染判据在
-/// BASE 上永远绿，起不到作用。
+/// 用一个非 720 高的画布。这里不渲染，直接对 `Metrics::cover_container_center_y`
+/// 取值断言：渲染判据在 BASE 上永远绿，起不到作用。
 #[test]
 fn cover_container_center_y_is_half_the_canvas_height() {
     let mut failures = Vec::new();
@@ -2251,7 +2277,7 @@ fn cover_container_center_y_is_half_the_canvas_height() {
         Canvas { w: 1920, h: 1080 },
         Canvas { w: 1080, h: 1920 },
     ] {
-        let actual = cover_container_center_y(c);
+        let actual = Metrics::for_canvas(c).cover_container_center_y;
         let expected = c.h_f32() / 2.0;
         if actual != expected {
             failures.push(format!(
@@ -2285,8 +2311,9 @@ fn outro_logo_and_ring_scale_with_width_not_height() {
         let logo_ratio = m.outro_logo_size as f32 / c.w_f32();
         let ring_ratio = m.outro_ring_radius_step / c.w_f32();
 
-        // 容差 1e-3 是必要的：logo_size 和 ring_radius_step 都通过 px() 闭包的 round()
-        // 计算，整数舍入差异会在除以浮点宽度后产生可观的误差。
+        // 容差 1e-3 是必要的：logo_size 通过 px() 闭包的 round() 计算成整数像素，
+        // 舍入差异会在除以浮点宽度后产生可观的误差；ring_radius_step 是原始的
+        // `216.0 * s`，本身没有取整，但仍与 logo_size 共用同一条容差判断。
         if (logo_ratio - base_logo_ratio).abs() >= 1e-3 {
             failures.push(format!(
                 "{}x{}: logo 占宽比应与 BASE 一致（{base_logo_ratio}），实得 {logo_ratio}；\
@@ -2357,4 +2384,49 @@ fn cover_watermark_center_y_is_eighty_percent_of_height() {
         "Cover 水印垂直中心回归失败：{:?}",
         failures
     );
+}
+
+/// `Painter` 按传入的画布建立版式，而不是永远用 BASE。
+///
+/// 判据：换一个宽度不同的画布，同一段文字的墨迹宽度必须按比例变化。若
+/// `Painter` 内部还在读 `Canvas::BASE`，两次渲染会完全一样。
+#[test]
+fn painter_lays_out_according_to_the_canvas_it_was_given() {
+    let b = test_branding();
+    let base = Canvas::BASE;
+    let wide = Canvas { w: 2560, h: 1440 };
+
+    let mut p_base = Painter::new(&b, base).unwrap();
+    let mut p_wide = Painter::new(&b, wide).unwrap();
+
+    let mut a = Pixmap::new(base.w, base.h).unwrap();
+    let mut c = Pixmap::new(wide.w, wide.h).unwrap();
+    p_base.draw_intro(&mut a, 60, "标题");
+    p_wide.draw_intro(&mut c, 60, "标题");
+
+    let (ax0, _, ax1, _) = ink_bbox(&a).expect("BASE 应有墨迹");
+    let (cx0, _, cx1, _) = ink_bbox(&c).expect("宽画布应有墨迹");
+    let base_ratio = (ax1 - ax0) as f32 / base.w_f32();
+    let wide_ratio = (cx1 - cx0) as f32 / wide.w_f32();
+    assert!(
+        (base_ratio - wide_ratio).abs() < 0.02,
+        "标题墨迹占画布宽的比例应与画布无关；BASE {base_ratio} vs 宽画布 {wide_ratio}"
+    );
+}
+
+/// 白底上的墨迹包围盒（任一通道显著低于 255 即算墨迹）。
+fn ink_bbox(p: &Pixmap) -> Option<(u32, u32, u32, u32)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    for y in 0..p.height() {
+        for x in 0..p.width() {
+            let c = p.pixel(x, y).unwrap();
+            if c.red() < 240 || c.green() < 240 || c.blue() < 240 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    (x0 != u32::MAX).then_some((x0, y0, x1, y1))
 }
