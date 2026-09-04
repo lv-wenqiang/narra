@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::Branding;
+use crate::render::canvas::Canvas;
 use crate::vtt::Caption;
 use tiny_skia::Pixmap;
 
@@ -836,7 +837,7 @@ fn cover_dynamic_windows(painter: &mut Painter, title: &str) -> (u32, u32, u32, 
     };
     let (_, title_h) = painter.renderer.measure(title, &title_style);
     let container_h = COVER_ROW_HEIGHT_PX + title_h;
-    let container_top = COVER_CONTAINER_CENTER_Y - container_h / 2.0;
+    let container_top = cover_container_center_y(Canvas::BASE) - container_h / 2.0;
     let row_bottom = container_top + COVER_ROW_HEIGHT_PX;
     let title_bottom = row_bottom + title_h;
 
@@ -2209,5 +2210,28 @@ fn outro_renders_representative_frames_without_panicking() {
         let mut p = Pixmap::new(1280, 720).unwrap();
         painter.draw_outro(&mut p, f); // 不 panic 即通过
         assert_eq!(p.width(), 1280);
+    }
+}
+
+/// **陷阱 1 回归**（规格 §3）：Cover 居中容器的垂直中心必须是 `h / 2`，
+/// 不能是写死的 360。
+///
+/// 720 / 2 恰好等于 360，所以这个错误在 BASE 上**完全看不出来**——判据必须
+/// 用一个非 720 高的画布。这里不渲染，直接对推导式取值断言：渲染判据在
+/// BASE 上永远绿，起不到作用。
+#[test]
+fn cover_container_center_y_is_half_the_canvas_height() {
+    for c in [
+        Canvas::BASE,
+        Canvas { w: 1920, h: 1080 },
+        Canvas { w: 1080, h: 1920 },
+    ] {
+        assert_eq!(
+            cover_container_center_y(c),
+            c.h_f32() / 2.0,
+            "Cover 容器应垂直居中于画布；写死 360 时 {}x{} 会偏上",
+            c.w,
+            c.h
+        );
     }
 }

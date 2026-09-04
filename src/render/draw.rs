@@ -21,6 +21,7 @@ use std::path::Path;
 use crate::assets::logo_rgba;
 use crate::config::Branding;
 use crate::render::anim::{interpolate, interpolate3, spring};
+use crate::render::canvas::Canvas;
 use crate::render::text::{TextRenderer, TextStyle};
 use crate::vtt::Caption;
 
@@ -90,10 +91,20 @@ const WATERMARK_SEP_OPACITY_MUL: f32 = 0.75;
 const WATERMARK_SEP: &str = "·";
 
 /// Cover 居中容器（规格 §8.4「Cover」小节 + 协调者交接的精确排版）：
-/// 宽度 80% = 1024px，水平居中，整个容器（上排 + 主标题）垂直居中于 y=360。
+/// 宽度 80% = 1024px，水平居中，整个容器（上排 + 主标题）垂直居中于画布中心。
 const COVER_CONTAINER_WIDTH_PX: f32 = CANVAS_W * 0.8;
 const COVER_CONTAINER_LEFT_PX: f32 = (CANVAS_W - COVER_CONTAINER_WIDTH_PX) / 2.0;
-const COVER_CONTAINER_CENTER_Y: f32 = 360.0;
+
+/// Cover 居中容器的垂直中心：画布高度的一半。
+///
+/// **重构前这里写死 `360.0`**，而 `CANVAS_H / 2 = 720 / 2` 恰好等于 360——
+/// 两种写法在 BASE 上给出相同的数，所以这个错误在 1280×720 下怎么测都测
+/// 不出来。换尺寸才会暴露：1080 高下应为 540（写死值偏上 180px），
+/// 1920 高下应为 960（偏上 600px）。旁边的 `CAPTION_CENTER_Y` 与
+/// `INTRO_TITLE_CENTER_Y` 一直是 `CANVAS_H / 2.0`，只有它掉了队。
+fn cover_container_center_y(canvas: Canvas) -> f32 {
+    canvas.h_f32() / 2.0
+}
 
 /// 上排（logo + 品牌名）：左对齐（不是居中），左偏移 40px，
 /// 整体不透明度 0.30。
@@ -755,7 +766,7 @@ impl Painter {
         let (_, title_h) = self.renderer.measure(title, &title_style);
 
         let container_h = COVER_ROW_HEIGHT_PX + title_h;
-        let container_top = COVER_CONTAINER_CENTER_Y - container_h / 2.0;
+        let container_top = cover_container_center_y(Canvas::BASE) - container_h / 2.0;
         let row_center_y = container_top + COVER_ROW_HEIGHT_PX / 2.0;
         let title_center_y = container_top + COVER_ROW_HEIGHT_PX + title_h / 2.0;
 
