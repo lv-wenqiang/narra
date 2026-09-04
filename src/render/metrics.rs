@@ -60,6 +60,8 @@ impl Metrics {
     pub fn for_canvas(canvas: Canvas) -> Self {
         let s = canvas.scale();
         // 四舍五入到整数像素的辅助：图标与 logo 是位图，尺寸必须是整数。
+        // `f32::round()` 将 .5 舍入远离零，所以半像素恰好落在 .5 时（如 28.0 * 1.125 = 31.5）
+        // 会一致地向上舍入。
         let px = |v: f32| (v * s).round() as u32;
         Self {
             canvas,
@@ -133,25 +135,25 @@ mod tests {
 
     /// 长度量纲一律随 `scale` 线性放缩，且**「动画」小节里那三个像素位移
     /// 也在内**——它们看着像动画参数，量纲却是像素，是最容易漏的一类。
+    ///
+    /// 本测试逐一断言全部 25 个字段，而非抽样检查：在 BASE 尺寸处 `scale == 1.0`，
+    /// 忘记乘 `* s` 的字段会被掩盖（`12.0` 与 `12.0 * 1.0` 都给出 12.0）。
+    /// 只在抽样字段上断言会让大多数字段的缩放回归无人察觉。
     #[test]
     fn every_length_scales_linearly_including_the_animation_offsets() {
         let base = Metrics::for_canvas(Canvas::BASE);
         let double = Metrics::for_canvas(Canvas { w: 2560, h: 720 });
+        // f32 fields (22)
+        assert_eq!(double.caption_padding_x, base.caption_padding_x * 2.0);
+        assert_eq!(
+            double.caption_font_size_long,
+            base.caption_font_size_long * 2.0
+        );
         assert_eq!(
             double.caption_font_size_short,
             base.caption_font_size_short * 2.0
         );
-        assert_eq!(
-            double.cover_title_font_size,
-            base.cover_title_font_size * 2.0
-        );
-        assert_eq!(
-            double.watermark_margin_left,
-            base.watermark_margin_left * 2.0
-        );
-        assert_eq!(double.cover_logo_size, base.cover_logo_size * 2);
-        assert_eq!(double.watermark_icon_size, base.watermark_icon_size * 2);
-        // 三个「看着像动画、量纲是像素」的
+        assert_eq!(double.caption_stroke_width, base.caption_stroke_width * 2.0);
         assert_eq!(
             double.entrance_translate_x_from,
             base.entrance_translate_x_from * 2.0,
@@ -163,9 +165,58 @@ mod tests {
             "入场字距是像素，必须跟着缩放"
         );
         assert_eq!(
+            double.watermark_margin_left,
+            base.watermark_margin_left * 2.0
+        );
+        assert_eq!(
+            double.watermark_margin_bottom,
+            base.watermark_margin_bottom * 2.0
+        );
+        assert_eq!(double.watermark_font_size, base.watermark_font_size * 2.0);
+        assert_eq!(double.watermark_icon_gap, base.watermark_icon_gap * 2.0);
+        assert_eq!(
+            double.cover_watermark_font_size,
+            base.cover_watermark_font_size * 2.0
+        );
+        assert_eq!(
+            double.cover_watermark_icon_gap,
+            base.cover_watermark_icon_gap * 2.0
+        );
+        assert_eq!(
+            double.cover_row_margin_left,
+            base.cover_row_margin_left * 2.0
+        );
+        assert_eq!(double.cover_logo_margin, base.cover_logo_margin * 2.0);
+        assert_eq!(
+            double.cover_row_text_font_size,
+            base.cover_row_text_font_size * 2.0
+        );
+        assert_eq!(
+            double.cover_title_font_size,
+            base.cover_title_font_size * 2.0
+        );
+        assert_eq!(double.cover_title_padding, base.cover_title_padding * 2.0);
+        assert_eq!(
+            double.intro_title_font_size,
+            base.intro_title_font_size * 2.0
+        );
+        assert_eq!(double.intro_cursor_gap, base.intro_cursor_gap * 2.0);
+        assert_eq!(
+            double.outro_title_font_size,
+            base.outro_title_font_size * 2.0
+        );
+        assert_eq!(double.outro_title_gap, base.outro_title_gap * 2.0);
+        assert_eq!(
             double.outro_title_translate_y_from,
             base.outro_title_translate_y_from * 2.0,
             "Outro 标题的归位位移是像素，必须跟着缩放"
         );
+        // u32 fields (3)
+        assert_eq!(double.watermark_icon_size, base.watermark_icon_size * 2);
+        assert_eq!(
+            double.cover_watermark_icon_size,
+            base.cover_watermark_icon_size * 2
+        );
+        assert_eq!(double.cover_logo_size, base.cover_logo_size * 2);
     }
 }
