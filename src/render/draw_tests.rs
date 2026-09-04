@@ -2048,8 +2048,12 @@ fn outro_fades_out_at_the_end() {
 #[test]
 fn outro_logo_pixmap_is_scaled_to_216px() {
     let painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
-    assert_eq!(painter.logo_216.width(), 216, "outro logo 应缩放到 216px");
-    assert_eq!(painter.logo_216.height(), 216, "outro logo 应缩放到 216px");
+    assert_eq!(painter.logo_outro.width(), 216, "outro logo 应缩放到 216px");
+    assert_eq!(
+        painter.logo_outro.height(),
+        216,
+        "outro logo 应缩放到 216px"
+    );
 }
 
 /// **N: 圆环半径系数 0.3→0.5**。半径公式 `720*0.3*i` 与 logo 尺寸公式

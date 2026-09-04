@@ -587,10 +587,10 @@ pub struct Painter {
     /// Outro 都不画。
     cover_watermark: Option<PreparedWatermark>,
     /// Cover 上排用的 logo，`new()` 里用 Lanczos3 缩好一次缓存起来
-    /// （Task 6；Task 7 的 outro 版本是并列的另一个字段，见 `logo_216`）。
-    logo_36: Pixmap,
+    /// （Task 6；Task 7 的 outro 版本是并列的另一个字段，见 `logo_outro`）。
+    logo_cover: Pixmap,
     /// Outro 用的 logo（Task 7），同样在 `new()` 里缩好一次缓存起来。
-    logo_216: Pixmap,
+    logo_outro: Pixmap,
 }
 
 impl Painter {
@@ -639,16 +639,16 @@ impl Painter {
             .transpose()?;
         let logo_src =
             load_logo_source(branding.logo.as_deref().map(Path::new), m.outro_logo_size)?;
-        let logo_36 = scaled_logo(&logo_src, m.cover_logo_size)?;
-        let logo_216 = scaled_logo(&logo_src, m.outro_logo_size)?;
+        let logo_cover = scaled_logo(&logo_src, m.cover_logo_size)?;
+        let logo_outro = scaled_logo(&logo_src, m.outro_logo_size)?;
         Ok(Self {
             renderer,
             m,
             brand: branding.brand.clone(),
             content_watermark,
             cover_watermark,
-            logo_36,
-            logo_216,
+            logo_cover,
+            logo_outro,
         })
     }
 
@@ -723,12 +723,19 @@ impl Painter {
     }
 
     /// 绘制 Cover 段一帧（规格 §8.4「Cover」小节）：不透明白底 + 左上排
-    /// （logo + 品牌名，整体 0.30 透明度，左对齐）+ 主标题（100px
-    /// 粗体，居中，支持换行）+ `cover` 预设水印。
+    /// （logo + 品牌名，整体 0.30 透明度，左对齐）+ 主标题（BASE 上 100px，
+    /// 即 `Metrics::cover_title_font_size`，粗体，居中，支持换行）+
+    /// `cover` 预设水印。
     ///
-    /// 居中容器（宽 1024px）整体垂直居中于 y=360：上排固定 52px 高
-    /// （logo 36px + 上下 margin 各 8px），主标题紧随其后，容器总高
-    /// = 52 + 主标题排版高度，容器顶 = 360 - 总高/2。
+    /// 居中容器（`Metrics::cover_container_width`，画布宽度的 80%，BASE 上
+    /// 1024px）整体垂直居中于 `Metrics::cover_container_center_y`（画布高度
+    /// 的一半，BASE 上 y=360）：上排高度固定为
+    /// `Metrics::cover_row_height`（BASE 上 52px = logo `Metrics::cover_logo_size`
+    /// 36px + 上下 margin `Metrics::cover_logo_margin` 各 8px），主标题紧随
+    /// 其后，容器总高 = 上排高度 + 主标题排版高度，容器顶 =
+    /// `cover_container_center_y` − 总高/2。上面这些数字全部是 BASE
+    /// （1280×720）画布上的取值，实际渲染按传入的 `Canvas` 通过
+    /// `Metrics::for_canvas` 等比例推导，见各字段自己的文档注释。
     pub fn draw_cover(&mut self, pixmap: &mut Pixmap, title: &str) {
         pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
 
@@ -755,7 +762,7 @@ impl Painter {
         pixmap.draw_pixmap(
             logo_left.round() as i32,
             logo_top.round() as i32,
-            self.logo_36.as_ref(),
+            self.logo_cover.as_ref(),
             &PixmapPaint {
                 opacity: COVER_ROW_OPACITY,
                 ..Default::default()
@@ -979,7 +986,7 @@ impl Painter {
         pixmap.draw_pixmap(
             0,
             0,
-            self.logo_216.as_ref(),
+            self.logo_outro.as_ref(),
             &PixmapPaint {
                 opacity: fade_opacity,
                 quality: FilterQuality::Bilinear,
