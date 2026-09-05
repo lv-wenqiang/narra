@@ -900,3 +900,152 @@ nb_frames=789`，`aac / sample_rate=48000 / channels=2 / channel_layout=stereo`�
 | TTS 退回 `{MIX_FORMAT}`（修复前的真实状态） | 4 条变红 |
 | `TTS_MIX_FORMAT` 去掉 `aformat=sample_rates=48000,`（只剩 `pan`） | 2 条变红 |
 | `pan=stereo\|c0=c0\|c1=c0` → `\|c1=c1`（对单声道输入是错的） | 1 条变红 |
+
+## 10. 横版/竖版画幅实测吞吐与产物规格（Task 3，2026-09-05）
+
+> 背景：`docs/superpowers/specs/2026-09-04-orientation-and-resolution-design.md`
+> §7 按像素量把第 5 节的 **142fps**（`pipe_probe` 探针「叠加+编码」稳态均值，
+> 见 §5.1）线性外推到 **63fps**，据此判断两档仍在 30fps 实时线以上、余量
+> 2.1×。本节用 `panda render` 真实二进制（release build）实测替换这个外推值。
+
+### 10.1 方法
+
+- 二进制：`cargo build --release` 之后 `cargo run --release --quiet -- render ...`；
+  未用 debug build。
+- 复用同一份既有 TTS 产物 `output/tts/audio.mp3` / `output/tts/audio.vtt`
+  （2026-09-04 生成，`A=16.276s`），**没有重跑 TTS**——两档之间唯一变量是
+  `--orientation`，`--bg`/`--bgm` 都吃默认值（`public/video/0.mp4` /
+  `public/bgm/0.mp3`）。
+- LANDSCAPE、PORTRAIT 各跑 **3 次**（不是只取最快一次），每次写到独立输出
+  文件；命令：
+
+  ```bash
+  cargo run --release --quiet -- render \
+      --audio output/tts/audio.mp3 --vtt output/tts/audio.vtt \
+      --orientation {landscape|portrait} --title "吞吐实测" \
+      -o /tmp/bench/{orientation}-{N}.mp4
+  ```
+
+- 挂钟耗时用 `date +%s.%N` 前后取差（本机没装 `/usr/bin/time`，GNU coreutils
+  的 `time` 不在 PATH 上，退而求其次；只拿到挂钟时间，没有拿到 `user/sys/cpu%`
+  这类细分，比 §9.4 的记录粗一些）。
+- **未隔离机器负载**：跑测期间 `uptime` 的 1/5/15 分钟平均从起跑前的
+  `1.10 / 3.29 / 3.15` 升到跑到第三组时的 `5.86 / 4.08 / 3.46`（20 核）。不能
+  排除机器上同时有其他进程、或本次连续 `cargo run` 本身推高了 1 分钟平均值；
+  下面的 fps 数字不是在空载机器上测的。
+
+### 10.2 三档吞吐对照
+
+| 档位 | 分辨率 | 像素量 | 相对 BASE | 帧数 | 挂钟耗时（3 次） | 平均 fps | 实时倍率 |
+|---|---|---|---|---|---|---|---|
+| BASE（未测，引自 §9.4） | 1280x720 | 921,600 | 1.00× | 789 | 15.474s（Task 8 单次记录） | 51.0 | 1.70× |
+| LANDSCAPE | 1920x1080 | 2,073,600 | 2.25× | 789 | 22.520s / 22.581s / 22.151s | **35.20** | **1.17×** |
+| PORTRAIT | 1080x1920 | 2,073,600 | 2.25× | 789 | 23.199s / 24.088s / 23.881s | **33.27** | **1.11×** |
+
+逐次 fps（`帧数(789) / 挂钟耗时`）：
+
+| 档位 | 第 1 次 | 第 2 次 | 第 3 次 |
+|---|---|---|---|
+| LANDSCAPE | 35.04 fps（1.168×） | 34.94 fps（1.165×） | 35.62 fps（1.187×） |
+| PORTRAIT | 34.01 fps（1.134×） | 32.75 fps（1.092×） | 33.04 fps（1.101×） |
+
+BASE 一行是 §9.4 已有的单次记录（`panda render` 纯合成、静音对照），**本次没有
+重新测 BASE**——`Canvas::BASE`（1280x720）设计上不经 CLI 暴露，无法用同一条
+命令行复现，此处只引用旧数字做对照，不是新测量。
+
+### 10.3 与规格 §7 外推值（63fps）的对照——外推明显偏高
+
+规格 §7 的外推链路：`141.7fps`（§5.1 稳态均值）`÷ 2.25 ≈ 62.98fps`，四舍五入写
+成「约 63fps」。实测：
+
+| | 外推值 | 实测均值 | 实测/外推 |
+|---|---|---|---|
+| LANDSCAPE | 62.98 fps | 35.20 fps | **55.9%** |
+| PORTRAIT | 62.98 fps | 33.27 fps | **52.8%** |
+
+**实测比外推值低了近一半，这是本节要报告的主要发现，不是噪声**——三次运行
+彼此接近（landscape 34.94~35.62、portrait 32.75~34.01），不存在偶发慢跑拉低
+均值的情况。
+
+**原因分析**：§7 外推用的基线（142fps）来自 `pipe_probe` 探针（§5.1），那条
+探针的写帧线程只做内存 `memcpy`，**不含真实渲染**；而同一份文档 §9.4 已经
+记录过，`panda render` 真实管道（tiny-skia 逐帧渲染 + 反预乘 + 写 stdin，与
+ffmpeg 编码并行）在 BASE 分辨率下的稳态吞吐是 **51.0fps**，只有探针的 36%
+——§9.4 当时就写明「与第 5 节探针的落差不是回归，是因为探针没有真实渲染」。
+换句话说，**§7 从一开始就外推错了基线**：应该从「真实管道在 BASE 下的
+51.0fps」外推，而不是从「无渲染探针在 BASE 下的 142fps」外推。
+
+若从 §9.4 的真实基线做同样的线性外推：`51.0 ÷ 2.25 ≈ 22.7fps`。而本次实测
+（LANDSCAPE 35.20fps、PORTRAIT 33.27fps）**反而比这个「正确基线的线性外推」
+高出约 1.5×**（35.20/22.67≈1.55、33.27/22.67≈1.47）。这说明：
+
+- 像素量翻 2.25× 之后，端到端吞吐的下降**不是线性的**——涨的那部分开销
+  （主要是 x264 编码，运动估计/去块滤波确有非线性成分）没有把 tiny-skia
+  渲染那部分开销同比例拉大（字幕/logo/水印等叠加元素的绘制量本身不随画布
+  像素量线性增长）。
+- 但 §7 用错误基线做出的「约 63fps」这个数字本身没有实测支撑，实测数字与它
+  相差近一倍，**不能拿外推值当依据判断「仍在实时线以上」，必须用本节的实测
+  数字**。
+
+### 10.4 产物规格（`ffprobe` 实测）
+
+```
+$ ffprobe -v error -show_entries stream=codec_name,width,height,pix_fmt,r_frame_rate,nb_frames \
+    -show_entries stream=codec_name,sample_rate,channels,channel_layout \
+    -show_entries format=duration,size -of default=nw=1 /tmp/bench/landscape-1.mp4
+codec_name=h264  width=1920  height=1080  pix_fmt=yuv420p  r_frame_rate=30/1  nb_frames=789
+codec_name=aac   sample_rate=48000  channels=2  channel_layout=stereo
+duration=26.300000  size=6589202
+
+$ ffprobe ... /tmp/bench/portrait-1.mp4
+codec_name=h264  width=1080  height=1920  pix_fmt=yuv420p  r_frame_rate=30/1  nb_frames=789
+codec_name=aac   sample_rate=48000  channels=2  channel_layout=stereo
+duration=26.300000  size=6066806
+```
+
+**音频四项逐字相同**（`sample_rate=48000`、`channels=2`、`channel_layout=stereo`、
+`duration=26.300000`），三组 LANDSCAPE/PORTRAIT 重复运行的视频流 `width` /
+`height` / `nb_frames=789` / `duration=26.300000` 也逐次一致（见 §10.1 命令跑出
+的 6 个文件，逐一 `ffprobe` 核对过）。音频链路与画幅无关，两档读数一致——
+**没有串音频/视频参数的迹象**，Step 2 的正确性门槛通过。
+
+### 10.5 竖版背景裁切实况
+
+背景素材 `public/video/0.mp4` 是 1920×1080。PORTRAIT 画布 1080×1920 用 cover
+语义（`force_original_aspect_ratio=increase` + `crop`）把它按高度撑满再居中
+裁掉两侧：
+
+```
+缩放后宽度 = 1920 × (1920 / 1080) = 3413.33px（按高度 1920 撑满）
+保留比例   = 1080 / 3413.33 ≈ 31.6%
+```
+
+即横版素材只有中间约 31.6% 的宽度会出现在竖版成片里，两侧各约 34.2% 被裁掉。
+
+**抽帧佐证**（同一时刻 `t=10s`，取自 §10.1 产出的 `landscape-1.mp4` /
+`portrait-1.mp4`）：
+
+```bash
+ffmpeg -y -v error -ss 10 -i /tmp/bench/landscape-1.mp4 -frames:v 1 /tmp/bench/frames/landscape-t10.png
+ffmpeg -y -v error -ss 10 -i /tmp/bench/portrait-1.mp4  -frames:v 1 /tmp/bench/frames/portrait-t10.png
+```
+
+肉眼核对两张 PNG：LANDSCAPE 帧完整可见画面左侧的窗户/防护网/远处草坪树木，
+以及右侧一摞碟片/杂志；PORTRAIT 帧里这两块都不见了，**只剩中间那一列书架**
+（书脊、隔板），左侧窗户和右侧碟片摞被裁掉——与 31.6% 保留比例的计算吻合，
+不是靠公式空算，是两帧实图比对出来的。
+
+### 10.6 结论
+
+**两档实测吞吐都仍在 30fps 实时线以上**（LANDSCAPE 均值 35.20fps / 1.17×，
+PORTRAIT 均值 33.27fps / 1.11×），规格 §7「仍在实时线以上」的结论没有被推翻。
+但**余量比外推的 2.1× 薄得多**——实测倍率只有 1.1~1.2×，且本次测量没有隔离
+机器负载（§10.1），真实空载机器上的数字可能更高，但也可能因为其他因素更低,
+**不能把 1.1~1.2× 当成有安全边际的余量**。
+
+建议：如果后续要给这两档留出更从容的实时余量，可以考虑（任选其一，本任务
+不改代码，只记录方向）——① 把 `-crf 23` 调高几档（如 26~28）换吞吐；
+② 显式加 `-preset`（当前没有显式 `-preset`，x264 默认走 `medium`，换成
+`fast`/`veryfast` 预计能明显提吞吐，代价是码率上升，需要重新测）；
+③ 视产品需求把默认档降回 BASE（当前默认已经是 LANDSCAPE，见
+`5cfe7d4`/`7e5c812`），三者都需要新的实测，本任务范围内未测。
