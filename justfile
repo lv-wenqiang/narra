@@ -24,6 +24,7 @@ default:
 #    分钟计的一步，任何能在它之前发现的错误都应该在它之前发现。
 # 2. 额外参数原样透传给 `panda render`，例如：
 #      just make 文稿.txt --brand 墨风 --watermark-cover "墨风 · 自动化引擎"
+#      just make 文稿.txt --orientation portrait
 
 # 文稿 → TTS → 成片，一条龙
 make input="" *render_args="":
@@ -51,3 +52,15 @@ make input="" *render_args="":
         --bg "{{ bg }}" \
         --bgm "{{ bgm }}" \
         {{ render_args }}
+
+# 一份文稿出两档成片（横版 + 竖版），复用同一次 TTS
+make-both input="" *render_args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just make "{{ input }}" --orientation landscape -o output/video/landscape.mp4 {{ render_args }}
+    # 第二次跳过 TTS：产物已在 {{ tts_outdir }}，直接渲染
+    cargo run --release --quiet -- render \
+        --audio "{{ tts_outdir }}/audio.mp3" \
+        --vtt "{{ tts_outdir }}/audio.vtt" \
+        --bg "{{ bg }}" --bgm "{{ bgm }}" \
+        --orientation portrait -o output/video/portrait.mp4 {{ render_args }}
