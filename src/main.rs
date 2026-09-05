@@ -1010,6 +1010,18 @@ mod tests {
     /// 在真正调用 ffmpeg 之前，用注入的假 `runner` 拦下组装好的
     /// `RenderInputs`，逐字段核对它确实来自 `ComposeVideoInputs` 里同名的
     /// 那个字段。
+    ///
+    /// **修复轮（画幅）**：`canvas` 也是这段胶水代码接的线之一——
+    /// `ComposeVideoInputs.canvas` → `FrameSource::new` → `source.canvas()`
+    /// → `RenderInputs.canvas`，`--orientation` 唯一经过的就是这条路。此前
+    /// 本条测试传的是 `canvas: Canvas::BASE` 且从不断言 `render_inputs
+    /// .canvas`，于是把这里的 `canvas` 实参错写成 `Canvas::BASE` 全量测试
+    /// 照样全绿：下游的 `println!` 与 ffmpeg 的 `-s`/`scale=`/`crop=` 全都
+    /// 读 `source.canvas()`，整条管线自洽，只是静悄悄产出 1280×720。
+    ///
+    /// 所以这里刻意用 `Canvas::PORTRAIT`——**非 BASE 且非正方形**。用 BASE
+    /// 的话，变异后等号两边同时变成 BASE，断言照样绿（这正是原先失效的
+    /// 原因）；非正方形则顺带挡住「宽高被对调」。
     #[test]
     fn compose_video_wires_intro_typewriter_and_audio_bgm_without_swapping_at_the_call_site() {
         let dir = std::env::temp_dir().join(format!("panda_compose_wiring_{}", std::process::id()));
@@ -1038,8 +1050,14 @@ mod tests {
             bg: &bg,
             bgm: &bgm,
             out: &out,
-            canvas: Canvas::BASE,
+            canvas: Canvas::PORTRAIT,
         };
+        assert_ne!(
+            inputs.canvas,
+            Canvas::BASE,
+            "本条测试的画幅必须非 BASE，否则下面那条 canvas 断言在变异后照样绿"
+        );
+        assert_ne!(inputs.canvas.w, inputs.canvas.h, "非正方形才挡得住宽高对调");
 
         let mut runner_called = false;
         let result = compose_video_with_runner(&inputs, |_source, render_inputs| {
@@ -1073,6 +1091,12 @@ mod tests {
                 "intro 字段应指向片尾音效文件，而不是打字机音效"
             );
             assert_eq!(render_inputs.out, out.as_path());
+            assert_eq!(
+                render_inputs.canvas, inputs.canvas,
+                "canvas 应从 ComposeVideoInputs 原样接到 RenderInputs——\
+                 这条链上唯一的一步是 FrameSource::new(.., canvas)，\
+                 把它写死成 Canvas::BASE 会静悄悄产出 1280x720 而整条管线自洽"
+            );
             Ok(())
         });
 
@@ -1238,18 +1262,57 @@ mod tests {
         assert_eq!(inputs.out, Path::new(&config::video_output_path()));
     }
 
-    /// **默认画幅是 1920×1080，不再是 1280×720。**
+    /// **`--orientation` 真的走到了导出的像素上。**
     ///
-    /// 这是本计划唯一改变用户可见行为的地方，值得单独钉住：`Canvas::BASE`
-    /// 退化成了调优基准与测试基线，不再是任何一条生产路径的输出尺寸。
+    /// `run_debug_frames` 此前完全没有测试：把它里面 `FrameSource::new` 的
+    /// `canvas` 实参改回 `Canvas::BASE`，全量测试一条都不会红——PNG 照常
+    /// 导出、帧号照常打印、`--orientation portrait` 静悄悄产出 1280×720。
+    ///
+    /// 判据取**导出文件的实际像素尺寸**，而不是再断言一遍
+    /// `Orientation::resolve(None).canvas()`：后者（此处原先那条
+    /// `default_orientation_renders_at_landscape_not_base`）只是重复
+    /// `tests/config_env.rs::orientation_resolve_prefers_cli_over_env_over_landscape`
+    /// 已经断言过的东西，零渲染力，且读进程环境不清理——
+    /// `ORIENTATION=portrait cargo test` 会让它变红。改成从磁盘上的 PNG 读
+    /// 宽高，既咬得住真正的接线，也与环境变量无关。
+    ///
+    /// 画幅取 `Canvas::PORTRAIT`：非 BASE（变异后 1280×720 ≠ 1080×1920）
+    /// 且非正方形（宽高对调也会红）。只导一帧（`--frames 0`，Cover 段），
+    /// 尺寸判据一帧就够，不必为它付整条时间轴的渲染时间。
     #[test]
-    fn default_orientation_renders_at_landscape_not_base() {
-        let canvas = Orientation::resolve(None).unwrap().canvas();
-        assert_eq!(canvas, Canvas::LANDSCAPE);
-        assert_ne!(
+    fn debug_frames_exports_pngs_at_the_requested_canvas_size() {
+        let dir = std::env::temp_dir().join(format!("panda_debug_frames_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let vtt = dir.join("a.vtt");
+        std::fs::write(&vtt, RENDER_TEST_VTT).unwrap();
+        let out = dir.join("frames");
+
+        let canvas = Canvas::PORTRAIT;
+        assert_ne!(canvas, Canvas::BASE, "判据画幅必须非 BASE");
+        assert_ne!(canvas.w, canvas.h, "非正方形才挡得住宽高对调");
+
+        run_debug_frames(
+            vtt,
+            Some("测试标题".into()),
+            Branding::plain(TEST_BRAND),
             canvas,
-            Canvas::BASE,
-            "BASE 是调优基准与测试基线，不该再是任何生产路径的输出尺寸"
+            out.clone(),
+            Some("0".into()),
+        )
+        .unwrap();
+
+        let png = out.join("frame_00000.png");
+        let pixmap = tiny_skia::Pixmap::load_png(&png)
+            .unwrap_or_else(|e| panic!("应导出 {}：{e}", png.display()));
+        assert_eq!(
+            (pixmap.width(), pixmap.height()),
+            (canvas.w, canvas.h),
+            "导出的 PNG 尺寸应等于传入的画幅，而不是写死的 {}x{}",
+            Canvas::BASE.w,
+            Canvas::BASE.h
         );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
