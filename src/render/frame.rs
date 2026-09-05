@@ -4,7 +4,7 @@
 //! （由音频时长算出的分段边界）与字幕列表，`render(global_frame)` 每次只做
 //! `segment_at` 查表 + 建画布 + 分发到对应 `draw_*`，不重造任何昂贵对象。
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::io::Write;
 use tiny_skia::Pixmap;
 
@@ -96,21 +96,28 @@ impl FrameSource {
 
     /// 逐帧渲染整条时间轴并写出 straight-alpha RGBA8，返回写出的帧数。
     ///
-    /// 缓冲区跨帧复用（一帧 3.5MB，每帧重新分配是纯浪费）。写失败立即返回
-    /// `Err` 并停止渲染——ffmpeg 提前退出时这里会收到 broken pipe，属于正常
-    /// 的失败路径，不是 panic。
-    pub fn write_rgba_frames<W: Write>(&mut self, out: &mut W) -> Result<u32> {
-        let total = self.total_frames();
-        let mut buf: Vec<u8> =
-            Vec::with_capacity(self.canvas.w as usize * self.canvas.h as usize * 4);
-        for f in 0..total {
-            let pixmap = self.render(f)?;
-            unpremultiply_into(&pixmap, &mut buf);
-            out.write_all(&buf)
-                .with_context(|| format!("写第 {f} 帧到管道失败"))?;
-        }
-        out.flush().context("刷新帧流管道失败")?;
-        Ok(total)
+    /// **渲染与写出跑在两个线程上**（`crate::render::stream::stream_frames`）：
+    /// 渲染留在调用线程，写出挪到作用域线程，中间一个容量 `CAPACITY` 的有界
+    /// 通道。同一个线程上串行做这两件事时，`render → write` 严格轮流——`write`
+    /// 一直卡到 ffmpeg 吃完这一帧，期间下一帧连渲染都没开始，实测端到端白丢
+    /// 约 18%（`docs/ffmpeg-pipeline.md` §11）。
+    ///
+    /// 缓冲区在两端之间循环复用（一帧 8.3MB，每帧重新分配是纯浪费）。写失败
+    /// 立即停止渲染——ffmpeg 提前退出时写端会收到 broken pipe，属于正常的失败
+    /// 路径，不是 panic。
+    pub fn write_rgba_frames<W: Write + Send>(&mut self, out: &mut W) -> Result<u32> {
+        let frame_bytes = self.canvas.w as usize * self.canvas.h as usize * 4;
+        crate::render::stream::stream_frames(
+            self.total_frames(),
+            frame_bytes,
+            crate::render::stream::CAPACITY,
+            |f, buf| {
+                let pixmap = self.render(f)?;
+                unpremultiply_into(&pixmap, buf);
+                Ok(())
+            },
+            out,
+        )
     }
 }
 

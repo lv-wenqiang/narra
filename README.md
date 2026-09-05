@@ -12,14 +12,14 @@
 ## 状态
 
 **可用**。四条链路（TTS、帧渲染、ffmpeg 合成、CLI）都已跑通真实素材的端到端
-验收，282 个测试通过（另有 8 个 `#[ignore]` 的重量级用例与吞吐探针，需要 ffmpeg
+验收，286 个测试通过（另有 8 个 `#[ignore]` 的重量级用例与吞吐探针，需要 ffmpeg
 与本地素材，手动跑）。
 
-默认档（`landscape`，1920×1080）与竖版（`--orientation portrait`，1080×1920）
-实测吞吐分别约 35.2fps / 33.3fps，只有 30fps 实时线的 1.1~1.2×——够用，但不是
-宽裕的余量；实测过程见 [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) §10。
-余量薄在哪已经分摊测清楚（同文档 §11）：**不是编码**（`-preset` 三档实测无差别），
-而是渲染与 ffmpeg 两段几乎没有重叠，端到端白丢约 18%。
+默认档（`landscape`，1920×1080）实测吞吐约 46fps，即 30fps 实时线的 1.5×
+（竖版略低）。这个余量是分摊测量之后拿到的：瓶颈**不是编码**（`-preset` 三档
+实测无差别），而是渲染与 ffmpeg 两段没有重叠——把写出挪到独立线程、中间挂一个
+有界通道之后，端到端少了 20%。全过程见
+[`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) §10~§12。
 
 个人自用工具，没有稳定性承诺——命令行参数与环境变量名可能随需要调整。
 已知的限制与待办记在 [`docs/follow-ups.md`](docs/follow-ups.md)，每条都注明了
@@ -194,6 +194,7 @@ src/
     edge.rs          Edge TTS 的 WebSocket 协议
     pipeline.rs      切句 → 并发合成 → 合并加速 → 写产物
   render/
+    stream.rs        帧流的两段流水线（渲染线程 / 写出线程 + 有界通道）
     timeline.rs      四段时间轴与段内帧换算
     anim.rs          插值与弹簧曲线
     text.rs          文字排版与绘制
