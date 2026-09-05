@@ -175,7 +175,7 @@ const MIX_FORMAT: &str = "aformat=sample_rates=48000:channel_layouts=stereo";
 /// **`c0=c0|c1=c0` 假设输入是单声道**：由 `tts::edge` 的
 /// `OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"` 结构性保证。若将来换成
 /// 立体声的 TTS 后端，这里会把左声道复制到两边、丢掉右声道，必须一并改。
-const TTS_MIX_FORMAT: &str = "aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0";
+const MONO_MIX_FORMAT: &str = "aformat=sample_rates=48000,pan=stereo|c0=c0|c1=c0";
 /// BGM 淡出时长（秒），规格 §9.3。
 const BGM_FADE_SECS: f64 = 2.0;
 /// BGM 在 TTS 之下的基准音量，规格 §9.3。
@@ -213,18 +213,109 @@ const SFX_VOLUME: f64 = 0.6;
 /// 默认 `Display` 吐出十几位小数（如 `st=11.999999999999998`）。虽然 ffmpeg
 /// 能接受，但这类输出既难读也难在测试里断言，故统一用 `{:.3}`（毫秒精度，
 /// 与 `adelay` 的单位一致）定长格式化。
-pub fn audio_filter_graph(audio_secs: f64, outro_start_secs: f64) -> String {
+/// 四路音频各自的声道数，决定每一路用哪种上混写法。
+///
+/// **为什么必须逐路区分**：`channel_layouts=stereo` 交给 swresample 做单声道
+/// 上混时会施加功率保持系数 0.7079（−3.01 dB），而 `pan=stereo|c0=c0|c1=c0` 是
+/// 单位增益；反过来，`pan` 那条写法作用在**立体声**输入上会把右声道整个丢掉、
+/// 塌成左声道。两种写法都不能无条件用，只能按输入的实际声道数选。
+///
+/// （试过的第三条路：`aresample=48000:ochl=stereo:rematrix_volume=1`。实测对
+/// 单声道仍是 −3.00 dB，不解决问题，见 `docs/ffmpeg-pipeline.md` §14。）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioLayouts {
+    pub tts: u32,
+    pub bgm: u32,
+    pub typewriter: u32,
+    pub outro: u32,
+}
+
+impl Default for AudioLayouts {
+    /// 探测不出来时的兜底：一律按立体声算。
+    ///
+    /// 选立体声而不是单声道，是因为两种猜错的代价不对称——把单声道当立体声，
+    /// 代价是那一路轻 3 dB；把立体声当单声道，代价是**右声道整个消失**。
+    fn default() -> Self {
+        Self {
+            tts: 2,
+            bgm: 2,
+            typewriter: 2,
+            outro: 2,
+        }
+    }
+}
+
+impl AudioLayouts {
+    /// 逐路探测声道数。任何一路探不出来就按立体声算（见 `Default` 实现）。
+    ///
+    /// 用 `ffprobe` 而不是仓库里已有的 symphonia（`src/duration.rs`）：这里要
+    /// 回答的是「**ffmpeg** 会把这个文件看成几声道」，那就该问 ffmpeg 自己的
+    /// 工具，而不是另一套解析器——两者对边角文件的判断可能不一致，而滤镜图是
+    /// 按 ffmpeg 的判断执行的。`ffprobe` 本来就是硬依赖（见 README「环境要求」）。
+    pub fn probe(i: &RenderInputs) -> Self {
+        let d = Self::default();
+        Self {
+            tts: probe_channels(i.tts_audio).unwrap_or(d.tts),
+            bgm: probe_channels(i.bgm).unwrap_or(d.bgm),
+            typewriter: probe_channels(i.typewriter).unwrap_or(d.typewriter),
+            outro: probe_channels(i.intro).unwrap_or(d.outro),
+        }
+    }
+}
+
+/// 一路输入该用哪种上混写法。单声道走单位增益的 `pan`，其余走 [`MIX_FORMAT`]。
+fn mix_format_for(channels: u32) -> &'static str {
+    if channels <= 1 {
+        MONO_MIX_FORMAT
+    } else {
+        MIX_FORMAT
+    }
+}
+
+/// 问 `ffprobe` 要某个文件第一条音频流的声道数。失败一律返回 `None`。
+fn probe_channels(path: &Path) -> Option<u32> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=channels",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+pub fn audio_filter_graph(
+    audio_secs: f64,
+    outro_start_secs: f64,
+    layouts: &AudioLayouts,
+) -> String {
     let content_ms = (CONTENT_START_SECS * 1000.0).round() as i64;
     let intro_ms = (INTRO_START_SECS * 1000.0).round() as i64;
     let outro_ms = (outro_start_secs * 1000.0).round() as i64;
     let fade_start = CONTENT_START_SECS + audio_secs - BGM_FADE_SECS;
 
+    // 每一路的上混写法由**它自己的声道数**决定，不是四路共用一个常量。
+    let tts_fmt = mix_format_for(layouts.tts);
+    let bgm_fmt = mix_format_for(layouts.bgm);
+    let type_fmt = mix_format_for(layouts.typewriter);
+    let intro_fmt = mix_format_for(layouts.outro);
+
     format!(
-        "[2:a]{TTS_MIX_FORMAT},adelay={content_ms}:all=1,volume=1[a_tts];\
-         [3:a]{MIX_FORMAT},adelay={content_ms}:all=1,volume={BGM_VOLUME},\
+        "[2:a]{tts_fmt},adelay={content_ms}:all=1,volume=1[a_tts];\
+         [3:a]{bgm_fmt},adelay={content_ms}:all=1,volume={BGM_VOLUME},\
          afade=t=out:st={fade_start:.3}:d={BGM_FADE_SECS}[a_bgm];\
-         [4:a]{MIX_FORMAT},adelay={intro_ms}:all=1,volume={SFX_VOLUME}[a_type];\
-         [5:a]{MIX_FORMAT},adelay={outro_ms}:all=1,volume={SFX_VOLUME}[a_intro];\
+         [4:a]{type_fmt},adelay={intro_ms}:all=1,volume={SFX_VOLUME}[a_type];\
+         [5:a]{intro_fmt},adelay={outro_ms}:all=1,volume={SFX_VOLUME}[a_intro];\
          [a_tts][a_bgm][a_type][a_intro]amix=inputs=4:normalize=0:duration=longest[a]"
     )
 }
@@ -255,7 +346,7 @@ pub struct RenderInputs<'a> {
 ///
 /// **`-stream_loop -1` 是输入选项**，必须紧贴它要循环的那个 `-i`。放错位置
 /// 会静默失效（素材播完即止，ffmpeg 不报错）。
-pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
+pub fn build_render_args(i: &RenderInputs, layouts: &AudioLayouts) -> Vec<String> {
     // Outro 起点 = Content 段起点 + content_frames，换算成秒。
     // `CONTENT_START_SECS * FPS` = 120 帧（Cover 15 帧 + Intro 105 帧）——
     // 这个 120 与 `audio_filter_graph` 文档里、以及 CONTENT_START_SECS 本身
@@ -271,7 +362,7 @@ pub fn build_render_args(i: &RenderInputs) -> Vec<String> {
         "[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,\
          crop={w}:{h},colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];\
          [bg][1:v]overlay=shortest=0[v];{}",
-        audio_filter_graph(i.audio_secs, outro_start_secs)
+        audio_filter_graph(i.audio_secs, outro_start_secs, layouts)
     );
 
     let s = |p: &Path| p.to_string_lossy().into_owned();
@@ -383,7 +474,7 @@ fn run_render_with_ffmpeg_binary(
             .with_context(|| format!("创建输出目录失败：{}", parent.display()))?;
     }
 
-    let args = build_render_args(inputs);
+    let args = build_render_args(inputs, &AudioLayouts::probe(inputs));
     let mut child = Command::new(program)
         .args(&args)
         .stdin(Stdio::piped())
@@ -435,13 +526,23 @@ fn run_render_with_ffmpeg_binary(
 
 #[cfg(test)]
 mod tests {
+    /// 测试里默认的声道布局：TTS 单声道（Edge TTS 恒为 24kHz 单声道），另三路
+    /// 立体声——这是本仓库自带素材的实际形状。
+    fn layouts() -> AudioLayouts {
+        AudioLayouts {
+            tts: 1,
+            bgm: 2,
+            typewriter: 2,
+            outro: 2,
+        }
+    }
     use super::*;
 
     #[test]
     fn audio_graph_uses_explicit_audio_stream_selectors() {
         // BGM 文件带内嵌 mjpeg 封面图（第二条流）。写 [3] 会把封面图当视频流
         // 拉进来；必须写 [3:a]。四路一律显式选音频流。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         for label in ["[2:a]", "[3:a]", "[4:a]", "[5:a]"] {
             assert!(g.contains(label), "缺少显式音频流选择器 {label}：{g}");
         }
@@ -453,7 +554,7 @@ mod tests {
     #[test]
     fn audio_graph_delays_each_source_to_its_segment_start() {
         // TTS 与 BGM 起点 4.0s；打字机 0.5s；片尾音效 = outro_start。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert!(
             g.contains("adelay=4000:all=1"),
             "TTS/BGM 应延迟 4000ms：{g}"
@@ -474,16 +575,16 @@ mod tests {
             .split(selector)
             .nth(1)
             .unwrap_or_else(|| panic!("滤镜图里找不到 {selector}：{graph}"));
-        // 三路立体声素材走 MIX_FORMAT，单声道的 TTS 走 TTS_MIX_FORMAT——
+        // 三路立体声素材走 MIX_FORMAT，单声道的 TTS 走 MONO_MIX_FORMAT——
         // 两者都必须紧跟 adelay=，认哪一个由支路自己决定，不接受第三种形状。
-        let after = [MIX_FORMAT, TTS_MIX_FORMAT]
+        let after = [MIX_FORMAT, MONO_MIX_FORMAT]
             .iter()
             .find_map(|prefix| after.strip_prefix(*prefix))
             .and_then(|r| r.strip_prefix(","))
             .and_then(|r| r.strip_prefix("adelay="))
             .unwrap_or_else(|| {
                 panic!(
-                    "{selector} 之后不是 {MIX_FORMAT},adelay= 或 {TTS_MIX_FORMAT},adelay=：{graph}"
+                    "{selector} 之后不是 {MIX_FORMAT},adelay= 或 {MONO_MIX_FORMAT},adelay=：{graph}"
                 )
             });
         after
@@ -522,7 +623,7 @@ mod tests {
         let content_start = first_frame_of(Segment::Content);
         let outro_start = first_frame_of(Segment::Outro);
 
-        let g = audio_filter_graph(audio_secs, outro_start as f64 / FPS as f64);
+        let g = audio_filter_graph(audio_secs, outro_start as f64 / FPS as f64, &layouts());
         let ms_of_frame = |f: u32| u64::from(f) * 1000 / u64::from(FPS);
 
         assert_eq!(
@@ -582,7 +683,7 @@ mod tests {
         // 规格 §9.3 的 [A-2, A] 是 Content 段内时间，Content 起点是 4.0s，
         // 所以绝对时间是 [4+A-2, 4+A]。A=10 → 淡出从 12.0s 开始，持续 2s。
         // 漏掉 +4.0 会得到 8.0——成片照样能播，但 BGM 提前 4 秒淡出。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert!(
             g.contains("afade=t=out:st=12.000:d=2"),
             "淡出应从绝对时间 12s 开始：{g}"
@@ -596,7 +697,7 @@ mod tests {
     #[test]
     fn bgm_fade_start_tracks_audio_length() {
         // 换一个 A 值，确认 12 不是写死的。A=30 → 4+30-2 = 32。
-        let g = audio_filter_graph(30.0, 36.0);
+        let g = audio_filter_graph(30.0, 36.0, &layouts());
         assert!(
             g.contains("afade=t=out:st=32.000:d=2"),
             "A=30 时淡出应从 32s 开始：{g}"
@@ -605,13 +706,13 @@ mod tests {
 
     #[test]
     fn bgm_is_ducked_to_zero_point_one_five_before_fading() {
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert!(g.contains("volume=0.15"), "BGM 基准音量应为 0.15：{g}");
     }
 
     #[test]
     fn sound_effects_use_zero_point_six_and_tts_is_unattenuated() {
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert_eq!(
             g.matches("volume=0.6").count(),
             2,
@@ -628,9 +729,9 @@ mod tests {
         // 接反——两者音量同为 0.6，仅起点不同——上面那条测试和音量计数测试都
         // 察觉不到，因为两个数值依旧都在字符串里，只是换了主人。这里改为断言
         // 「流选择器 + adelay」的连续子串，把配对关系钉死。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert!(
-            g.contains(&format!("[2:a]{TTS_MIX_FORMAT},adelay=4000:all=1")),
+            g.contains(&format!("[2:a]{MONO_MIX_FORMAT},adelay=4000:all=1")),
             "TTS 应在 [2:a] 上应用 4000ms 延迟：{g}"
         );
         assert!(
@@ -664,11 +765,11 @@ mod tests {
         // 成片缺陷，测试却全绿。这里把每一路的整条链作为一个连续子串来断
         // 言，而不是逐项检查「字符串里某处有某个值」，四路一次堵死，而不是
         // 只补出问题的那一对。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         for (label, chain) in [
             (
                 "TTS",
-                format!("[2:a]{TTS_MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"),
+                format!("[2:a]{MONO_MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"),
             ),
             (
                 "BGM",
@@ -706,15 +807,15 @@ mod tests {
     /// 那一路正是会把整条混音链拉回 24kHz 单声道的那一路。
     ///
     /// **四路并不共用同一个前缀**：三路立体声素材用 [`MIX_FORMAT`]，单声道的
-    /// TTS 用 [`TTS_MIX_FORMAT`]（`pan` 上混，不衰减 3.01 dB，理由见该常量）。
+    /// TTS 用 [`MONO_MIX_FORMAT`]（`pan` 上混，不衰减 3.01 dB，理由见该常量）。
     /// 所以「统一到 48kHz」这一半按 `sample_rates=48000` 计数——它是两个前缀
     /// 的共同部分，也是防止协商被拉走的那一道；「统一到立体声」这一半由每路
     /// 各自的前缀断言覆盖。
     #[test]
     fn every_branch_is_normalized_to_forty_eight_k_stereo_before_amix() {
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         for (sel, prefix) in [
-            ("[2:a]", TTS_MIX_FORMAT),
+            ("[2:a]", MONO_MIX_FORMAT),
             ("[3:a]", MIX_FORMAT),
             ("[4:a]", MIX_FORMAT),
             ("[5:a]", MIX_FORMAT),
@@ -746,7 +847,7 @@ mod tests {
 
     #[test]
     fn tts_branch_upmixes_mono_with_pan_not_channel_layouts() {
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         let tts = branch_of(&g, "[2:a]");
         assert!(
             tts.contains("pan=stereo|c0=c0|c1=c0"),
@@ -797,7 +898,7 @@ mod tests {
     #[test]
     fn adelay_rounds_rather_than_truncates_on_non_integer_seconds() {
         // 小数部分 < 0.5：两种口径同值，作为对照说明这一条本身不足以区分。
-        let g = audio_filter_graph(10.01, (120.0 + 361.0) / 30.0);
+        let g = audio_filter_graph(10.01, (120.0 + 361.0) / 30.0, &layouts());
         assert_eq!(
             delay_ms_of(&g, "[5:a]"),
             16033,
@@ -805,7 +906,7 @@ mod tests {
         );
 
         // 小数部分 > 0.5：四舍五入 16067，截断 16066——这一条能区分。
-        let g = audio_filter_graph(10.08, (120.0 + 362.0) / 30.0);
+        let g = audio_filter_graph(10.08, (120.0 + 362.0) / 30.0, &layouts());
         assert_eq!(
             delay_ms_of(&g, "[5:a]"),
             16067,
@@ -815,7 +916,7 @@ mod tests {
         // 再取一个小数部分恰好 .5 的：content_frames = 363 →
         // (120+363)/30 = 16.1s → 16100ms，两种口径同值；这里断言的是
         // 「毫秒数不带小数」，即 `adelay` 的参数始终是整数。
-        let g = audio_filter_graph(10.1, (120.0 + 363.0) / 30.0);
+        let g = audio_filter_graph(10.1, (120.0 + 363.0) / 30.0, &layouts());
         assert_eq!(delay_ms_of(&g, "[5:a]"), 16100, "{g}");
     }
 
@@ -827,7 +928,7 @@ mod tests {
     /// 会得到 `st=12` —— 淡出提前 10ms 开始，听不出来，但口径就散了。
     #[test]
     fn afade_start_keeps_millisecond_precision_on_non_integer_seconds() {
-        let g = audio_filter_graph(10.01, (120.0 + 361.0) / 30.0);
+        let g = audio_filter_graph(10.01, (120.0 + 361.0) / 30.0, &layouts());
         assert!(
             g.contains("afade=t=out:st=12.010:d=2"),
             "BGM 淡出起点应为 4.0 + 10.01 - 2.0 = 12.010（三位小数定长）：{g}"
@@ -837,7 +938,7 @@ mod tests {
     #[test]
     fn amix_disables_normalization_and_mixes_four_inputs() {
         // normalize=1（默认）会按输入数自动缩放，把各路相对音量全改掉。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert!(g.contains("amix=inputs=4"), "应混合四路：{g}");
         assert!(g.contains("normalize=0"), "必须关闭自动归一化：{g}");
     }
@@ -847,7 +948,7 @@ mod tests {
         // 逗号在 filtergraph 里是滤镜分隔符。裁定 R1 选 afade 而非 volume 表达式
         // 正是为了避免 if(lt(t,X),...) 这种带逗号的参数。这条测试钉住这个选择：
         // 如果有人把 afade 换回 volume 表达式，圆括号里就会出现逗号。
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         let mut depth = 0i32;
         for ch in g.chars() {
             match ch {
@@ -862,7 +963,7 @@ mod tests {
 
     #[test]
     fn audio_graph_ends_with_the_mixed_output_label() {
-        let g = audio_filter_graph(10.0, 16.0);
+        let g = audio_filter_graph(10.0, 16.0, &layouts());
         assert!(g.trim_end().ends_with("[a]"), "输出标签应为 [a]：{g}");
     }
 
@@ -886,18 +987,21 @@ mod tests {
 
     fn sample_args() -> Vec<String> {
         let (bg, tts, bgm, tw, intro, out) = sample_inputs();
-        build_render_args(&RenderInputs {
-            bg: &bg,
-            tts_audio: &tts,
-            bgm: &bgm,
-            typewriter: &tw,
-            intro: &intro,
-            out: &out,
-            total_frames: 600,
-            audio_secs: 10.0,
-            content_frames: 360,
-            canvas: Canvas::BASE,
-        })
+        build_render_args(
+            &RenderInputs {
+                bg: &bg,
+                tts_audio: &tts,
+                bgm: &bgm,
+                typewriter: &tw,
+                intro: &intro,
+                out: &out,
+                total_frames: 600,
+                audio_secs: 10.0,
+                content_frames: 360,
+                canvas: Canvas::BASE,
+            },
+            &layouts(),
+        )
     }
 
     /// 取 `args` 里 `flag` 后面紧跟的那个值。
@@ -990,18 +1094,21 @@ mod tests {
     #[test]
     fn build_render_args_follows_the_canvas_field_not_base() {
         let (bg, tts, bgm, tw, intro, out) = sample_inputs();
-        let args = build_render_args(&RenderInputs {
-            bg: &bg,
-            tts_audio: &tts,
-            bgm: &bgm,
-            typewriter: &tw,
-            intro: &intro,
-            out: &out,
-            total_frames: 600,
-            audio_secs: 10.0,
-            content_frames: 360,
-            canvas: Canvas { w: 1920, h: 1080 },
-        });
+        let args = build_render_args(
+            &RenderInputs {
+                bg: &bg,
+                tts_audio: &tts,
+                bgm: &bgm,
+                typewriter: &tw,
+                intro: &intro,
+                out: &out,
+                total_frames: 600,
+                audio_secs: 10.0,
+                content_frames: 360,
+                canvas: Canvas { w: 1920, h: 1080 },
+            },
+            &layouts(),
+        );
         assert_eq!(
             value_after(&args, "-s").as_deref(),
             Some("1920x1080"),
@@ -1077,7 +1184,7 @@ mod tests {
         let args = sample_args();
         let g = value_after(&args, "-filter_complex").unwrap();
         assert!(
-            g.contains(&audio_filter_graph(10.0, 16.0)),
+            g.contains(&audio_filter_graph(10.0, 16.0, &layouts())),
             "应内嵌 audio_filter_graph 的产物：{g}"
         );
     }
@@ -1087,18 +1194,21 @@ mod tests {
         // Outro 起点 = (120 + content_frames) / 30。content_frames=360 → 16.0s。
         // 换一组数验证不是写死的：content_frames=90 → (120+90)/30 = 7.0s。
         let (bg, tts, bgm, tw, intro, out) = sample_inputs();
-        let args = build_render_args(&RenderInputs {
-            bg: &bg,
-            tts_audio: &tts,
-            bgm: &bgm,
-            typewriter: &tw,
-            intro: &intro,
-            out: &out,
-            total_frames: 330,
-            audio_secs: 1.0,
-            content_frames: 90,
-            canvas: Canvas::BASE,
-        });
+        let args = build_render_args(
+            &RenderInputs {
+                bg: &bg,
+                tts_audio: &tts,
+                bgm: &bgm,
+                typewriter: &tw,
+                intro: &intro,
+                out: &out,
+                total_frames: 330,
+                audio_secs: 1.0,
+                content_frames: 90,
+                canvas: Canvas::BASE,
+            },
+            &layouts(),
+        );
         let g = value_after(&args, "-filter_complex").unwrap();
         assert!(
             g.contains("adelay=7000:all=1"),
@@ -1669,5 +1779,117 @@ mod tests {
             old_ino,
             "终点的 inode 没变，说明是就地覆写而非改名替换——截断窗口原样还在"
         );
+    }
+
+    /// 每一路都要用**与自己声道数相符**的上混写法。
+    ///
+    /// 这条测试是 2026-09-05 那次真实出片验证的直接产物：片尾音效素材换成
+    /// Freesound 的 CC0 录音之后是**单声道**，走 `channel_layouts=stereo` 吃到
+    /// swresample 的功率保持上混，比规格轻 3 dB（源 −30.9 dB → 成片 −38.3 dB，
+    /// 差 −7.40 dB，而规格 `volume=0.6` 是 −4.44 dB）。当时没有任何测试变红，
+    /// 因为所有断言看的都是**滤镜图字符串**，而那串对立体声输入完全正确。
+    ///
+    /// 断言整条支路作为**连续子串**（本仓库的配对断言写法）：只查
+    /// 「`pan=` 在字符串某处出现」抓不住「pan 接到了 BGM 那一路上」。
+    #[test]
+    fn each_branch_uses_the_upmix_that_matches_its_own_channel_count() {
+        // 片尾音效单声道、打字机立体声——正是本仓库自带素材此刻的真实形状。
+        let g = audio_filter_graph(
+            10.0,
+            16.0,
+            &AudioLayouts {
+                tts: 1,
+                bgm: 2,
+                typewriter: 2,
+                outro: 1,
+            },
+        );
+        assert!(
+            g.contains(&format!(
+                "[5:a]{MONO_MIX_FORMAT},adelay=16000:all=1,volume={SFX_VOLUME}[a_intro]"
+            )),
+            "单声道的片尾音效必须走单位增益的 pan：{g}"
+        );
+        assert!(
+            g.contains(&format!(
+                "[4:a]{MIX_FORMAT},adelay=500:all=1,volume={SFX_VOLUME}[a_type]"
+            )),
+            "立体声的打字机音效仍走 aformat：{g}"
+        );
+        assert!(
+            g.contains(&format!(
+                "[2:a]{MONO_MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"
+            )),
+            "单声道的 TTS 走 pan：{g}"
+        );
+    }
+
+    /// 立体声输入**不能**被 `pan=stereo|c0=c0|c1=c0` 塌成左声道。
+    ///
+    /// 与上一条是同一枚硬币的两面，方向相反：TTS 那一路此前**无条件**用 pan
+    /// （Edge TTS 恒为单声道，这个假设对自产音频成立），但 `panda render --audio`
+    /// 收的是用户任意文件——传一份立体声进来，右声道会整个消失。
+    #[test]
+    fn a_stereo_source_is_never_collapsed_onto_its_left_channel() {
+        let g = audio_filter_graph(
+            10.0,
+            16.0,
+            &AudioLayouts {
+                tts: 2,
+                bgm: 1,
+                typewriter: 1,
+                outro: 2,
+            },
+        );
+        assert!(
+            g.contains(&format!(
+                "[2:a]{MIX_FORMAT},adelay=4000:all=1,volume=1[a_tts]"
+            )),
+            "立体声的 TTS 不该走 pan：{g}"
+        );
+        assert!(
+            g.contains(&format!(
+                "[3:a]{MONO_MIX_FORMAT},adelay=4000:all=1,volume={BGM_VOLUME},"
+            )),
+            "单声道 BGM 该走 pan：{g}"
+        );
+    }
+
+    /// 探测读的是文件的真实声道数。拿仓库自带的两段音效做判据——它们一单一双，
+    /// 正好覆盖两支。
+    #[test]
+    fn probe_channels_reads_the_real_channel_count_of_the_embedded_sfx() {
+        assert_eq!(
+            probe_channels(Path::new("assets/intro.mp3")),
+            Some(1),
+            "片尾音效（Freesound #406243）是单声道"
+        );
+        assert_eq!(
+            probe_channels(Path::new("assets/intro_typewriter.mp3")),
+            Some(2),
+            "打字机音效（Freesound #455044）是立体声"
+        );
+    }
+
+    /// 探不出来时一律按立体声算：猜错的两种代价不对称——把单声道当立体声只是
+    /// 轻 3 dB，把立体声当单声道会**丢掉右声道**。
+    #[test]
+    fn probe_falls_back_to_stereo_when_the_file_cannot_be_read() {
+        let missing = Path::new("/nonexistent-audio-xyz.mp3");
+        assert_eq!(probe_channels(missing), None);
+        let layouts = AudioLayouts::probe(&RenderInputs {
+            bg: missing,
+            tts_audio: missing,
+            bgm: missing,
+            typewriter: missing,
+            intro: missing,
+            out: missing,
+            total_frames: 1,
+            audio_secs: 1.0,
+            content_frames: 1,
+            canvas: Canvas::BASE,
+        });
+        assert_eq!(layouts, AudioLayouts::default());
+        assert_eq!(layouts.outro, 2, "兜底必须是立体声那一支");
     }
 }
