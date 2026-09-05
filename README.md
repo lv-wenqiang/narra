@@ -12,12 +12,14 @@
 ## 状态
 
 **可用**。四条链路（TTS、帧渲染、ffmpeg 合成、CLI）都已跑通真实素材的端到端
-验收，267 个测试通过（另有 5 个 `#[ignore]` 的重量级用例，需要 ffmpeg 与本地
-素材，手动跑）。
+验收，278 个测试通过（另有 8 个 `#[ignore]` 的重量级用例与吞吐探针，需要 ffmpeg
+与本地素材，手动跑）。
 
 默认档（`landscape`，1920×1080）与竖版（`--orientation portrait`，1080×1920）
 实测吞吐分别约 35.2fps / 33.3fps，只有 30fps 实时线的 1.1~1.2×——够用，但不是
 宽裕的余量；实测过程见 [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) §10。
+余量薄在哪已经分摊测清楚（同文档 §11）：**不是编码**（`-preset` 三档实测无差别），
+而是渲染与 ffmpeg 两段几乎没有重叠，端到端白丢约 18%。
 
 个人自用工具，没有稳定性承诺——命令行参数与环境变量名可能随需要调整。
 已知的限制与待办记在 [`docs/follow-ups.md`](docs/follow-ups.md)，每条都注明了
@@ -166,6 +168,7 @@ TTS 侧另有 `EDGE_TTS_VOICE`、`EDGE_TTS_BATCH_SIZE`、`EDGE_TTS_TIMEOUT_MS`�
 ```bash
 cargo test                              # 全量，约 40s
 cargo test --test render_e2e -- --ignored   # 端到端，需 ffmpeg 与 public/ 下的素材
+cargo test --release --test render_throughput -- --ignored --nocapture  # 渲染侧吞吐探针
 cargo clippy --all-targets              # 应零告警
 cargo fmt --check
 just --list                             # 看有哪些配方
@@ -219,7 +222,7 @@ N 次变异零响应」，那种测试会被改写或删掉，因为它占测试
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) | 完整命令行、alpha 语义验证、AV1 解码开销、进程编排的死锁分析、混音格式与分窗电平复测、素材循环点实测 |
+| [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) | 完整命令行、alpha 语义验证、AV1 解码开销、进程编排的死锁分析、混音格式与分窗电平复测、素材循环点实测、渲染/编码的吞吐分摊 |
 | [`docs/text-rendering.md`](docs/text-rendering.md) | 字体与排版的实测结论 |
 | [`docs/edge-protocol.md`](docs/edge-protocol.md) | Edge TTS 的 WebSocket 协议细节 |
 | [`docs/assets-and-licensing.md`](docs/assets-and-licensing.md) | 素材来源与授权：自带素材的授权状态、免费可商用的字体/视频/音乐站清单及其条件 |
