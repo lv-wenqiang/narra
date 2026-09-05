@@ -95,22 +95,33 @@
 
 ### 值得做
 
-#### 1. 常量散落在三个文件、三种可见性
-
-`DEFAULT_VOICE` / `SPEED_FACTOR` 在 `config.rs`（pub），`DEFAULT_BATCH_SIZE` / `BATCH_SIZE_CAP` / 超时常量也在 `config.rs`（private），`DEFAULT_MAX_RETRIES` 在 `pipeline.rs`，切句上限 `30` 是 `pipeline.rs` 里的字面量，`OUTPUT_FORMAT` 在 `edge.rs`。
-
-它们在实施计划的 Global Constraints 里本是并列的一批可调参数。渲染子系统会再加一批（画布尺寸、帧率、各段时长、字号…），现在定个统一位置成本最低。
-
-（画布尺寸/帧率的双真相源部分已销账，见上面「已销账」。）
-
-#### 2. `ffmpeg.rs` 的两处同步 `Command::output()`
-
-`assert_available()` 和 `merge_mp3_with_speed()` 都是同步阻塞调用，合计约 150ms。当前流水线里占比 <1% 且此刻没有并发任务在等这个线程，无影响。
-
-**渲染子系统会长时间跑 ffmpeg（逐帧管道 + H.264 编码），届时这里是第一个该换成 `tokio::process` 的地方。**
+（本节的欠账已全部销清或降级，见「已销账」与下面「可以不做」。）
 
 ### 可以不做
 
+- **常量散落在三个文件、三种可见性**（原「值得做」第 3 条，后为第 1 条）——
+  2026-09-05 降级。原条目的理由是时机：「渲染子系统会再加一批（画布尺寸、帧率、
+  各段时长、字号…），现在定个统一位置成本最低」。**那个时机已经过去了，而且
+  过得比预想的好**：渲染侧的常量最后各自有了合适的家——尺寸量收敛进
+  `render::canvas::Canvas` 与 `render::metrics`（46 个 `pub` 项由
+  `Metrics::for_canvas` 统一推导），帧率与段落帧数留在 `render::timeline`
+  （`FPS`/`COVER_FRAMES`/`INTRO_FRAMES`/`OUTRO_FRAMES`/`CONTENT_TAIL_SECS`），
+  两处的双真相源也早已销账。剩下的 7 个 TTS 侧常量（`config.rs` 五个、
+  `pipeline.rs` 的 `DEFAULT_MAX_RETRIES`、`edge.rs` 的 `OUTPUT_FORMAT`，外加
+  `pipeline.rs` 里 `generate_vtt(..., 30)` 那个切句上限字面量）各自都在自己
+  模块里，搬到一处只是挪动，**当初那份「顺带就做了」的收益已经蒸发**。
+- **`ffmpeg.rs` 的两处同步 `Command::output()`**（原「值得做」第 4 条，后为第 2 条）
+  —— 2026-09-05 降级。原条目预言「渲染子系统会长时间跑 ffmpeg，届时这里是第一个
+  该换成 `tokio::process` 的地方」。**预言的时机到了，结论反而是不用换**：长时间
+  跑 ffmpeg 的是 `run_render`，而它整条是**同步**的（`main.rs` 的 `compose_video`
+  也是同步函数），自己起线程读 stderr、写帧，压根不经 tokio。这两处
+  （`assert_available` 与 `merge_mp3_with_speed`）始终只在 TTS 那条链上。
+
+  **诚实记一笔**：它们确实是在 async 函数体里同步阻塞
+  （`process_narration_file` / `run_pipeline`），会占住一个 runtime 线程。之所以
+  无害，是因为这两个时刻**没有别的任务在等**——`assert_available` 在整条流水线
+  开工之前，`merge_mp3_with_speed` 在所有并发合成都 `await` 完之后。**这个前提
+  一旦变了就要重新评估**：比如让 TTS 与合成重叠跑、或做批量渲染。：`tests/ffmpeg_test.rs` 和 `tests/duration_test.rs` 用硬编码的 `/tmp/m1.mp3`、`/tmp/merged.mp3`、`/tmp/not_audio.mp3` 且不清理；`tests/edge_smoke.rs` 往 `temp_dir()` 落盘也不清理。`pipeline.rs` 的测试用 `unique_tmp_dir(pid+uuid)` 并清理，是好的范式。个人自用，只是留垃圾文件。
 - **测试临时文件卫生**：`tests/ffmpeg_test.rs` 和 `tests/duration_test.rs` 用硬编码的 `/tmp/m1.mp3`、`/tmp/merged.mp3`、`/tmp/not_audio.mp3` 且不清理；`tests/edge_smoke.rs` 往 `temp_dir()` 落盘也不清理。`pipeline.rs` 的测试用 `unique_tmp_dir(pid+uuid)` 并清理，是好的范式。个人自用，只是留垃圾文件。
 - **错误信息中英文混用**：`pipeline.rs` 的 "Narration file is empty (no non-empty lines)" 和 `ffmpeg.rs` 的 "merge_mp3_with_speed: no input files" 是英文，其余约 13 条都是中文。后者还泄漏了内部函数名。`tests/ffmpeg_test.rs` 有断言匹配 `"no input files"`，改文案要连带改测试。纯观感。
 - **`main.rs` 越过 trait 直接调 `normalize_voice_for_edge`**：`EdgeBackend::new` 内部又规范化一次。函数幂等所以无害，但 CLI 层知道了后端细节，而 `TtsBackend` trait 存在的意义就是隔离这一层。
