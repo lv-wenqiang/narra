@@ -11,7 +11,8 @@
 - [ffmpeg 合成子系统](#ffmpeg-合成子系统)（`docs/superpowers/plans/2026-09-03-ffmpeg-compose.md`）
 
 跨子系统的条目记在**最早提出它的**那一节里，后来的子系统只往上追加，不另开新条
-（例如帧渲染补充的画布常量、CLI 单测，分别并进了 TTS 节的第 3、第 2 条）。
+（例如帧渲染补充的画布常量、CLI 单测，当初分别并进了 TTS 节的常量条与环境变量
+测试条——两条如今都已销账，见 TTS 节「已销账」）。
 
 ---
 
@@ -62,28 +63,39 @@
     源码文本测试两条全红 ❌，而原先的运行期断言仍然通过 ✓——这正是 F-4 记录的
     那个盲区，也是新增源码文本测试存在的理由。
 
+- **`merge_mp3_with_speed` 用 `-y` 直写目标路径，非原子**（原「值得做」第 1 条）
+  —— 2026-09-05 销。ffmpeg 现在写的是与终点**同目录**的 `audio.mp3.partial.mp3`
+  （`crate::tmp::TempPath` 守卫，五个出口一并兜底），转码成功后 `std::fs::rename`
+  就位。同目录是硬要求：`rename` 只在同一文件系统内原子，跨设备直接 `EXDEV`
+  失败。三条新测试都用假 ffmpeg 脚本（接缝 `merge_mp3_with_speed_using`，写法同
+  `run_render_with_ffmpeg_binary`）把「已经开始写、但没写完」这个真实 ffmpeg 无法
+  在单测规模稳定复现的时序变成确定性的：
+  `merge_leaves_the_previous_output_intact_when_ffmpeg_fails_after_writing`（失败后
+  旧产物一字节未动）、`merge_hands_ffmpeg_a_sibling_temp_path_and_renames_it_into_place`
+  （不是终点 / 同目录 / 无残留）、
+  `merge_replaces_the_output_by_rename_not_by_overwriting_it_in_place`（inode 必须换）。
+
+  **三轮变异**：① 临时文件改放 `std::env::temp_dir()` → 同目录断言变红；
+  ② 失败路径也 `rename` → 两条全红；③ `rename` 换成 `fs::copy` → **前两条全绿、
+  存活**，因为 `TempPath` 会把复制后剩下的临时文件顺手删掉，目录看上去一样干净。
+  而 `copy` 恰恰把「先截断终点再往里写」的窗口原样搬了回来，正是本条要修的缺陷
+  换了个地方发生。第三条测试就是为堵这个存活变异补的：`rename` 让终点换成另一个
+  inode，`copy` 截断的是同一个 inode。**先装上 `copy` 变异写测试、看它红、再撤回
+  变异看它绿**，不是写完了才补断言。
+
+- **`config.rs` 的环境变量层与 CLI 层没有自动化测试**（原「值得做」第 2 条）
+  —— 2026-09-05 核实早已还清，只是没销账。`tests/config_env.rs` 的
+  `env_backed_paths_read_the_environment_and_fall_back` 覆盖了
+  `spider_output_dir`/`tts_output_dir`/`tts_input_file` 三个读 `std::env` 的函数
+  （注释里就写着「偿还 follow-ups 第 2 条」），`branding_resolve_prefers_cli_over_env_over_default`
+  等四条覆盖了「CLI > env > 默认」优先级链；`src/main.rs` 的 `mod tests` 有 19 条，
+  含 `parse_frame_list_splits_trims_and_rejects_garbage` 与
+  `parse_frame_list_default_sweep_includes_the_last_frame`。**教训记一笔**：还了账
+  不销账，欠账本自己就会变成噪声源——下一个人得把每条都对着代码验一遍才敢信。
+
 ### 值得做
 
-#### 1. `merge_mp3_with_speed` 用 `-y` 直写目标路径，非原子
-
-`src/ffmpeg.rs` 调 ffmpeg 时用 `-y` 直接覆写 `audio.mp3`。若**合并过程本身**被外部中断（`kill -9`、OOM killer、断电、磁盘满），旧的 `audio.mp3` 会被替换成一份**可正常解码但内容被腰斩**的音频——不是字节乱码，所以不容易发现。
-
-已实测复现：合并 7200 秒输入时 0.5 秒后 kill，目标文件变成 786KB / 约 216 秒的完整可解码 mp3。
-
-触发需外部进程级中断，窗口通常亚秒级（60 秒音频转码仅需 0.13 秒），故未阻塞合入。
-**修法**：先写临时文件，成功后原子 `rename`。
-
-#### 2. `config.rs` 的环境变量层没有自动化测试
-
-`resolve_batch_size` / `resolve_timeout_ms` 两个纯函数有测试，但真正读 `std::env` 的三个函数（`spider_output_dir` / `tts_output_dir` / `tts_input_file`）和 `main.rs` 里「命令行参数 > 环境变量 > 默认值」的优先级链**一条测试都没有**，只有人工验证过。
-
-渲染子系统要加 `render` / `make` 两个子命令，会直接改这块代码——补测试的时机就是那时候。
-
-**帧渲染子系统补充**：`main.rs` 的 CLI 层至今**一条单测都没有**——`parse_frame_list`
-（逗号切分、`trim`、缺省帧集 + 补末帧）全靠人工跑 `debug-frames` 验证，`main.rs` 里
-没有 `#[cfg(test)] mod tests`。和上面同一个时机、同一次改动一起补。
-
-#### 3. 常量散落在三个文件、三种可见性
+#### 1. 常量散落在三个文件、三种可见性
 
 `DEFAULT_VOICE` / `SPEED_FACTOR` 在 `config.rs`（pub），`DEFAULT_BATCH_SIZE` / `BATCH_SIZE_CAP` / 超时常量也在 `config.rs`（private），`DEFAULT_MAX_RETRIES` 在 `pipeline.rs`，切句上限 `30` 是 `pipeline.rs` 里的字面量，`OUTPUT_FORMAT` 在 `edge.rs`。
 
@@ -91,7 +103,7 @@
 
 （画布尺寸/帧率的双真相源部分已销账，见上面「已销账」。）
 
-#### 4. `ffmpeg.rs` 的两处同步 `Command::output()`
+#### 2. `ffmpeg.rs` 的两处同步 `Command::output()`
 
 `assert_available()` 和 `merge_mp3_with_speed()` 都是同步阻塞调用，合计约 150ms。当前流水线里占比 <1% 且此刻没有并发任务在等这个线程，无影响。
 

@@ -37,6 +37,19 @@ pub fn concat_list_body(inputs: &[PathBuf]) -> Result<String> {
 
 /// 合并多个 mp3 并施加 atempo 变速。参数与 TS 版 mergeMp3WithSpeed 完全一致。
 pub fn merge_mp3_with_speed(inputs: &[PathBuf], output: &Path, speed: f64) -> Result<()> {
+    merge_mp3_with_speed_using(Path::new("ffmpeg"), inputs, output, speed)
+}
+
+/// [`merge_mp3_with_speed`] 的实际实现，program 可替换——生产路径永远是字面量
+/// `"ffmpeg"`，测试路径指向假脚本，从而对「ffmpeg 已经开始写目标文件但没能
+/// 写完」这种真实 ffmpeg 无法在单测规模下稳定复现的时序做确定性验证。接缝
+/// 写法同 [`run_render_with_ffmpeg_binary`]。
+fn merge_mp3_with_speed_using(
+    program: &Path,
+    inputs: &[PathBuf],
+    output: &Path,
+    speed: f64,
+) -> Result<()> {
     if inputs.is_empty() {
         bail!("merge_mp3_with_speed: no input files");
     }
@@ -45,7 +58,19 @@ pub fn merge_mp3_with_speed(inputs: &[PathBuf], output: &Path, speed: f64) -> Re
     std::fs::write(&list_path, concat_list_body(inputs)?)
         .with_context(|| format!("写 concat 清单失败：{}", list_path.display()))?;
 
-    let result = Command::new("ffmpeg")
+    // 先写同目录的临时文件，成功后再 `rename` 就位。**不能让 ffmpeg 直写
+    // 终点**：`-y` 会在转码开始前就把旧 `audio.mp3` 截断，此后任何外部中断
+    // （kill -9 / OOM killer / 断电 / 磁盘满）留下的都是一份能正常解码、
+    // 只是内容被腰斩的音频——不是字节乱码，所以不容易被发现。
+    //
+    // 临时文件必须与终点**同目录**：`rename` 只在同一文件系统内原子，跨设备
+    // 会直接失败（`EXDEV`）。后缀保留 `.mp3`，muxer 是按扩展名选的。
+    // 交给 `TempPath` 而不是在失败分支手动删：这个函数有五个出口（三个 `?`、
+    // 一个 `bail!`、一个 `Ok`），清理挂在作用域上就不必逐个数。
+    let tmp_out =
+        crate::tmp::TempPath::new(PathBuf::from(format!("{}.partial.mp3", output.display())));
+
+    let result = Command::new(program)
         .args([
             "-y",
             "-f",
@@ -61,7 +86,7 @@ pub fn merge_mp3_with_speed(inputs: &[PathBuf], output: &Path, speed: f64) -> Re
             "libmp3lame",
             "-q:a",
             "2",
-            &output.to_string_lossy(),
+            &tmp_out.path().to_string_lossy(),
         ])
         .output();
 
@@ -75,6 +100,13 @@ pub fn merge_mp3_with_speed(inputs: &[PathBuf], output: &Path, speed: f64) -> Re
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    std::fs::rename(tmp_out.path(), output).with_context(|| {
+        format!(
+            "合并产物就位失败：{} → {}",
+            tmp_out.path().display(),
+            output.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -1520,6 +1552,122 @@ mod tests {
         assert!(
             out.exists(),
             "假 ffmpeg 应已在正确路径创建了文件，说明目录确实建好了"
+        );
+    }
+
+    /// 假 ffmpeg：把「它拿到的输出路径」连同一段内容写进那个路径，然后按
+    /// `$1` 指定的退出码退出。模拟「ffmpeg 已经开始写目标文件」这一刻——
+    /// 真实 ffmpeg 也是先创建/截断输出、边转码边写，`-y` 直写终点时被外部
+    /// 打断（kill -9 / OOM / 断电 / 磁盘满）留下的正是这种半截文件。
+    #[cfg(unix)]
+    fn fake_ffmpeg_writing_its_target(name: &str, exit_code: u8) -> crate::tmp::TempPath {
+        write_fake_ffmpeg(
+            name,
+            &format!(
+                "#!/bin/sh\nfor last; do :; done\nprintf 'TARGET=%s' \"$last\" > \"$last\"\nexit {exit_code}\n"
+            ),
+        )
+    }
+
+    /// 合并失败时，上一支 `audio.mp3` 必须原样还在。
+    ///
+    /// 这是 `docs/follow-ups.md` TTS「值得做」第 1 条的行为判据：`-y` 直写
+    /// 终点时，ffmpeg 一旦开始写就已经把旧文件截断了，中断留下的是一份
+    /// **能正常解码、只是内容被腰斩**的音频（实测：7200 秒输入跑 0.5 秒后
+    /// kill，得到 786KB / 约 216 秒的完整 mp3），不是字节乱码，因此不容易
+    /// 被发现。假 ffmpeg 把「写了一半就没了」这个时序变成确定性的。
+    #[test]
+    #[cfg(unix)]
+    fn merge_leaves_the_previous_output_intact_when_ffmpeg_fails_after_writing() {
+        let script = fake_ffmpeg_writing_its_target("merge_partial_then_fail", 1);
+        let dir = crate::tmp::TempPath::create_dir("panda_merge_atomic").unwrap();
+        let input = dir.path().join("seg0.mp3");
+        std::fs::write(&input, b"seg0").unwrap();
+        let out = dir.path().join("audio.mp3");
+        std::fs::write(&out, b"ORIGINAL").unwrap();
+
+        let err = merge_mp3_with_speed_using(script.path(), &[input], &out, 1.1)
+            .expect_err("假 ffmpeg 非零退出，合并应报错");
+        assert!(
+            format!("{err:#}").contains("退出码"),
+            "错误应透出 ffmpeg 的退出码：{err:#}"
+        );
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            b"ORIGINAL",
+            "合并失败后旧产物必须一字节未动"
+        );
+    }
+
+    /// 成功路径：ffmpeg 拿到的是**与终点同目录**的临时路径，转码完成后
+    /// `rename` 就位，目录里不留任何中间文件。
+    ///
+    /// 三条断言各自钉住一件独立的事，缺一条就会让某种写法蒙混过关：
+    /// 「不是终点」挡住 `-y` 直写；「同目录」挡住把临时文件放进
+    /// `/tmp`——跨文件系统时 `rename` 会失败（`EXDEV`）；「不留残留」挡住
+    /// 忘了清理中间文件。**「是改名而不是复制」不在这里断言**：`TempPath`
+    /// 的守卫会把复制后剩下的临时文件一并删掉，这里看不出区别，那条由下面
+    /// 的 inode 测试单独钉。
+    #[test]
+    #[cfg(unix)]
+    fn merge_hands_ffmpeg_a_sibling_temp_path_and_renames_it_into_place() {
+        let script = fake_ffmpeg_writing_its_target("merge_records_target", 0);
+        let dir = crate::tmp::TempPath::create_dir("panda_merge_target").unwrap();
+        let input = dir.path().join("seg0.mp3");
+        std::fs::write(&input, b"seg0").unwrap();
+        let out = dir.path().join("audio.mp3");
+
+        merge_mp3_with_speed_using(script.path(), std::slice::from_ref(&input), &out, 1.1).unwrap();
+
+        let body = std::fs::read_to_string(&out).unwrap();
+        let target = std::path::PathBuf::from(
+            body.strip_prefix("TARGET=")
+                .unwrap_or_else(|| panic!("假 ffmpeg 应已写出它拿到的输出路径：{body}")),
+        );
+        assert_ne!(target, out, "ffmpeg 不该直接写终点，否则中断即毁掉旧产物");
+        assert_eq!(
+            target.parent(),
+            out.parent(),
+            "临时文件必须与终点同目录，跨文件系统的 rename 不是原子的（EXDEV 直接失败）"
+        );
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec!["audio.mp3".to_string(), "seg0.mp3".to_string()],
+            "目录里只该剩输入与终点，concat 清单与临时产物都要清掉"
+        );
+    }
+
+    /// 就位必须是**改名替换**，不能是**就地覆写**。
+    ///
+    /// `fs::copy` 也能让上面那条测试全绿（临时文件被守卫顺手删掉，目录同样
+    /// 干净），但它把「先截断终点、再往里写」这个窗口原样搬了回来——正是
+    /// `-y` 直写的那个缺陷，只是换了个地方发生。两者的可观测差别在 inode：
+    /// `rename` 让终点换成另一个 inode（旧文件整个被替换掉），`copy` 打开
+    /// 并截断的是**同一个** inode。
+    #[test]
+    #[cfg(unix)]
+    fn merge_replaces_the_output_by_rename_not_by_overwriting_it_in_place() {
+        use std::os::unix::fs::MetadataExt;
+
+        let script = fake_ffmpeg_writing_its_target("merge_inode_swap", 0);
+        let dir = crate::tmp::TempPath::create_dir("panda_merge_inode").unwrap();
+        let input = dir.path().join("seg0.mp3");
+        std::fs::write(&input, b"seg0").unwrap();
+        let out = dir.path().join("audio.mp3");
+        std::fs::write(&out, b"OLD").unwrap();
+        let old_ino = std::fs::metadata(&out).unwrap().ino();
+
+        merge_mp3_with_speed_using(script.path(), &[input], &out, 1.1).unwrap();
+
+        assert_ne!(
+            std::fs::metadata(&out).unwrap().ino(),
+            old_ino,
+            "终点的 inode 没变，说明是就地覆写而非改名替换——截断窗口原样还在"
         );
     }
 }
