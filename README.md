@@ -17,7 +17,7 @@
 ## 状态
 
 **可用**。四条链路（TTS、帧渲染、ffmpeg 合成、CLI）都已跑通真实素材的端到端
-验收，293 个测试通过（另有 8 个 `#[ignore]` 的重量级用例与吞吐探针，需要 ffmpeg
+验收，293 个测试通过（另有 9 个 `#[ignore]` 的重量级用例与吞吐探针，需要 ffmpeg
 与本地素材，手动跑）。
 
 默认档（`landscape`，1920×1080）实测吞吐约 66fps，即 30fps 实时线的 **2.2×**
@@ -27,6 +27,8 @@
 全过程见 [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) §10~§13。
 
 个人自用工具，没有稳定性承诺——命令行参数与环境变量名可能随需要调整。
+尚未发布到 crates.io，但包元数据已就绪（`cargo publish --dry-run` 通过，
+`.crate` 8.4 MiB / 上限 10 MiB）。
 已知的限制与待办记在 [`docs/follow-ups.md`](docs/follow-ups.md)，每条都注明了
 「值得做 / 可以不做 / 只是记一笔」以及推迟的理由。
 
@@ -34,7 +36,7 @@
 
 | | |
 |---|---|
-| Rust | edition 2024（需较新的稳定版工具链） |
+| Rust | 1.85+（edition 2024，与 `Cargo.toml` 的 `rust-version` 一致） |
 | `ffmpeg` / `ffprobe` | 必须在 `PATH` 上，合成与音频处理全靠它 |
 | 网络 | 仅 `narra tts` 需要（连 Edge TTS 服务） |
 | [`just`](https://github.com/casey/just) | 可选，只用来跑「一条龙」配方 |
@@ -144,7 +146,7 @@ narra render --audio <mp3> --vtt <vtt> [-o <out.mp4>] [素材/品牌选项...]
 | 配置 | 环境变量 | 默认 |
 |---|---|---|
 | `--orientation` | `ORIENTATION` | `landscape`（1920×1080） |
-| `--brand` | `BRAND` | `墨风` |
+| `--brand` | `BRAND` | `墨` |
 | `--watermark` | `WATERMARK` | **不画** |
 | `--watermark-cover` | `WATERMARK_COVER` | **不画** |
 | `--watermark-icon` | `WATERMARK_ICON` | **不画** |
@@ -158,7 +160,8 @@ narra render --audio <mp3> --vtt <vtt> [-o <out.mp4>] [素材/品牌选项...]
 | `-o` | `VIDEO_OUTPUT` | `output/video/video.mp4` |
 
 品牌名画在 Cover 上排与 Outro 大字上，同时是标题的最后一级兜底
-（`--title` > `title.json` 的 `title` 字段 > 品牌名）。
+（`--title` > `title.json` 的 `title` 字段 > 品牌名）。默认「墨」——**发布/分享
+给别人用时记得改**，否则出的片子上印的是这个默认品牌。
 
 两处水印相互独立，各自为空时各自不画；图标与 logo 支持 `.svg`（矢量渲染）
 与 `.png`（Lanczos3 缩放），原样保留自身颜色，只施加水印预设的不透明度。
@@ -233,7 +236,7 @@ N 次变异零响应」，那种测试会被改写或删掉，因为它占测试
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) | 完整命令行、alpha 语义验证、AV1 解码开销、进程编排的死锁分析、混音格式与分窗电平复测、素材循环点实测、渲染/编码的吞吐分摊 |
+| [`docs/ffmpeg-pipeline.md`](docs/ffmpeg-pipeline.md) | 完整命令行、alpha 语义验证、AV1 解码开销、进程编排的死锁分析、混音格式与分窗电平复测、素材循环点实测、渲染/编码的吞吐分摊（§11）、两段流水线改造（§12）、`draw_centered` 的全画布开销（§13）、单声道素材的上混衰减（§14） |
 | [`docs/text-rendering.md`](docs/text-rendering.md) | 字体与排版的实测结论 |
 | [`docs/edge-protocol.md`](docs/edge-protocol.md) | Edge TTS 的 WebSocket 协议细节 |
 | [`docs/assets-and-licensing.md`](docs/assets-and-licensing.md) | 素材来源与授权：自带素材的授权状态、免费可商用的字体/视频/音乐站清单及其条件 |

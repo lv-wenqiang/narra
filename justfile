@@ -23,7 +23,7 @@ default:
 #    （实测约 10s，长文稿更久）才报错。TTS 是这条链上唯一要联网、唯一耗时以
 #    分钟计的一步，任何能在它之前发现的错误都应该在它之前发现。
 # 2. 额外参数原样透传给 `narra render`，例如：
-#      just make 文稿.txt --brand 墨风 --watermark-cover "墨风 · 自动化引擎"
+#      just make 文稿.txt --brand 墨 --watermark-cover "墨 · 自动化引擎"
 #      just make 文稿.txt --orientation portrait
 
 # 文稿 → TTS → 成片，一条龙
