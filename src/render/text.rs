@@ -105,6 +105,9 @@ pub struct TextRenderer {
     /// 一次。按目标 `Pixmap` 的尺寸复用，避免每帧重新分配；尺寸不符时重建，
     /// 复用前清空（见 `draw_centered`）。
     scratch: Option<Pixmap>,
+    /// 字形路径的复用缓冲区（见 `draw_centered`）：每次调用先收集、再绘制，
+    /// 中间要用它们的并集包围盒决定暂存画布多大。跨调用复用，避免每帧重分配。
+    paths: Vec<Path>,
 }
 
 impl TextRenderer {
@@ -137,6 +140,7 @@ impl TextRenderer {
             font_system,
             family,
             scratch: None,
+            paths: Vec::new(),
         })
     }
 
@@ -356,17 +360,15 @@ impl TextRenderer {
 
         let bold_w = style.size_px * BOLD_STROKE_RATIO;
 
-        // 拿到与目标同尺寸的暂存画布：尺寸不符时重建，复用前清空为全透明。
-        // 用 `take()` 把它从 self 里搬出来做局部变量，避免和下面 `self.font_system`
-        // 的借用冲突；画完再放回 self.scratch 供下一帧复用。
-        let mut scratch = match self.scratch.take() {
-            Some(mut p) if p.width() == pixmap.width() && p.height() == pixmap.height() => {
-                p.fill(Color::TRANSPARENT);
-                p
-            }
-            _ => Pixmap::new(pixmap.width(), pixmap.height())
-                .expect("目标 pixmap 尺寸非零时暂存画布分配不应失败"),
-        };
+        // 先把这块文字的所有字形路径收集到最终像素空间，**再**决定画到哪里。
+        //
+        // 分两步是为了拿到整块文字的**精确包围盒**（`Path::bounds()` 的并集，
+        // 外扩最外一遍描边的半宽）——包围盒决定了暂存画布要多大。用路径的真实
+        // 边界而不是行宽/行高去估，是因为字形的实际墨迹会越出排版盒（overshoot、
+        // 侧边距、下伸部），估错的代价是描边最外圈被裁掉，而那正是肉眼最难发现
+        // 的地方。路径缓冲区跨帧复用，不每帧重新分配。
+        let mut paths = std::mem::take(&mut self.paths);
+        paths.clear();
 
         for run in buffer.layout_runs() {
             // 每行单独水平居中在 center_x 上。
@@ -434,67 +436,130 @@ impl TextRenderer {
                 // 空操作，规格要求的粗体必须靠这里的三段描边/填充合成。
                 // stroke.width 和 bold_w 都乘 scale，使缩放是一次真正的几何缩放
                 // （包括描边粗细），而不是只把字形放大、描边粗细不变。
-                if let Some((stroke_paint, stroke_w)) = &stroke_paint_and_width {
-                    let outer_w = if style.bold {
-                        stroke_w + bold_w
-                    } else {
-                        *stroke_w
-                    } * scale;
-                    if outer_w > 0.0 {
-                        let outer_stroke = Stroke {
-                            width: outer_w,
-                            ..Default::default()
-                        };
-                        scratch.stroke_path(
-                            &path,
-                            stroke_paint,
-                            &outer_stroke,
-                            Transform::identity(),
-                            None,
-                        );
-                    }
-                }
-                if style.bold {
-                    let w = bold_w * scale;
-                    if w > 0.0 {
-                        let bold_stroke = Stroke {
-                            width: w,
-                            ..Default::default()
-                        };
-                        scratch.stroke_path(
-                            &path,
-                            &fill_paint,
-                            &bold_stroke,
-                            Transform::identity(),
-                            None,
-                        );
-                    }
-                }
-                scratch.fill_path(
-                    &path,
-                    &fill_paint,
-                    FillRule::Winding,
-                    Transform::identity(),
-                    None,
-                );
+                paths.push(path);
             }
         }
 
-        // 把暂存画布整块按组透明度合成回目标 pixmap——组透明度只在这里生效一次。
-        pixmap.draw_pixmap(
-            0,
-            0,
-            scratch.as_ref(),
-            &PixmapPaint {
-                opacity: opacity.clamp(0.0, 1.0),
-                ..Default::default()
-            },
-            Transform::identity(),
-            None,
-        );
-        // 把暂存画布放回去，供下一次 draw_centered 调用复用，避免每帧重新分配。
-        self.scratch = Some(scratch);
+        // 最外一遍描边是**居中**在路径上的，因此向外只多出半个宽度。
+        let outer_w = match &stroke_paint_and_width {
+            Some((_, stroke_w)) if style.bold => (stroke_w + bold_w) * scale,
+            Some((_, stroke_w)) => stroke_w * scale,
+            None if style.bold => bold_w * scale,
+            None => 0.0,
+        };
+        let margin = outer_w / 2.0;
+
+        // **组透明度为 1 时不需要暂存画布**：`over` 满足结合律，「三遍画进透明
+        // 层、整层再 over 一次」与「三遍直接 over 到目标」等价
+        // （`full_opacity_drawing_is_byte_identical_to_compositing_a_transparent_layer`
+        // 拿白底与透明底两种底色逐字节验过）。省掉的是清空暂存画布 + 把它合成
+        // 回目标这**两趟操作**，代价与文字占多大面积无关——实测每次调用约
+        // 7.2ms（1920×1080），见 `docs/ffmpeg-pipeline.md` §13。
+        let (dst_origin, mut scratch) = if opacity >= 1.0 {
+            ((0, 0), None)
+        } else {
+            let Some((x0, y0, w, h)) = ink_box(&paths, margin, pixmap.width(), pixmap.height())
+            else {
+                self.paths = paths;
+                return;
+            };
+            // 暂存画布只覆盖包围盒，不再是整幅画布。**平移量必须是整数**：
+            // 抗锯齿的覆盖率取决于路径相对像素网格的位置，非整数平移会让同一
+            // 个字形栅格化出不同的边缘像素，与整幅画布那条参照路径就不再逐字节
+            // 相同了（`partial_opacity_..._matches_a_full_canvas_reference_layer`
+            // 与 `..._clipped_by_the_canvas_edge_...` 两条测试钉住这一点）。
+            let reuse = match self.scratch.take() {
+                Some(mut p) if p.width() == w && p.height() == h => {
+                    p.fill(Color::TRANSPARENT);
+                    p
+                }
+                _ => Pixmap::new(w, h).expect("包围盒尺寸已夹到画布内且非零"),
+            };
+            ((x0, y0), Some(reuse))
+        };
+
+        let shift = Transform::from_translate(-(dst_origin.0 as f32), -(dst_origin.1 as f32));
+        let dst: &mut Pixmap = match scratch.as_mut() {
+            Some(s) => s,
+            None => pixmap,
+        };
+        for path in &paths {
+            // 合成粗体（必做项 2）：内嵌字体只有一个静态字重，`Weight::BOLD` 是
+            // 空操作，规格要求的粗体必须靠这三段描边/填充合成。
+            if let Some((stroke_paint, _)) = &stroke_paint_and_width
+                && outer_w > 0.0
+            {
+                let outer_stroke = Stroke {
+                    width: outer_w,
+                    ..Default::default()
+                };
+                dst.stroke_path(path, stroke_paint, &outer_stroke, shift, None);
+            }
+            if style.bold {
+                let w = bold_w * scale;
+                if w > 0.0 {
+                    let bold_stroke = Stroke {
+                        width: w,
+                        ..Default::default()
+                    };
+                    dst.stroke_path(path, &fill_paint, &bold_stroke, shift, None);
+                }
+            }
+            dst.fill_path(path, &fill_paint, FillRule::Winding, shift, None);
+        }
+
+        // 走了暂存画布的话，把它按组透明度合成回目标——组透明度只在这里生效
+        // 一次。全不透明那条路径上没有暂存画布，也就没有这一趟。
+        if let Some(scratch) = scratch {
+            pixmap.draw_pixmap(
+                dst_origin.0,
+                dst_origin.1,
+                scratch.as_ref(),
+                &PixmapPaint {
+                    opacity: opacity.clamp(0.0, 1.0),
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
+            // 放回去供下一次调用复用。
+            self.scratch = Some(scratch);
+        }
+        self.paths = paths;
     }
+}
+
+/// 一组路径的墨迹包围盒，外扩 `margin`，夹到 `(w, h)` 画布内。
+///
+/// 返回 `(x0, y0, 宽, 高)`，整数——**非整数会改变抗锯齿覆盖率**，见
+/// `draw_centered` 里平移量那段注释。完全落在画布外、或压根没有路径时返回
+/// `None`（没有任何可见像素，调用方直接返回即可）。
+fn ink_box(paths: &[Path], margin: f32, w: u32, h: u32) -> Option<(i32, i32, u32, u32)> {
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for path in paths {
+        let b = path.bounds();
+        min_x = min_x.min(b.left());
+        min_y = min_y.min(b.top());
+        max_x = max_x.max(b.right());
+        max_y = max_y.max(b.bottom());
+    }
+    if min_x > max_x {
+        return None;
+    }
+
+    // `floor`/`ceil` 而不是四舍五入：宁可多留一个像素，也不能把边缘那一行
+    // 抗锯齿像素切掉。
+    let x0 = (min_x - margin).floor().max(0.0) as i32;
+    let y0 = (min_y - margin).floor().max(0.0) as i32;
+    let x1 = (max_x + margin).ceil().min(w as f32) as i32;
+    let y1 = (max_y + margin).ceil().min(h as f32) as i32;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
 #[cfg(test)]
@@ -1175,5 +1240,194 @@ mod tests {
         let none = TextRenderer::with_optional_font(None).unwrap();
         assert_eq!(none.family, embedded);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 全不透明时的绘制，必须与「画在透明层上再整层合成回来」**逐字节相同**。
+    ///
+    /// 这条是 `draw_centered` 跳过暂存画布那条快路径的正确性依据：Porter-Duff
+    /// `over` 满足结合律，组透明度为 1 时「三遍直接画进目标」与「三遍画进透明
+    /// 层、整层再 over 一次」等价。等价性是**可测的**，不必只当理论：右边那条
+    /// 路径在这条测试里是用公开 API 现搭的参照实现，不是被测代码的内部结构。
+    ///
+    /// 底色故意用不透明白：透明底（Content 段）下等价性最容易成立，白底
+    /// （Cover/Intro/Outro）才是逐步量化最可能露出差异的地方。
+    #[test]
+    fn full_opacity_drawing_is_byte_identical_to_compositing_a_transparent_layer() {
+        let mut r = TextRenderer::new().unwrap();
+        let style = TextStyle {
+            size_px: 80.0,
+            color: [255, 255, 255, 255],
+            stroke: Some(([0, 0, 0, 255], 6.0)),
+            letter_spacing_px: 2.0,
+            max_width_px: 900.0,
+            line_height: 1.4,
+            bold: true,
+        };
+
+        for (label, bg) in [
+            ("白底", Color::from_rgba8(255, 255, 255, 255)),
+            ("透明底", Color::TRANSPARENT),
+        ] {
+            let mut direct = blank(1280, 720);
+            direct.fill(bg);
+            r.draw_centered(
+                &mut direct,
+                "等价性测试文案",
+                640.0,
+                360.0,
+                &style,
+                1.0,
+                1.0,
+            );
+
+            let mut layer = blank(1280, 720);
+            r.draw_centered(&mut layer, "等价性测试文案", 640.0, 360.0, &style, 1.0, 1.0);
+            let mut composited = blank(1280, 720);
+            composited.fill(bg);
+            composited.draw_pixmap(
+                0,
+                0,
+                layer.as_ref(),
+                &PixmapPaint {
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
+
+            let diff = direct
+                .data()
+                .iter()
+                .zip(composited.data())
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                diff, 0,
+                "{label}：两条路径应逐字节相同，实际有 {diff} 字节不同"
+            );
+        }
+    }
+
+    /// 半透明时同样要与参照实现一致（在 1 LSB 以内）。
+    ///
+    /// 这条护的是暂存画布**换成只覆盖文字包围盒**之后的等价性：包围盒算错一
+    /// 点点，被裁掉的就是描边最外圈那几个像素，而那正是肉眼最不容易发现、
+    /// 逐字节比对最容易发现的地方。参照实现同样用公开 API 现搭：整幅透明层
+    /// 画一遍，再按同一组透明度合成。
+    #[test]
+    fn partial_opacity_drawing_matches_a_full_canvas_reference_layer() {
+        let mut r = TextRenderer::new().unwrap();
+        let style = TextStyle {
+            size_px: 52.0,
+            color: [255, 255, 255, 255],
+            stroke: Some(([0, 0, 0, 255], 5.0)),
+            letter_spacing_px: 0.0,
+            max_width_px: 900.0,
+            line_height: 1.4,
+            bold: true,
+        };
+
+        for opacity in [0.25_f32, 0.5, 0.87] {
+            let mut direct = blank(1280, 720);
+            direct.fill(Color::from_rgba8(255, 255, 255, 255));
+            r.draw_centered(
+                &mut direct,
+                "半透明等价性",
+                640.0,
+                360.0,
+                &style,
+                opacity,
+                1.1,
+            );
+
+            let mut layer = blank(1280, 720);
+            r.draw_centered(&mut layer, "半透明等价性", 640.0, 360.0, &style, 1.0, 1.1);
+            let mut composited = blank(1280, 720);
+            composited.fill(Color::from_rgba8(255, 255, 255, 255));
+            composited.draw_pixmap(
+                0,
+                0,
+                layer.as_ref(),
+                &PixmapPaint {
+                    opacity,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
+
+            let worst = direct
+                .data()
+                .iter()
+                .zip(composited.data())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                worst <= 1,
+                "opacity={opacity}：与参照实现最大差 {worst}，超过 1 LSB 的量化余量"
+            );
+        }
+    }
+
+    /// 半透明 + 文字压在画布边缘：包围盒会被画布裁掉一部分，裁剪口径不能改变
+    /// 结果。
+    ///
+    /// 暂存画布从「整幅」缩到「文字包围盒」之后，这是最容易写错的一处：包围盒
+    /// 越界时既要夹到画布内，又要保持绘制坐标相对像素网格不变（只能整数平移，
+    /// 否则抗锯齿覆盖率会变，逐字节比对立刻不同）。
+    #[test]
+    fn partial_opacity_text_clipped_by_the_canvas_edge_matches_the_reference() {
+        let mut r = TextRenderer::new().unwrap();
+        let style = TextStyle {
+            size_px: 80.0,
+            color: [255, 255, 255, 255],
+            stroke: Some(([0, 0, 0, 255], 8.0)),
+            letter_spacing_px: 0.0,
+            max_width_px: 900.0,
+            line_height: 1.4,
+            bold: true,
+        };
+
+        // 四个方向各压一次边：左上角外、右下角外、上边界、左边界。
+        for (cx, cy) in [
+            (10.0_f32, 10.0_f32),
+            (1270.0, 710.0),
+            (640.0, 4.0),
+            (6.0, 360.0),
+        ] {
+            let mut direct = blank(1280, 720);
+            direct.fill(Color::from_rgba8(255, 255, 255, 255));
+            r.draw_centered(&mut direct, "压边文字", cx, cy, &style, 0.6, 1.0);
+
+            let mut layer = blank(1280, 720);
+            r.draw_centered(&mut layer, "压边文字", cx, cy, &style, 1.0, 1.0);
+            let mut composited = blank(1280, 720);
+            composited.fill(Color::from_rgba8(255, 255, 255, 255));
+            composited.draw_pixmap(
+                0,
+                0,
+                layer.as_ref(),
+                &PixmapPaint {
+                    opacity: 0.6,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
+
+            let worst = direct
+                .data()
+                .iter()
+                .zip(composited.data())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                worst <= 1,
+                "中心 ({cx}, {cy})：与整幅参照实现最大差 {worst}，越界裁剪口径不一致"
+            );
+        }
     }
 }

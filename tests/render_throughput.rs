@@ -72,3 +72,54 @@ fn renderer_alone_portrait() {
 fn renderer_alone_base() {
     measure(Canvas::BASE, "渲染侧单独");
 }
+
+/// 逐段的渲染成本（ms/帧）。四段的画法差别很大——Cover/Intro/Outro 是白底加
+/// 少量元素，Content 是透明底加字幕入场动画——总吞吐里谁占大头，得分段看。
+#[test]
+#[ignore = "吞吐探针，需 --release 才有意义；手动跑"]
+fn renderer_cost_by_segment_landscape() {
+    use panda::render::timeline::{Segment, layout, segment_at};
+
+    let canvas = Canvas::LANDSCAPE;
+    let mut fs = FrameSource::new(
+        &vtt_text(),
+        "吞吐实测".into(),
+        &Branding::plain("墨风"),
+        canvas,
+    )
+    .unwrap();
+    let lay = layout(fs.audio_secs());
+    let total = fs.total_frames();
+
+    let mut acc = [(0u32, 0.0f64); 4];
+    for f in 0..total {
+        let (seg, _) = segment_at(&lay, f).unwrap();
+        let t0 = std::time::Instant::now();
+        let _ = fs.render(f).unwrap();
+        let dt = t0.elapsed().as_secs_f64();
+        let i = match seg {
+            Segment::Cover => 0,
+            Segment::Intro => 1,
+            Segment::Content => 2,
+            Segment::Outro => 3,
+        };
+        acc[i].0 += 1;
+        acc[i].1 += dt;
+    }
+
+    let names = ["Cover", "Intro", "Content", "Outro"];
+    let whole: f64 = acc.iter().map(|a| a.1).sum();
+    for (i, (n, secs)) in acc.iter().enumerate() {
+        println!(
+            "{:<8} {n:>4} 帧  {:>7.2} ms/帧  合计 {:>6.2}s（占 {:>4.1}%）",
+            names[i],
+            secs * 1000.0 / *n as f64,
+            secs,
+            secs / whole * 100.0
+        );
+    }
+    println!(
+        "合计 {total} 帧 {whole:.2}s = {:.2} fps",
+        total as f64 / whole
+    );
+}
