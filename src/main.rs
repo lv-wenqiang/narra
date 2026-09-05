@@ -41,7 +41,7 @@ enum Commands {
         /// 标题，默认取品牌名
         #[arg(long)]
         title: Option<String>,
-        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨风」
+        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨」
         #[arg(long)]
         brand: Option<String>,
         /// 正文左下角水印文案；不给则取 $WATERMARK，再不给则不画
@@ -81,7 +81,7 @@ enum Commands {
         /// 标题，优先级最高
         #[arg(long)]
         title: Option<String>,
-        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨风」
+        /// 品牌名，画在封面上排与片尾大字上；不给则取 $BRAND，再不给为「墨」
         #[arg(long)]
         brand: Option<String>,
         /// 正文左下角水印文案；不给则取 $WATERMARK，再不给则不画
@@ -598,7 +598,7 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// 测试用品牌名，**刻意不等于生产默认值「墨风」**——若写成默认值，
+    /// 测试用品牌名，**刻意不等于生产默认值「墨」**——若写成默认值，
     /// 把兜底错写成硬编码字面量的变异就检不出来。
     const TEST_BRAND: &str = "测试品牌";
 

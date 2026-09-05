@@ -147,7 +147,7 @@ const OUTRO_RING_OUT_PROGRESS_MAX: f64 = 0.99;
 const OUTRO_LOGO_SCALE_IN_FRAMES: [f64; 2] = [0.0, 24.0];
 const OUTRO_LOGO_SCALE_RANGE: [f64; 2] = [0.2, 1.0];
 
-/// 品牌名（`Painter::brand`，默认「墨风」）：70px 粗体黑色（`Metrics::outro_title_font_size`），
+/// 品牌名（`Painter::brand`，默认「墨」）：70px 粗体黑色（`Metrics::outro_title_font_size`），
 /// 紧随 logo 淡入之后（`[24, 39]` 帧）淡入 + 上移归位（起点像素量见
 /// `Metrics::outro_title_translate_y_from`）。TS 原版 `whiteSpace: nowrap`
 /// （不换行）——沿用既有代码里表达「不换行」的惯例，给一个远大于画布宽度的

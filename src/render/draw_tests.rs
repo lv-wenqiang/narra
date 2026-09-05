@@ -5,7 +5,7 @@ use crate::render::metrics::Metrics;
 use crate::vtt::Caption;
 use tiny_skia::Pixmap;
 
-/// 测试用品牌名。**刻意不等于生产默认值「墨风」**——若这里写「墨风」，把
+/// 测试用品牌名。**刻意不等于生产默认值「墨」**——若这里写「墨」，把
 /// `self.brand` 换成字面量 `"墨风"` 的变异就检不出来了：测试要断言的是
 /// 「画的是传进去的那个品牌名」，而不是「画的字符串恰好等于默认值」。
 const TEST_BRAND: &str = "测试品牌";
@@ -1383,7 +1383,7 @@ fn the_two_watermark_settings_are_independent() {
 /// Cover 上排与 Outro 大字画的是**传入的品牌名**，不是任何写死的字符串。
 ///
 /// 判据是「换一个品牌名，那块区域的像素必须变」：两个品牌名墨宽不同（2 字
-/// vs 5 字），落在同一块区域上的像素不可能逐字节相同。把 `self.brand` 换回
+/// vs 8 字），落在同一块区域上的像素不可能逐字节相同。把 `self.brand` 换回
 /// 字面量的变异会让两次渲染完全一致，这条随即变红。
 #[test]
 fn cover_row_and_outro_title_render_the_configured_brand() {

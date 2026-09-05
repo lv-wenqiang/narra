@@ -32,7 +32,7 @@ fn measure(canvas: Canvas, label: &str) {
     let mut fs = FrameSource::new(
         &vtt_text(),
         "吞吐实测".into(),
-        &Branding::plain("墨风"),
+        &Branding::plain("墨"),
         canvas,
     )
     .unwrap();
@@ -84,7 +84,7 @@ fn renderer_cost_by_segment_landscape() {
     let mut fs = FrameSource::new(
         &vtt_text(),
         "吞吐实测".into(),
-        &Branding::plain("墨风"),
+        &Branding::plain("墨"),
         canvas,
     )
     .unwrap();

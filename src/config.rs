@@ -193,12 +193,12 @@ pub fn non_blank(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// 品牌名，默认「墨风」（`--brand` 覆盖）。
+/// 品牌名，默认「墨」（`--brand` 覆盖）。
 ///
 /// 画在 Cover 上排（logo 旁）与 Outro 大字上——「这是谁做的」。它同时是
 /// 标题三级兜底的最后一级（见 [`resolve_title`]）：没给标题时封面显示频道名。
 pub fn brand() -> String {
-    non_empty_env("BRAND").unwrap_or_else(|| "墨风".into())
+    non_empty_env("BRAND").unwrap_or_else(|| "墨".into())
 }
 
 /// 正文（Content 段）左下角水印文案，默认**不画**（`--watermark` 覆盖）。
@@ -378,7 +378,7 @@ mod tests {
 
     /// 测试里用一个**不是**生产默认值的品牌名。
     ///
-    /// 若这里写 "墨风"，`resolve_title` 把最后一级错写成硬编码 "墨风" 的变异
+    /// 若这里写 "墨"，`resolve_title` 把最后一级错写成硬编码 "墨" 的变异
     /// 就检不出来了——测试断言的必须是「回落到传进去的那个 brand」，而不是
     /// 「回落到某个恰好等于默认值的字符串」。
     const TEST_BRAND: &str = "测试品牌";

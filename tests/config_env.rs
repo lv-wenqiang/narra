@@ -194,7 +194,7 @@ fn brand_and_watermarks_have_the_documented_defaults() {
         std::env::remove_var("SFX_INTRO");
         std::env::remove_var("SFX_TYPEWRITER");
     }
-    assert_eq!(narra::config::brand(), "墨风");
+    assert_eq!(narra::config::brand(), "墨");
     assert_eq!(narra::config::watermark(), None, "未配置时不画正文水印");
     assert_eq!(
         narra::config::watermark_cover(),
@@ -243,7 +243,7 @@ fn each_branding_env_var_is_wired_to_exactly_one_function() {
     clear_all();
     unsafe { std::env::set_var("WATERMARK", "正文水印") };
     assert_eq!(narra::config::watermark().as_deref(), Some("正文水印"));
-    assert_eq!(narra::config::brand(), "墨风", "WATERMARK 不应影响品牌名");
+    assert_eq!(narra::config::brand(), "墨", "WATERMARK 不应影响品牌名");
     assert_eq!(
         narra::config::watermark_cover(),
         None,
@@ -256,7 +256,7 @@ fn each_branding_env_var_is_wired_to_exactly_one_function() {
         narra::config::watermark_cover().as_deref(),
         Some("封面水印")
     );
-    assert_eq!(narra::config::brand(), "墨风");
+    assert_eq!(narra::config::brand(), "墨");
     assert_eq!(
         narra::config::watermark(),
         None,
@@ -285,11 +285,7 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         std::env::set_var("SFX_INTRO", " ");
         std::env::set_var("SFX_TYPEWRITER", "\t");
     }
-    assert_eq!(
-        narra::config::brand(),
-        "墨风",
-        "全空白的 BRAND 应回落默认值"
-    );
+    assert_eq!(narra::config::brand(), "墨", "全空白的 BRAND 应回落默认值");
     assert_eq!(
         narra::config::watermark(),
         None,
@@ -361,7 +357,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
     clear();
     assert_eq!(
         Branding::resolve(None, None, None, None, None, None),
-        Branding::plain("墨风"),
+        Branding::plain("墨"),
         "四项都没给时应是「默认品牌 + 两处水印与图标都不画」"
     );
 
@@ -451,7 +447,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
             Some("  ".into()),
             None,
         ),
-        Branding::plain("墨风"),
+        Branding::plain("墨"),
         "全空白 + 无环境变量应一路兜底到默认值"
     );
 }
