@@ -101,7 +101,7 @@ panda debug-frames --vtt <vtt> -o <dir> [--frames <list>] [--orientation landsca
 
 ```
 
-**`--orientation` 加入（2026-09-05，见 `.superpowers/sdd/2026-09-05-orientation-landscape-portrait/`）**：
+**`--orientation` 加入（2026-09-05，见 `docs/superpowers/plans/2026-09-05-orientation-landscape-portrait.md`）**：
 `panda render` 与 `panda debug-frames` 都接受该参数，三级兜底
 `--orientation` > `$ORIENTATION` > `landscape`（对应画布 1920×1080；
 `portrait` 对应 1080×1920）。**认不出的值直接报错并列出可选值，不回落到
