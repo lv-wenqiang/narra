@@ -2,6 +2,15 @@
 name = "narra"
 version = "0.1.0"
 edition = "2024"
+# edition 2024 的最低工具链。写上它，工具链太旧的人拿到的是一句清楚的版本要求，
+# 而不是一串语法错误。
+rust-version = "1.85"
+description = "口播文稿 → Edge TTS 旁白与字幕 → 自绘四段画面 → ffmpeg 合成 1080p/竖版成片的命令行工具（运行时需要 ffmpeg）"
+license = "MIT"
+repository = "https://github.com/lv-wenqiang/narra"
+readme = "README.md"
+keywords = ["video", "tts", "ffmpeg", "subtitle", "cli"]
+categories = ["command-line-utilities", "multimedia::video"]
 
 [dependencies]
 anyhow = "1.0.104"
