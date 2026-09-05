@@ -129,24 +129,50 @@ pub struct Caption {
 
 /// 解析 WebVTT。只认时间行与其后的文本行，忽略 WEBVTT 头、序号行与空行。
 /// 多行文本用 `\n` 连接。无法解析的时间行整条跳过。
-pub fn parse_vtt(text: &str) -> Vec<Caption> {
-    let mut out = Vec::new();
-    let mut pending: Option<(u64, u64)> = None;
+/// [`parse_vtt_reporting`] 的产物：读出来的字幕，以及读的过程中被跳过的东西。
+#[derive(Debug, Default)]
+pub struct ParsedVtt {
+    pub captions: Vec<Caption>,
+    /// 每条一句人话，说明跳过了什么、为什么。
+    pub warnings: Vec<String>,
+}
+
+/// 解析 WebVTT 并**报告跳过了什么**。
+///
+/// **为什么要报告**：自产自销的路径（`generate_vtt` → 这里）永远不会有读不懂的
+/// 东西，但 `panda debug-frames --vtt` 读的是用户给的任意文件。静默跳过一条 cue
+/// 的表现是「某段字幕莫名其妙不见了」——用户手上没有任何线索可查。
+pub fn parse_vtt_reporting(text: &str) -> ParsedVtt {
+    /// 当前正在收的这一条 cue 处于什么状态。
+    ///
+    /// `Unreadable` 这一支是**故意继续往下收正文**的：时间行读不懂时正文还在
+    /// 后面几行，只有把它一并收下来，警告里才带得上「丢掉的是哪一段」。
+    enum Pending {
+        /// 还没读到时间行——此刻的非空行是 cue 序号/标识行，按规范丢弃。
+        None,
+        Cue(u64, u64),
+        Unreadable(String),
+    }
+
+    let mut out = ParsedVtt::default();
+    let mut pending = Pending::None;
     let mut buf: Vec<String> = Vec::new();
 
-    let flush =
-        |out: &mut Vec<Caption>, pending: &mut Option<(u64, u64)>, buf: &mut Vec<String>| {
-            if let Some((start_ms, end_ms)) = pending.take()
-                && !buf.is_empty()
-            {
-                out.push(Caption {
-                    text: buf.join("\n"),
-                    start_ms,
-                    end_ms,
-                });
-            }
-            buf.clear();
-        };
+    let flush = |out: &mut ParsedVtt, pending: &mut Pending, buf: &mut Vec<String>| {
+        match std::mem::replace(pending, Pending::None) {
+            Pending::Cue(start_ms, end_ms) if !buf.is_empty() => out.captions.push(Caption {
+                text: buf.join("\n"),
+                start_ms,
+                end_ms,
+            }),
+            Pending::Unreadable(ts_line) => out.warnings.push(format!(
+                "跳过一条读不懂的字幕：时间行「{ts_line}」解析不了，正文「{}」被丢弃",
+                buf.join("\n")
+            )),
+            _ => {}
+        }
+        buf.clear();
+    };
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -159,16 +185,18 @@ pub fn parse_vtt(text: &str) -> Vec<Caption> {
         }
         if let Some((a, b)) = line.split_once("-->") {
             flush(&mut out, &mut pending, &mut buf);
-            if let (Some(s), Some(e)) = (parse_ts_ms(a.trim()), parse_ts_ms(b.trim())) {
-                pending = Some((s, e));
-            }
+            pending = match (parse_ts_ms(a.trim()), parse_ts_ms(b.trim())) {
+                (Some(s), Some(e)) => Pending::Cue(s, e),
+                _ => Pending::Unreadable(line.to_string()),
+            };
             continue;
         }
-        // 纯数字的序号行：只有在还没开始收文本时才跳过
-        if pending.is_some() && buf.is_empty() && line.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        if pending.is_some() {
+        // 已经读到时间行，此后的非空行一律是正文。
+        //
+        // **不能再看这行「像不像 cue 序号」**：序号行在规范里出现在时间行
+        // **之前**，那一支已经由 `Pending::None` 挡掉了；在时间行之后还去
+        // 认数字，只会把正文里独占一行的年份（`2024`）当序号吃掉。
+        if !matches!(pending, Pending::None) {
             buf.push(line.to_string());
         }
     }
@@ -176,15 +204,33 @@ pub fn parse_vtt(text: &str) -> Vec<Caption> {
     out
 }
 
-/// 解析 `HH:MM:SS.mmm`，失败返回 None。
+/// [`parse_vtt_reporting`] 的薄壳：把警告打到 stderr，只交字幕。
+///
+/// 警告而不是报错，与 `--font` 不可用时的处置一致——少一条字幕不该让整支片子
+/// 出不来，但用户必须知道少了什么。
+pub fn parse_vtt(text: &str) -> Vec<Caption> {
+    let parsed = parse_vtt_reporting(text);
+    for w in &parsed.warnings {
+        eprintln!("警告：{w}");
+    }
+    parsed.captions
+}
+
+/// 解析 `HH:MM:SS.mmm` 或 `MM:SS.mmm`，失败返回 None。
+///
+/// **小时位在 WebVTT 规范里是可选的**，两种写法同样合法。只认三段式会让别家
+/// 工具产出的 VTT 整份解析为空——`FrameSource::new` 那一侧看到的是「一条字幕
+/// 都没有」，报的错会指向文件格式不对，而文件其实好好的。
 fn parse_ts_ms(s: &str) -> Option<u64> {
     let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let (sec, ms) = parts[2].split_once('.')?;
-    let h: u64 = parts[0].parse().ok()?;
-    let m: u64 = parts[1].parse().ok()?;
+    let (h, m, rest) = match parts.as_slice() {
+        [h, m, rest] => (*h, *m, *rest),
+        [m, rest] => ("0", *m, *rest),
+        _ => return None,
+    };
+    let (sec, ms) = rest.split_once('.')?;
+    let h: u64 = h.parse().ok()?;
+    let m: u64 = m.parse().ok()?;
     let sec: u64 = sec.parse().ok()?;
     // 右补零后按字节切片，因此必须先确认毫秒位全是 ASCII 数字：
     // 多字节字符（如「éé」补成「éé0」）会让 [..3] 落在字符中间而 panic。
@@ -387,5 +433,65 @@ mod tests {
         assert_eq!(caps.len(), 1, "坏 cue 应被跳过，好 cue 应保留：{caps:?}");
         assert_eq!(caps[0].text, "好的一条。");
         assert_eq!(caps[0].start_ms, 3000);
+    }
+
+    /// 正文首行全是数字（年份独占一行）时，内容不能被当成 cue 序号丢掉。
+    ///
+    /// 序号行在 WebVTT 里出现在**时间戳之前**，而正文出现在时间戳之后——
+    /// 「已经读到时间戳」本身就足以区分两者，不需要再看这行像不像序号。
+    #[test]
+    fn parse_vtt_keeps_a_body_line_that_is_all_digits() {
+        let s = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\n2024\n那一年。\n";
+        let caps = parse_vtt(s);
+        assert_eq!(caps.len(), 1, "序号行仍应被跳过：{caps:?}");
+        assert_eq!(
+            caps[0].text, "2024\n那一年。",
+            "正文里独占一行的年份不能被当成序号丢掉"
+        );
+    }
+
+    /// 跳过一条读不懂的 cue 时必须留下话，不能静默。
+    ///
+    /// `panda debug-frames --vtt` 读的是用户给的任意文件。静默跳过的表现是
+    /// 「某段字幕莫名其妙不见了」，用户没有任何线索可查——而 cue 的正文就在
+    /// 手边，警告里带上它，用户一眼就能定位到是文件哪一段。
+    #[test]
+    fn parse_vtt_warns_about_a_cue_it_could_not_read_instead_of_dropping_it_silently() {
+        let s = "WEBVTT\n\n1\n00:00:01.éé --> 00:00:02.000\n坏的一条。\n\n\
+                 2\n00:00:03.000 --> 00:00:04.000\n好的一条。\n";
+        let parsed = parse_vtt_reporting(s);
+        assert_eq!(parsed.captions.len(), 1, "好 cue 应保留");
+        assert_eq!(parsed.warnings.len(), 1, "坏 cue 应留下且只留下一条警告");
+        let w = &parsed.warnings[0];
+        assert!(
+            w.contains("00:00:01.éé --> 00:00:02.000"),
+            "警告应带上读不懂的那一行原文，用户才定位得到：{w}"
+        );
+        assert!(
+            w.contains("坏的一条。"),
+            "警告应带上被丢掉的正文，否则用户不知道少了什么：{w}"
+        );
+    }
+
+    /// WebVTT 规范里小时位是可选的：`MM:SS.mmm` 与 `HH:MM:SS.mmm` 同样合法。
+    #[test]
+    fn parse_ts_ms_accepts_the_optional_hour_form_from_the_spec() {
+        assert_eq!(parse_ts_ms("01:30.500"), Some(90_500));
+        assert_eq!(parse_ts_ms("00:00.000"), Some(0));
+        // 三段式不受影响
+        assert_eq!(parse_ts_ms("01:01:30.500"), Some(3_690_500));
+        // 段数不对仍然拒绝
+        assert_eq!(parse_ts_ms("30.500"), None, "只有秒不是合法时间戳");
+        assert_eq!(parse_ts_ms("1:2:3:4.500"), None);
+    }
+
+    /// 别家工具产出的、省掉小时位的 VTT 不能被整份判为空。
+    #[test]
+    fn parse_vtt_reads_a_file_written_without_the_hour_field() {
+        let s = "WEBVTT\n\n1\n00:00.000 --> 00:02.500\n第一句。\n\n2\n00:02.500 --> 01:06.000\n第二句。\n";
+        let caps = parse_vtt(s);
+        assert_eq!(caps.len(), 2, "省掉小时位的 VTT 应能读出来：{caps:?}");
+        assert_eq!(caps[0].end_ms, 2500);
+        assert_eq!(caps[1].end_ms, 66_000);
     }
 }

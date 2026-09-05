@@ -150,24 +150,31 @@
   2048² 在 BASE（36px/216px）与计划 B（324px）两档尺寸下都够缩，换成更小
   的预缩版反而会在计划 B 落地时不够用。
 
+- **`parse_vtt` 对外部文件不够宽容（三处）**（原「值得做」第 1 条）—— 2026-09-05 销。
+  三处一次改完，各自带测试与变异验证：
+
+  - **把正文当序号行丢掉**：原来的判据是「已读到时间行 + 本条还没收正文 + 整行全是
+    数字 → 跳过」。方向反了——序号行在规范里出现在时间行**之前**，那一支本来就由
+    「还没读到时间行的非空行一律丢弃」挡住了；在时间行**之后**还去认数字，只会把正文
+    里独占一行的年份（`2024`）当序号吃掉。判据直接删掉即可，不是收窄。
+    测试 `parse_vtt_keeps_a_body_line_that_is_all_digits`；变异（把判据加回去）→ 红。
+  - **时间戳读不懂时整条 cue 连正文一起静默跳过**：新增 `parse_vtt_reporting`
+    返回 `ParsedVtt { captions, warnings }`，`parse_vtt` 退化成把警告 `eprintln!`
+    出去的薄壳（警告而非报错，与 `--font` 不可用时的处置一致）。内部状态从
+    `Option<(u64,u64)>` 换成三态 `Pending`，多出来的 `Unreadable(时间行原文)` 一支
+    **故意继续往下收正文**——正文在时间行后面几行，不收下来警告里就带不上「丢掉的
+    是哪一段」，用户照样无从查起。测试
+    `parse_vtt_warns_about_a_cue_it_could_not_read_instead_of_dropping_it_silently`；
+    两次变异（不产警告 / 警告里不带正文）→ 各自变红。
+  - **只认 `HH:MM:SS.mmm`**：小时位在规范里是可选的。改成按段数匹配（三段用原样，
+    两段补 `h=0`，其余仍拒绝）。这条的失败形式格外隐蔽：整份 VTT 解析为空之后，
+    `FrameSource::new` 报的是「字幕文件里没有解析出任何字幕」，指向文件格式不对，
+    而文件其实好好的。测试 `parse_ts_ms_accepts_the_optional_hour_form_from_the_spec`
+    与 `parse_vtt_reads_a_file_written_without_the_hour_field`；变异（改回必填）→ 两条同时红。
+
 ### 值得做
 
-#### 1. `parse_vtt` 对外部文件不够宽容（三处）
-
-自产自销路径（`generate_vtt` → `parse_vtt`）不会触发，但 `panda debug-frames --vtt`
-读的是**用户给的任意文件**，这三处都会被踩到：
-
-- **把正文当序号行丢掉**：正文首行若全是数字（`"2024"`、`"1998"` 这类年份独占一行），
-  会被当成 cue 序号跳过，字幕内容凭空少一行。
-- **时间戳解析失败时整条 cue 连正文一起静默跳过**：既不报错也不警告，用户只会看到
-  某段字幕莫名其妙不见了。
-- **只认 `HH:MM:SS.mmm`**：WebVTT 规范同样允许 `MM:SS.mmm`，别家工具产出的 VTT 会被
-  整份判为空。
-
-（终审波次已经修掉了同一函数里那个真会 panic 的 char-boundary bug——毫秒位是多字节
-字符时按字节切片会炸；上面三条是剩下的**静默**行为，不炸但会丢内容。）
-
-#### 2. `draw_centered` 每次调用都做全画布 scratch clear + composite
+#### 1. `draw_centered` 每次调用都做全画布 scratch clear + composite
 
 热路径上一个约 **3×** 的乘数。实测（1280×720）：
 
