@@ -772,7 +772,7 @@ impl Painter {
             None,
         );
 
-        // 上排：「熊猫智研社」（左对齐，与 logo 在这一行内垂直居中，粗体，
+        // 上排：品牌名（左对齐，与 logo 在这一行内垂直居中，粗体，
         // 整体 0.30 透明度——与 logo 不重叠，逐元素施加等价于整体施加）。
         let row_text_style = TextStyle {
             size_px: self.m.cover_row_text_font_size,
@@ -908,7 +908,7 @@ impl Painter {
     }
 
     /// 绘制 Outro 段一帧（规格 §8.4「Outro」小节）：不透明白底 + 同心圆环
-    /// （不可见，忠实移植）+ logo（自身中心缩放）+ 固定标题「熊猫智研社」
+    /// （不可见，忠实移植）+ logo（自身中心缩放）+ 品牌名（`Painter::brand`）
     /// （紧随 logo 淡入 + 上移归位）+ `cover` 预设水印，末尾整体淡出。
     pub fn draw_outro(&mut self, pixmap: &mut Pixmap, local_frame: u32) {
         pixmap.fill(Color::from_rgba8(255, 255, 255, 255));

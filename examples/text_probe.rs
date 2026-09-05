@@ -339,7 +339,7 @@ fn main() -> Result<()> {
     font_system.db_mut().load_font_data(FONT_BYTES.to_vec());
 
     // 探针要求的主文本：70px 粗体，6px 黑色描边 + 白色填充，画在半透明灰底上。
-    let main_text = "熊猫智研社 Test 123";
+    let main_text = "文字渲染器 Test 123";
     println!("渲染主探针文本：{main_text:?}");
     let pixmap = render_text(&mut font_system, &family, main_text, 900, 220, true)?;
     pixmap
@@ -368,12 +368,12 @@ fn main() -> Result<()> {
         None => println!("  [FAIL] 没有任何非背景像素——什么都没画出来"),
     }
 
-    // 额外核实中文没有被渲染成豆腐块：分别渲染「熊猫」和「智研」，
+    // 额外核实中文没有被渲染成豆腐块：分别渲染「文字」和「渲染」，
     // 如果两者都是豆腐块（.notdef），它们的形状、宽度往往一致，
     // 两张图会几乎逐像素相同；只要像素分布不同，就说明确实取到了各自的字形轮廓。
-    println!("豆腐块核对：分别渲染「熊猫」与「智研」并比较像素……");
-    let pixmap_a = render_text(&mut font_system, &family, "熊猫", 300, 220, false)?;
-    let pixmap_b = render_text(&mut font_system, &family, "智研", 300, 220, false)?;
+    println!("豆腐块核对：分别渲染「文字」与「渲染」并比较像素……");
+    let pixmap_a = render_text(&mut font_system, &family, "文字", 300, 220, false)?;
+    let pixmap_b = render_text(&mut font_system, &family, "渲染", 300, 220, false)?;
     pixmap_a.save_png("text_probe_cjk_a.png").ok();
     pixmap_b.save_png("text_probe_cjk_b.png").ok();
 
@@ -387,7 +387,7 @@ fn main() -> Result<()> {
     let stats_a = analyze(&pixmap_a);
     let stats_b = analyze(&pixmap_b);
     println!(
-        "  「熊猫」黑/白像素：{}/{}，「智研」黑/白像素：{}/{}，不同字节数：{differing}",
+        "  「文字」黑/白像素：{}/{}，「渲染」黑/白像素：{}/{}，不同字节数：{differing}",
         stats_a.near_black, stats_a.near_white, stats_b.near_black, stats_b.near_white
     );
     if differing == 0 {
@@ -414,7 +414,15 @@ fn main() -> Result<()> {
         println!("     glyph_id={glyph_id}, font_id={font_id:?}, post_script_name={psname:?}");
     }
     let embedded_face = Face::parse(FONT_BYTES, 0).context("解析内嵌字体失败")?;
-    let embedded_psname = family_name_from_ttf(FONT_BYTES).ok();
+    // **必须取 PostScript 名（name ID 6），不能拿家族名来比**：下面两组判据比的是
+    // cosmic-text 报回来的 `post_script_name`（"LXGWWenKaiLite-Regular"），而家族名
+    // 是 "LXGW WenKai Lite"——两者恒不相等，会让第 1 组的「复现成功」恒真、第 2 组
+    // 的 PASS 永远判不出来（本探针此前正是这样，2026-09-05 修）。
+    let embedded_psname = embedded_face
+        .names()
+        .into_iter()
+        .find(|n| n.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
+        .and_then(|n| n.to_string());
     let leaked_to_other_font = leaky
         .iter()
         .any(|(_, _, psname)| psname.as_deref() != embedded_psname.as_deref());
@@ -453,7 +461,7 @@ fn main() -> Result<()> {
     // 合成粗体：对比 bold=true / bold=false 的墨迹量（alpha > 128 的像素数）
     // ------------------------------------------------------------------
     println!("合成粗体核对：对比同一段文字 bold=true / bold=false 的墨迹量……");
-    let bold_text = "熊猫智研社";
+    let bold_text = "文字渲染器";
     let pixmap_thin = render_text(&mut font_system, &family, bold_text, 500, 220, false)?;
     let pixmap_bold = render_text(&mut font_system, &family, bold_text, 500, 220, true)?;
     // 注意：不能直接数 `alpha > 128` 的像素——画布背景本身是半透明灰底

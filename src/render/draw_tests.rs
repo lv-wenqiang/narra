@@ -1864,8 +1864,13 @@ fn cursor_and_last_line_bboxes_narrow(
 ///
 /// | 标题 | 修复前 | 修复后 |
 /// |---|---|---|
-/// | 英文长标题（`Panda Video Generator automated engine for long titles wrapping`） | 35/60 | 0/60 |
-/// | 中英混排（`熊猫视频自动化引擎 Panda Video Generator 全流程演示标题`） | 20/60 | 0/60 |
+/// | 英文长标题（`Narra Video Generator automated engine for long titles wrapping`） | 35/60 | 0/60 |
+/// | 中英混排（`口播视频自动化引擎 Narra Video Generator 全流程演示标题`） | 20/60 | 0/60 |
+///
+/// **表中「修复前」两列是用当时的标题文案实测的**——那两条标题带项目旧名，
+/// 2026-09-05 随改名做了**等长替换**（原文见 git 历史），换行结构不变，但那两个
+/// 数字**没有在新文案下复测**：复测得先把修复回退掉，不值得。「修复后 0/60」这
+/// 一列则由本测试每次运行实际验证。
 ///
 /// **修复轮 2**：原来逐帧枚举 `0..60` 单条耗时约 90s（每帧两次
 /// 1280×720 全画布渲染 + diff），改成 10 个代表帧、扫描窗口收窄到文本块
@@ -1886,8 +1891,8 @@ fn cursor_and_last_line_bboxes_narrow(
 fn cursor_never_overlaps_word_wrapped_last_line_ink() {
     let mut painter = Painter::new(&test_branding(), Canvas::BASE).unwrap();
     let titles = [
-        "Panda Video Generator automated engine for long titles wrapping",
-        "熊猫视频自动化引擎 Panda Video Generator 全流程演示标题",
+        "Narra Video Generator automated engine for long titles wrapping",
+        "口播视频自动化引擎 Narra Video Generator 全流程演示标题",
     ];
     const SAMPLE_FRAMES: [u32; 10] = [10, 15, 20, 25, 30, 33, 38, 40, 45, 50];
     for title in titles {
@@ -2426,7 +2431,7 @@ fn brand_wider_than_the_old_2000px_sentinel_still_renders_single_line_in_outro_t
     let mut renderer = TextRenderer::new().unwrap();
 
     // 逐字追加，实测宽度，直到落入 (2000, 2560] 区间——不预设字符数。
-    let pool = "熊猫智研社品牌名称测试文案拼接够长了吗还没到再来几个字符看看现在";
+    let pool = "文字渲染器品牌名称测试文案拼接够长了吗还没到再来几个字符看看现在";
     let mut wide_brand = String::new();
     let mut width = 0.0f32;
     for ch in pool.chars().cycle() {

@@ -604,7 +604,7 @@ mod tests {
         let mut p = blank(1280, 720);
         r.draw_centered(
             &mut p,
-            "熊猫智研社 Test 123",
+            "文字渲染器 Test 123",
             640.0,
             360.0,
             &style(70.0),
@@ -627,8 +627,8 @@ mod tests {
         let mut r = TextRenderer::new().unwrap();
         let mut a = blank(600, 200);
         let mut b = blank(600, 200);
-        r.draw_centered(&mut a, "熊猫", 300.0, 100.0, &style(70.0), 1.0, 1.0);
-        r.draw_centered(&mut b, "智研", 300.0, 100.0, &style(70.0), 1.0, 1.0);
+        r.draw_centered(&mut a, "文字", 300.0, 100.0, &style(70.0), 1.0, 1.0);
+        r.draw_centered(&mut b, "渲染", 300.0, 100.0, &style(70.0), 1.0, 1.0);
         assert_ne!(
             a.data(),
             b.data(),
@@ -801,17 +801,17 @@ mod tests {
 
     /// I2 修复：`measure()` 是 brief `Interfaces` 里三个公开 API 之一，此前零测试覆盖。
     /// 钉住「排版宽度与墨迹宽度同量级、且墨迹比排版宽度略宽（描边+粗体外扩）」这条关系。
-    /// 实测（60px「熊猫智研社」）：`measure` 宽 300.0，墨迹（非透明像素包围盒）宽 298px。
+    /// 实测（60px「文字渲染器」）：`measure` 宽 300.0，墨迹（非透明像素包围盒）宽 300px。
     #[test]
     fn measure_width_matches_ink_width_for_a_five_char_line() {
         let mut r = TextRenderer::new().unwrap();
         let s = style(60.0);
-        let (w, h) = r.measure("熊猫智研社", &s);
+        let (w, h) = r.measure("文字渲染器", &s);
         assert!(w > 200.0 && w < 400.0, "measure 宽度异常：{w}");
         assert!(h > 0.0, "measure 高度应为正：{h}");
 
         let mut p = blank(700, 200);
-        r.draw_centered(&mut p, "熊猫智研社", 350.0, 100.0, &s, 1.0, 1.0);
+        r.draw_centered(&mut p, "文字渲染器", 350.0, 100.0, &s, 1.0, 1.0);
         let bbox = non_transparent_bbox(&p).unwrap();
         let ink_w = (bbox.2 - bbox.0) as f32;
         // 墨迹不含描边/合成粗体外扩时应约等于排版宽度；这里的描边+粗体外扩让墨迹
@@ -964,8 +964,8 @@ mod tests {
     fn last_line_metrics_single_line_matches_measure() {
         let mut r = TextRenderer::new().unwrap();
         let s = style(60.0);
-        let (w, h) = (r.measure("熊猫智研社", &s).0, r.measure("熊猫智研社", &s).1);
-        let (last_w, top_rel, last_h) = r.last_line_metrics("熊猫智研社", &s).unwrap();
+        let (w, h) = (r.measure("文字渲染器", &s).0, r.measure("文字渲染器", &s).1);
+        let (last_w, top_rel, last_h) = r.last_line_metrics("文字渲染器", &s).unwrap();
         assert!(
             (last_w - w).abs() < 0.01,
             "单行时最后一行宽度应与 measure 的整体宽度一致：last_w={last_w} w={w}"
@@ -1011,7 +1011,7 @@ mod tests {
         let mut r = TextRenderer::new().unwrap();
         let mut s = style(40.0);
         s.max_width_px = 220.0; // 窄到必然把长单词挤到下一行
-        let text = "Panda Video Generator automated engine";
+        let text = "Narra Video Generator automated engine";
         let (unwrapped_w, _) = {
             let mut wide = style(40.0);
             wide.max_width_px = 4000.0;
