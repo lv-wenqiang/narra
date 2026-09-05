@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-pub const FONT: &[u8] = include_bytes!("../assets/dingliesongtypeface.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/LXGWWenKaiLite-Regular.ttf");
 pub const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
 pub const INTRO_MP3: &[u8] = include_bytes!("../assets/intro.mp3");
 pub const INTRO_TYPEWRITER_MP3: &[u8] = include_bytes!("../assets/intro_typewriter.mp3");

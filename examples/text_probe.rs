@@ -12,10 +12,10 @@ use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, f
 use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-/// 字体文件与 `assets/dingliesongtypeface.ttf` 一致（Task 0 Step 1 从
+/// 字体文件与 `assets/LXGWWenKaiLite-Regular.ttf` 一致（Task 0 Step 1 从
 /// `../panda-video-ts/public/fonts/` 复制而来）。用 `include_bytes!` 在编译期嵌入，
 /// 避免探针依赖运行目录。
-const FONT_BYTES: &[u8] = include_bytes!("../assets/dingliesongtypeface.ttf");
+const FONT_BYTES: &[u8] = include_bytes!("../assets/LXGWWenKaiLite-Regular.ttf");
 
 /// 把 ttf-parser 的 `OutlineBuilder` 回调（字体 unitsPerEm 坐标系，y 轴向上）
 /// 原样转发给 tiny-skia 的 `PathBuilder`。缩放、平移、y 轴翻转全部交给调用方

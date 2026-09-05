@@ -15,7 +15,7 @@ const TEST_COVER_WM: &str = "测试水印 · 副标题";
 
 /// 「{TEST_COVER_WM}」在 28px 下的墨宽实测值，见
 /// `cover_watermark_is_centered_at_640_576_with_alpha_102` 的文档。
-const COVER_WM_INK_WIDTH_PX: i32 = 229;
+const COVER_WM_INK_WIDTH_PX: i32 = 223;
 
 /// 正文水印墨迹的实测底边 y 与墨宽，见
 /// `watermark_ink_geometry_and_alpha_are_exact`。
