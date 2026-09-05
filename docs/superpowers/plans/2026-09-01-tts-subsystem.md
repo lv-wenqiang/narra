@@ -1,5 +1,9 @@
 # panda-video-rs TTS 子系统 Implementation Plan
 
+
+> **2026-09-05 校订**：本文档里的品牌名、默认标题与探针文案已随项目改名统一替换
+> 为当前值（改动前的原文见 git 历史）。其余内容保持当时的记录原样。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 用 Rust 实现「口播文稿 → `audio.mp3` + `audio.vtt`」，功能等价于现有 `packages/tts-node`，替代 `pnpm tts`。
@@ -1482,7 +1486,7 @@ use panda::config;
 use panda::tts::pipeline::{process_narration_file, ProcessOptions};
 
 #[derive(Parser)]
-#[command(name = "panda", about = "熊猫视频自动化引擎（Rust）")]
+#[command(name = "panda", about = "口播视频自动化引擎（Rust）")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

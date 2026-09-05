@@ -1,5 +1,9 @@
 # panda-video-rs ffmpeg 合成与 CLI Implementation Plan
 
+
+> **2026-09-05 校订**：本文档里的品牌名、默认标题与探针文案已随项目改名统一替换
+> 为当前值（改动前的原文见 git 历史）。其余内容保持当时的记录原样。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把已有的逐帧渲染能力接上 ffmpeg，产出可播放的成片 mp4，并交付 `panda render` 与 `panda make` 两个子命令。
@@ -19,7 +23,7 @@
 - **`amix` 必须设 `normalize=0`**，否则自动归一化会改变各路相对音量。
 - 背景视频按 `objectFit: cover` 等价处理：`scale=...:force_original_aspect_ratio=increase` 后 `crop`；亮度用 **`colorchannelmixer=rr=0.8:gg=0.8:bb=0.8`**（**乘性**），**不得用 `eq=brightness`**（那是加性的，语义不同）。
 - 背景视频与 BGM **保持为外部文件**（有 `shuffle:bg-video` / `shuffle:bgm` 换素材的流程）；`intro.mp3` 与 `intro_typewriter.mp3` **内嵌**（规格 §5 的 `assets/` 清单已列明）。
-- 标题三级兜底：`--title` > `--title-json` 指向文件的 `title` 字段 > `熊猫智研社`。
+- 标题三级兜底：`--title` > `--title-json` 指向文件的 `title` 字段 > `墨`。
 - 默认路径：背景视频 `public/video/0.mp4`、BGM `public/bgm/0.mp3`、标题 JSON `public/video/title.json`、成片输出 `output/video/video.mp4`。
 - 外部依赖只允许 **ffmpeg**。目标平台仅 **Linux（WSL2）**。
 - 验收标准是**功能正确可用**，不要求与 TypeScript 原版逐像素/逐样本一致。
@@ -1232,7 +1236,7 @@ git commit -m "feat(ffmpeg): 帧流管道与进程管理"
 **Interfaces:**
 - Consumes: 无
 - Produces:
-  - `pub const DEFAULT_TITLE: &str = "熊猫智研社";`
+  - `pub const DEFAULT_TITLE: &str = "墨";`
   - `pub fn bg_video_path() -> String` / `pub fn bgm_path() -> String` / `pub fn title_json_path() -> String` / `pub fn video_output_path() -> String`
   - `pub fn resolve_title(cli: Option<&str>, json_text: Option<&str>) -> String`
 
@@ -1318,7 +1322,7 @@ Expected: FAIL，新函数不存在
 
 ```rust
 /// 标题的最终兜底值（规格 §6 的三级兜底最后一级）。
-pub const DEFAULT_TITLE: &str = "熊猫智研社";
+pub const DEFAULT_TITLE: &str = "墨";
 
 /// 背景视频，默认 `public/video/0.mp4`（`--bg` 覆盖）。
 pub fn bg_video_path() -> String {

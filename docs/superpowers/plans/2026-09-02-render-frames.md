@@ -1,5 +1,9 @@
 # panda-video-rs 帧渲染 Implementation Plan
 
+
+> **2026-09-05 校订**：本文档里的品牌名、默认标题与探针文案已随项目改名统一替换
+> 为当前值（改动前的原文见 git 历史）。其余内容保持当时的记录原样。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现把成片的**任意一帧**渲染成 1280×720 RGBA 位图的能力——封面、片头打字机、字幕层、片尾，全部按规格 §8 绘制。
@@ -64,7 +68,7 @@ cargo add tiny-skia cosmic-text ttf-parser image
 
 - [ ] **Step 2: 写探针**
 
-目标：把「熊猫智研社 Test 123」以 **70px 粗体**渲染出来，**先用 6px 黑色描边、再填充白色**，画在半透明灰底上，存成 `text_probe.png`。
+目标：把「文字渲染器 Test 123」以 **70px 粗体**渲染出来，**先用 6px 黑色描边、再填充白色**，画在半透明灰底上，存成 `text_probe.png`。
 
 关键在于**必须拿到字形轮廓**（outline），而不是位图——只有轮廓才能描边。两条候选路线：
 
@@ -78,7 +82,7 @@ cargo add tiny-skia cosmic-text ttf-parser image
 let mut font_system = cosmic_text::FontSystem::new();
 font_system.db_mut().load_font_data(FONT_BYTES.to_vec());
 let mut buffer = cosmic_text::Buffer::new(&mut font_system, Metrics::new(70.0, 84.0));
-buffer.set_text(&mut font_system, "熊猫智研社 Test 123", &Attrs::new().family(Family::Name("...")), Shaping::Advanced);
+buffer.set_text(&mut font_system, "文字渲染器 Test 123", &Attrs::new().family(Family::Name("...")), Shaping::Advanced);
 for run in buffer.layout_runs() {
     for glyph in run.glyphs {
         // 需要：glyph.glyph_id、glyph.x、glyph.y、以及从字体取轮廓的方法
@@ -97,7 +101,7 @@ for run in buffer.layout_runs() {
 cargo run --example text_probe
 ```
 
-期望：`text_probe.png` 里能看到白字黑边的「熊猫智研社 Test 123」，中文和拉丁字符都正确显示（**不是豆腐块 □□□**），描边均匀包裹字形、没有断裂或自相交伪影。
+期望：`text_probe.png` 里能看到白字黑边的「文字渲染器 Test 123」，中文和拉丁字符都正确显示（**不是豆腐块 □□□**），描边均匀包裹字形、没有断裂或自相交伪影。
 
 - [ ] **Step 4: 核对关键指标**
 
@@ -785,7 +789,7 @@ mod tests {
     fn renders_cjk_and_latin_without_tofu() {
         let mut r = TextRenderer::new().unwrap();
         let mut p = blank(1280, 720);
-        r.draw_centered(&mut p, "熊猫智研社 Test 123", 640.0, 360.0, &style(70.0), 1.0, 1.0);
+        r.draw_centered(&mut p, "文字渲染器 Test 123", 640.0, 360.0, &style(70.0), 1.0, 1.0);
         let bbox = non_transparent_bbox(&p).expect("画布应有非透明像素");
         let w = bbox.2 - bbox.0;
         // 9 个字符 @70px，宽度应在合理量级；豆腐块也有宽度，故另用下面的测试排除
@@ -1207,9 +1211,9 @@ Expected: FAIL，方法不存在
 
 - 白底 `#FFFFFF` 铺满，alpha 255
 - 居中容器（画面正中，宽度 80%）：
-  - **上排**（整体不透明度 **0.30**，左偏移 40px，水平排列、垂直居中）：`logo.png` 缩放到 **36px**、四周 margin 8px；紧邻「熊猫智研社」**38px 粗体**、行高 1.2
+  - **上排**（整体不透明度 **0.30**，左偏移 40px，水平排列、垂直居中）：`logo.png` 缩放到 **36px**、四周 margin 8px；紧邻「墨」**38px 粗体**、行高 1.2
   - **主标题**：**100px 粗体**，左右 padding 40px，行高 1.2，支持换行
-- 水印（`cover` 预设）：画面水平居中、**垂直中心 576px**（TS 的 `marginTop:432px` 在 `inset:0` 居中容器下的等价值，见规格 §8.6 的说明），28px 字号，颜色 `rgba(23,23,23,0.4)`，图标 32px、间距 12px，**带中文后缀** ` · 熊猫视频自动化引擎`（间隔点 `·` 不透明度 0.75）
+- 水印（`cover` 预设）：画面水平居中、**垂直中心 576px**（TS 的 `marginTop:432px` 在 `inset:0` 居中容器下的等价值，见规格 §8.6 的说明），28px 字号，颜色 `rgba(23,23,23,0.4)`，图标 32px、间距 12px，**带中文后缀** ` · 口播视频自动化引擎`（间隔点 `·` 不透明度 0.75）
 
 - [ ] **Step 4: 实现 Intro（打字机）**
 
@@ -1325,7 +1329,7 @@ Expected: FAIL，方法不存在
   - `out_progress = spring(local_frame as f64, 30.0, 15.0, 30.0)`（时长 0.5s、延迟 1s）
   - **必须钳制**：`out_progress` 趋近 1 时 scale 发散。把 `out_progress` 钳到最大 `0.99`（对应 scale 100），或直接钳制 scale 上限。**不钳制会产生 inf/NaN 几何而 panic 或画出垃圾。**
 - **Logo**：`logo.png` 缩放到 `min(1280,720) * 0.3 = 216px`，`scale = interpolate(local_frame as f64, [0.0, 24.0], [0.2, 1.0])`，居中
-- **固定标题「熊猫智研社」**：**70px 粗体黑色**，位于 logo 下方 40px
+- **固定标题「墨」**：**70px 粗体黑色**，位于 logo 下方 40px
   - `opacity = interpolate(local_frame as f64, [24.0, 39.0], [0.0, 1.0])`
   - `translate_y = interpolate(local_frame as f64, [24.0, 39.0], [-50.0, 0.0])`
 - **整体淡出**：`interpolate(local_frame as f64, [105.0, 119.0], [1.0, 0.0])`，作用于圆环、logo、标题、水印
@@ -1487,7 +1491,7 @@ impl FrameSource {
         /// VTT 文件路径
         #[arg(long)]
         vtt: PathBuf,
-        /// 标题，默认「熊猫智研社」
+        /// 标题，默认「墨」
         #[arg(long)]
         title: Option<String>,
         /// 输出目录
