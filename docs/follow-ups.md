@@ -36,7 +36,7 @@
     `Canvas::BASE` 改错一格（`1280`→`1281`），
     `render::canvas::tests::base_matches_the_pre_refactor_hardcoded_size`
     与 `cargo test --test canvas_baseline` 两侧同时变红。
-  - **帧率半**（终审修复波补做）：`src/render/timeline.rs` 的
+  - **帧率半**（终审修复波补做，源码文本钉住已在 Task 4 补全）：`src/render/timeline.rs` 的
     `pub const FPS: u32 = 30` 与 `src/render/draw.rs` 曾各写一份独立的
     `const FPS`，互不引用——只改 `timeline::FPS` 会让 `layout()`/ffmpeg 的
     `-r`/`INTRO_START_SECS`/`CONTENT_START_SECS` 跟着变，而 `draw.rs` 里
@@ -50,6 +50,17 @@
     一致。变异验证：暂时把 `draw::FPS` 改回独立字面量 `30.0`、把
     `timeline::FPS` 改成 `60`，该测试从 `ok` 变 `FAILED`
     （`left: 30.0, right: 60.0`）；两处都改回后重新变绿。
+    
+    **源码文本层补全**（Task 4）：上述运行期断言虽然守住了「两处取值分歧」，
+    但若有人把 `draw::FPS` 的推导改回字面量 `30.0`、保持数值不变，断言仍会
+    通过（因为 `30.0 == 30 as f64`）——这正是双真相源重新长出来的方式。
+    新增 `tests/fps_single_source.rs` 以源码文本比对补这个盲点：
+    `draw_fps_is_written_as_a_derivation_not_a_literal` 保证 `draw.rs` 里
+    出现的是 `const FPS: f64 = crate::render::timeline::FPS as f64;`，
+    `draw_rs_has_no_hardcoded_frame_rate` 保证不出现写死的 `const FPS: f64 = 30.0;` 或
+    `const FPS: f64 = 30f64;`。变异验证对比结果：同一变异（把推导改成 `30.0`）下，
+    源码文本测试两条全红 ❌，而原先的运行期断言仍然通过 ✓——这正是 F-4 记录的
+    那个盲区，也是新增源码文本测试存在的理由。
 
 ### 值得做
 
