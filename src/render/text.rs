@@ -118,10 +118,19 @@ impl TextRenderer {
     /// 完全绕开 `new_with_fonts()`/`load_fonts()`。见 `docs/text-rendering.md`
     /// 「系统字体静默回退陷阱」一节的实测复现与验证。
     pub fn new() -> Result<Self> {
-        let family = family_name_from_ttf(FONT)?;
+        Self::from_font_data(FONT.to_vec())
+    }
+
+    /// 用一份字体字节构造。`new()` 与 [`with_optional_font`] 都收敛到这里，
+    /// 「私有 db、不加载系统字体」这条性质因此只有一处实现，不会在加自定义
+    /// 字体时被漏掉。
+    ///
+    /// [`with_optional_font`]: Self::with_optional_font
+    fn from_font_data(data: Vec<u8>) -> Result<Self> {
+        let family = family_name_from_ttf(&data)?;
 
         let mut db = fontdb::Database::new();
-        db.load_font_data(FONT.to_vec());
+        db.load_font_data(data);
         let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
 
         Ok(Self {
@@ -129,6 +138,71 @@ impl TextRenderer {
             family,
             scratch: None,
         })
+    }
+
+    /// 按用户指定的字体文件构造；`None`、或该文件不可用时，回退到内嵌字体。
+    ///
+    /// **回退而非报错**是明确的产品选择（与 `--orientation` 的硬报错不同），
+    /// 代价是「字体没生效」不会中断出片，所以警告必须自带三样东西：出错的
+    /// 路径、具体原因、以及**实际生效的是哪一份**——少了第三样，看到警告的人
+    /// 仍然不知道成片里的字长什么样。
+    ///
+    /// **按扩展名分流，不嗅探文件头**，与 `assets::load_icon` 同一套规矩：
+    /// 用户给的是自己的文件，猜错格式的后果是整片文字变成另一种样子而没有
+    /// 任何提示。只认 `.ttf` 与 `.otf`。
+    ///
+    /// **不做字形覆盖率检查**：本渲染器刻意禁用了系统字体回退（见 [`new`]），
+    /// 因此一份不覆盖中文的字体会让字幕整片变成豆腐块。这是「禁用回退」的
+    /// 既定代价，此处不检测、不提示。
+    ///
+    /// [`new`]: Self::new
+    pub fn with_optional_font(path: Option<&std::path::Path>) -> Result<Self> {
+        let Some(path) = path else {
+            return Self::new();
+        };
+        match Self::try_with_font(path) {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                Self::warn_fallback(path, &format!("{e:#}"));
+                Self::new()
+            }
+        }
+    }
+
+    /// 严格版：加载指定字体，任何一步失败都返回 `Err`，**不回退**。
+    ///
+    /// 与 [`with_optional_font`] 拆开是为了让「回退」成为一个可观测的事实：
+    /// 合起来写时，外部只能看到一个 `Ok`，无从分辨拿到的是用户字体还是内嵌
+    /// 字体，测试也就只能断言「没有崩」。拆开之后，失败的判定归这里、回退的
+    /// 决策归外层，两者各自可测。
+    ///
+    /// [`with_optional_font`]: Self::with_optional_font
+    pub fn try_with_font(path: &std::path::Path) -> Result<Self> {
+        Self::from_font_data(Self::load_font_file(path)?)
+    }
+
+    /// 读取并按扩展名校验字体文件。
+    fn load_font_file(path: &std::path::Path) -> Result<Vec<u8>> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if ext != "ttf" && ext != "otf" {
+            anyhow::bail!("只支持 .ttf 与 .otf，收到的扩展名是「{ext}」");
+        }
+        std::fs::read(path).with_context(|| format!("读取字体文件失败：{}", path.display()))
+    }
+
+    /// 回退时的警告。文案里必须点明实际生效的字体，理由见
+    /// [`with_optional_font`] 的文档。
+    ///
+    /// [`with_optional_font`]: Self::with_optional_font
+    fn warn_fallback(path: &std::path::Path, reason: &str) {
+        eprintln!(
+            "警告：指定的字体 {} 无法使用（{reason}），本次改用内嵌字体渲染全部文字。",
+            path.display()
+        );
     }
 
     /// 排版一段文字：构造 `Metrics`/`Buffer`，设置换行宽度，套用字间距，跑完整形。
@@ -986,5 +1060,120 @@ mod tests {
             "word-wrap 后最后一行宽度应精确等于末尾单词「BBBB」自身的宽度：\
              last_w={last_w} expected={expected_w}（旧的\"前缀高度跳变\"启发式会得到一个明显偏小的值）"
         );
+    }
+
+    /// 一份可用的 `.ttf`：`try_with_font` 必须成功，且解析出的 family 与内嵌
+    /// 字体一致（用的正是内嵌字体的字节，写到临时文件再读回来）。
+    ///
+    /// 这条与下面三条「失败」用例合起来，才把「加载成功」和「回退」区分开：
+    /// 只测 `with_optional_font` 的话两者都返回 `Ok`，断言不到任何东西。
+    #[test]
+    fn try_with_font_loads_a_valid_ttf() {
+        let dir = std::env::temp_dir().join(format!("panda_font_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("embedded-copy.ttf");
+        std::fs::write(&p, crate::assets::FONT).unwrap();
+
+        let loaded = TextRenderer::try_with_font(&p).expect("合法 .ttf 应加载成功");
+        let embedded = TextRenderer::new().unwrap();
+        assert_eq!(
+            loaded.family, embedded.family,
+            "写出去再读回来的同一份字体，family 应当一致"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `.otf` 也在白名单里。
+    ///
+    /// **为什么写的是 TTF 字节**：格式判定按扩展名、不嗅探文件头（见
+    /// `load_font_file`），所以这条要验证的是「otf 这个扩展名被接受」，
+    /// 与文件内容是哪种轮廓格式无关。缺了这条，把白名单缩成只认 `.ttf`
+    /// 的改动不会让任何测试变红——实测确认过该变异原本可以存活。
+    #[test]
+    fn try_with_font_accepts_otf_extension() {
+        let dir = std::env::temp_dir().join(format!("panda_font_otf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("some-font.otf");
+        std::fs::write(&p, crate::assets::FONT).unwrap();
+        assert!(
+            TextRenderer::try_with_font(&p).is_ok(),
+            ".otf 应在支持的扩展名白名单内"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 扩展名不在白名单内：报错并点名收到的扩展名。
+    ///
+    /// **按扩展名而非文件头判定**（与 `assets::load_icon` 同一套规矩），所以
+    /// 这里刻意写入一份**内容完全合法**的字体字节、只把扩展名改成 `.png`：
+    /// 若判定改成嗅探文件头，这条会变绿，正是要拦住的那种改动。
+    #[test]
+    fn try_with_font_rejects_unsupported_extension() {
+        let dir = std::env::temp_dir().join(format!("panda_font_ext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("actually-a-font.png");
+        std::fs::write(&p, crate::assets::FONT).unwrap();
+
+        let msg = match TextRenderer::try_with_font(&p) {
+            Ok(_) => panic!("扩展名不支持时应报错"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(msg.contains("png"), "报错应点名收到的扩展名：{msg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 扩展名合法但文件不存在：报错并带上路径。
+    #[test]
+    fn try_with_font_reports_missing_file() {
+        let p = std::env::temp_dir().join("panda_font_definitely_absent_9c3f.ttf");
+        std::fs::remove_file(&p).ok();
+        let msg = match TextRenderer::try_with_font(&p) {
+            Ok(_) => panic!("文件不存在时应报错"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            msg.contains("panda_font_definitely_absent_9c3f.ttf"),
+            "报错应带上出错的路径：{msg}"
+        );
+    }
+
+    /// 扩展名合法但内容不是字体：报错而不是 panic。
+    #[test]
+    fn try_with_font_rejects_garbage_content() {
+        let dir = std::env::temp_dir().join(format!("panda_font_junk_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("not-a-font.ttf");
+        std::fs::write(&p, b"this is definitely not a font file").unwrap();
+        assert!(TextRenderer::try_with_font(&p).is_err(), "非字体内容应报错");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 回退契约：`with_optional_font` 对上面每一种失败都必须**返回 `Ok`**
+    /// （回退到内嵌字体，不中断出片），且拿到的 family 就是内嵌字体的。
+    ///
+    /// 这是产品选择而非疏漏——与 `--orientation` 的硬报错不同，理由见
+    /// `with_optional_font` 的文档。
+    #[test]
+    fn with_optional_font_falls_back_instead_of_failing() {
+        let embedded = TextRenderer::new().unwrap().family;
+        let dir = std::env::temp_dir().join(format!("panda_font_fb_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let junk = dir.join("junk.ttf");
+        std::fs::write(&junk, b"nope").unwrap();
+        let bad_ext = dir.join("x.png");
+        std::fs::write(&bad_ext, crate::assets::FONT).unwrap();
+        let missing = dir.join("gone.ttf");
+
+        for p in [&junk, &bad_ext, &missing] {
+            let r = TextRenderer::with_optional_font(Some(p))
+                .unwrap_or_else(|e| panic!("{} 应回退而不是报错：{e:#}", p.display()));
+            assert_eq!(r.family, embedded, "{} 回退后应当用内嵌字体", p.display());
+        }
+
+        // 不给路径时同样是内嵌字体。
+        let none = TextRenderer::with_optional_font(None).unwrap();
+        assert_eq!(none.family, embedded);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -360,7 +360,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
 
     clear();
     assert_eq!(
-        Branding::resolve(None, None, None, None, None),
+        Branding::resolve(None, None, None, None, None, None),
         Branding::plain("墨风"),
         "四项都没给时应是「默认品牌 + 两处水印与图标都不画」"
     );
@@ -373,7 +373,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         std::env::set_var("WATERMARK_ICON", "/env/mark.svg");
         std::env::set_var("LOGO_FILE", "/env/logo.png");
     }
-    let from_env = Branding::resolve(None, None, None, None, None);
+    let from_env = Branding::resolve(None, None, None, None, None, None);
     assert_eq!(from_env.brand, "环境品牌");
     assert_eq!(from_env.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(from_env.watermark_cover.as_deref(), Some("环境封面水印"));
@@ -387,39 +387,41 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         Some("命令行封面水印".into()),
         Some("/cli/mark.png".into()),
         Some("/cli/logo.svg".into()),
+        Some("/cli/font.ttf".into()),
     );
     assert_eq!(from_cli.brand, "命令行品牌");
     assert_eq!(from_cli.watermark.as_deref(), Some("命令行正文水印"));
     assert_eq!(from_cli.watermark_cover.as_deref(), Some("命令行封面水印"));
     assert_eq!(from_cli.watermark_icon.as_deref(), Some("/cli/mark.png"));
     assert_eq!(from_cli.logo.as_deref(), Some("/cli/logo.svg"));
+    assert_eq!(from_cli.font.as_deref(), Some("/cli/font.ttf"));
 
     // 只给一个：另外两个必须仍来自环境变量，不能被这一个带偏。
-    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None, None, None);
+    let only_brand = Branding::resolve(Some("只给品牌".into()), None, None, None, None, None);
     assert_eq!(only_brand.brand, "只给品牌");
     assert_eq!(only_brand.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(only_brand.watermark_cover.as_deref(), Some("环境封面水印"));
     assert_eq!(only_brand.watermark_icon.as_deref(), Some("/env/mark.svg"));
     assert_eq!(only_brand.logo.as_deref(), Some("/env/logo.png"));
 
-    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None, None, None);
+    let only_wm = Branding::resolve(None, Some("只给正文水印".into()), None, None, None, None);
     assert_eq!(only_wm.watermark.as_deref(), Some("只给正文水印"));
     assert_eq!(only_wm.brand, "环境品牌");
     assert_eq!(only_wm.watermark_cover.as_deref(), Some("环境封面水印"));
 
-    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()), None, None);
+    let only_cover = Branding::resolve(None, None, Some("只给封面水印".into()), None, None, None);
     assert_eq!(only_cover.watermark_cover.as_deref(), Some("只给封面水印"));
     assert_eq!(only_cover.brand, "环境品牌");
     assert_eq!(only_cover.watermark.as_deref(), Some("环境正文水印"));
 
-    let only_icon = Branding::resolve(None, None, None, Some("/只给图标.png".into()), None);
+    let only_icon = Branding::resolve(None, None, None, Some("/只给图标.png".into()), None, None);
     assert_eq!(only_icon.watermark_icon.as_deref(), Some("/只给图标.png"));
     assert_eq!(only_icon.brand, "环境品牌");
     assert_eq!(only_icon.watermark.as_deref(), Some("环境正文水印"));
     assert_eq!(only_icon.watermark_cover.as_deref(), Some("环境封面水印"));
     assert_eq!(only_icon.logo.as_deref(), Some("/env/logo.png"));
 
-    let only_logo = Branding::resolve(None, None, None, None, Some("/只给logo.png".into()));
+    let only_logo = Branding::resolve(None, None, None, None, Some("/只给logo.png".into()), None);
     assert_eq!(only_logo.logo.as_deref(), Some("/只给logo.png"));
     assert_eq!(only_logo.brand, "环境品牌");
     assert_eq!(only_logo.watermark_icon.as_deref(), Some("/env/mark.svg"));
@@ -431,6 +433,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
         Some("  \n".into()),
         Some(" ".into()),
         Some("\t\t".into()),
+        None,
     );
     assert_eq!(
         blank, from_env,
@@ -446,6 +449,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
             Some("  ".into()),
             Some("  ".into()),
             Some("  ".into()),
+            None,
         ),
         Branding::plain("墨风"),
         "全空白 + 无环境变量应一路兜底到默认值"
@@ -639,4 +643,52 @@ fn orientation_resolve_prefers_cli_over_env_over_landscape() {
     );
 
     clear();
+}
+
+/// `--font` > `$FONT_FILE` > `None`（用内嵌字体），三级各自独立。
+///
+/// **断言「只有 font 变」而不只断言 font 的值**：`Branding::resolve` 的入参
+/// 全是同型的 `Option<String>`，相邻两个对调既不编译失败也不在任何一次运行里
+/// 报错，只会让字体路径悄悄落到 logo 字段上。本文件里其它 resolve 测试用的是
+/// 同一套写法，理由见 `Branding::resolve` 的文档。
+#[test]
+fn font_resolve_prefers_cli_over_env_over_embedded() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    use panda::config::Branding;
+    // SAFETY: 持有 ENV_LOCK，本文件内串行。
+    unsafe {
+        std::env::remove_var("FONT_FILE");
+    }
+
+    let none = Branding::resolve(None, None, None, None, None, None);
+    assert_eq!(none.font, None, "三级都没给时应为 None（表示用内嵌字体）");
+
+    // SAFETY: 同上。
+    unsafe {
+        std::env::set_var("FONT_FILE", "/env/font.otf");
+    }
+    let from_env = Branding::resolve(None, None, None, None, None, None);
+    assert_eq!(from_env.font.as_deref(), Some("/env/font.otf"));
+    assert_eq!(from_env.logo, None, "环境变量的字体不该落到 logo 上");
+
+    let from_cli = Branding::resolve(None, None, None, None, None, Some("/cli/font.ttf".into()));
+    assert_eq!(
+        from_cli.font.as_deref(),
+        Some("/cli/font.ttf"),
+        "--font 应盖过 $FONT_FILE"
+    );
+    assert_eq!(from_cli.logo, None, "命令行的字体不该落到 logo 上");
+
+    // 空白视同没给，回落到环境变量——与本模块其它项同一规矩。
+    let blank = Branding::resolve(None, None, None, None, None, Some("   ".into()));
+    assert_eq!(
+        blank.font.as_deref(),
+        Some("/env/font.otf"),
+        "全空白的 --font 应视同没给"
+    );
+
+    // SAFETY: 同上。
+    unsafe {
+        std::env::remove_var("FONT_FILE");
+    }
 }

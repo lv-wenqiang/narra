@@ -88,6 +88,8 @@ pub struct Branding {
     pub watermark_icon: Option<String>,
     /// Cover 上排与 Outro 的 logo 文件路径，`None` = 用内嵌的那张。
     pub logo: Option<String>,
+    /// 四段画面共用的字体文件路径（`.ttf` / `.otf`），`None` = 用内嵌的那份。
+    pub font: Option<String>,
 }
 
 impl Branding {
@@ -109,6 +111,7 @@ impl Branding {
         watermark_cover: Option<String>,
         watermark_icon: Option<String>,
         logo: Option<String>,
+        font: Option<String>,
     ) -> Self {
         Self {
             brand: non_blank(brand).unwrap_or_else(self::brand),
@@ -116,6 +119,7 @@ impl Branding {
             watermark_cover: non_blank(watermark_cover).or_else(self::watermark_cover),
             watermark_icon: non_blank(watermark_icon).or_else(self::watermark_icon),
             logo: non_blank(logo).or_else(self::logo_path),
+            font: non_blank(font).or_else(self::font_path),
         }
     }
 
@@ -130,6 +134,7 @@ impl Branding {
             watermark_cover: None,
             watermark_icon: None,
             logo: None,
+            font: None,
         }
     }
 }
@@ -212,6 +217,11 @@ pub fn watermark() -> Option<String> {
 /// 与 Outro 的版式里 logo 是承重的，没有它那两段会空一块。
 pub fn logo_path() -> Option<String> {
     non_empty_env("LOGO_FILE")
+}
+
+/// 四段画面共用的字体文件，默认用内嵌的那份（`--font` 覆盖）。
+pub fn font_path() -> Option<String> {
+    non_empty_env("FONT_FILE")
 }
 
 /// 片尾音效，默认用内嵌的 `intro.mp3`（`--sfx-intro` 覆盖）。

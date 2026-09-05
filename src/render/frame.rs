@@ -693,6 +693,7 @@ mod tests {
             watermark_cover: None,
             watermark_icon: None,
             logo: None,
+            font: None,
         };
         let mut fs = FrameSource::new(SHORT_VTT, "标题".into(), &branding, Canvas::BASE).unwrap();
         let pixmap = fs.render(CONTENT_FRAME).unwrap();

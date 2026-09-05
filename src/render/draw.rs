@@ -599,7 +599,8 @@ impl Painter {
     /// `Some(空白预设)` 与 `None` 在成片上都是「什么都不画」——留两条等价
     /// 路径只会让「到底画没画」多一种说法。
     pub fn new(branding: &Branding, canvas: Canvas) -> anyhow::Result<Self> {
-        let mut renderer = TextRenderer::new()?;
+        let mut renderer =
+            TextRenderer::with_optional_font(branding.font.as_deref().map(Path::new))?;
         let m = Metrics::for_canvas(canvas);
         // 图标按两处各自的目标尺寸分别加载一次。**共用一个配置项、但不是
         // 共用一张位图**：正文/封面各自的图标尺寸不同，各自按目标尺寸光栅化

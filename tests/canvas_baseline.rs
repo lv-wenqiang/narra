@@ -50,6 +50,7 @@ fn fixture() -> Branding {
         watermark_cover: Some("封面水印 · 副标题".into()),
         watermark_icon: None,
         logo: None,
+        font: None,
     }
 }
 

@@ -137,6 +137,7 @@ panda render --audio <mp3> --vtt <vtt> [-o <out.mp4>] [素材/品牌选项...]
 | `--watermark-cover` | `WATERMARK_COVER` | **不画** |
 | `--watermark-icon` | `WATERMARK_ICON` | **不画** |
 | `--logo` | `LOGO_FILE` | 内嵌的那张 |
+| `--font` | `FONT_FILE` | 内嵌的霞鹜文楷 |
 | `--sfx-intro` | `SFX_INTRO` | 内嵌的那段 |
 | `--sfx-typewriter` | `SFX_TYPEWRITER` | 内嵌的那段 |
 | `--bg` | `BG_VIDEO` | `public/video/0.mp4` |
@@ -149,6 +150,11 @@ panda render --audio <mp3> --vtt <vtt> [-o <out.mp4>] [素材/品牌选项...]
 
 两处水印相互独立，各自为空时各自不画；图标与 logo 支持 `.svg`（矢量渲染）
 与 `.png`（Lanczos3 缩放），原样保留自身颜色，只施加水印预设的不透明度。
+
+`--font` 支持 `.ttf` 与 `.otf`，四段画面共用同一份。**文件不可用时打印警告并
+回退到内嵌字体，不中断出片**——警告会写明失败原因和实际生效的字体。注意渲染器
+刻意禁用了系统字体回退（见下），所以指定一份不覆盖中文的字体会让字幕变成豆腐块，
+工具不对此做检测。
 
 TTS 侧另有 `EDGE_TTS_VOICE`、`EDGE_TTS_BATCH_SIZE`、`EDGE_TTS_TIMEOUT_MS`、
 `TTS_INPUT_FILE`、`TTS_OUTPUT_DIR`、`SPIDER_OUTPUT_DIR`。

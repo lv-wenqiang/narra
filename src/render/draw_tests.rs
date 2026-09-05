@@ -40,6 +40,7 @@ fn branding_with(content: Option<&str>, cover: Option<&str>) -> Branding {
         watermark_cover: cover.map(str::to_string),
         watermark_icon: None,
         logo: None,
+        font: None,
     }
 }
 
@@ -1149,6 +1150,7 @@ fn watermark_icon_is_drawn_and_keeps_its_own_colors() {
         watermark_cover: Some(TEST_COVER_WM.to_string()),
         watermark_icon: Some(png.to_string_lossy().into_owned()),
         logo: None,
+        font: None,
     };
     let mut painter = Painter::new(&branding, Canvas::BASE).unwrap();
     let mut p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();
@@ -1429,6 +1431,7 @@ fn cover_and_outro_use_the_configured_logo() {
     let mut custom = Painter::new(
         &Branding {
             logo: Some(png.to_string_lossy().into_owned()),
+            font: None,
             ..test_branding()
         },
         Canvas::BASE,
@@ -2454,6 +2457,7 @@ fn brand_wider_than_the_old_2000px_sentinel_still_renders_single_line_in_outro_t
         watermark_cover: None,
         watermark_icon: None,
         logo: None,
+        font: None,
     };
     let mut wide_painter = Painter::new(&wide_branding, Canvas::BASE).unwrap();
     let mut wide_p = Pixmap::new(Canvas::BASE.w, Canvas::BASE.h).unwrap();

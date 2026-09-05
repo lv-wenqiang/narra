@@ -56,6 +56,10 @@ enum Commands {
         /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
         #[arg(long)]
         logo: Option<String>,
+        /// 四段画面共用的字体（.ttf 或 .otf）；不给则取 $FONT_FILE，再不给用内嵌的霞鹜文楷。
+        /// 文件不可用时打印警告并回退到内嵌字体，不中断出片
+        #[arg(long)]
+        font: Option<String>,
         /// 画幅方向：landscape（1920x1080，默认）或 portrait（1080x1920）；不给则取 $ORIENTATION
         #[arg(long)]
         orientation: Option<String>,
@@ -92,6 +96,10 @@ enum Commands {
         /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
         #[arg(long)]
         logo: Option<String>,
+        /// 四段画面共用的字体（.ttf 或 .otf）；不给则取 $FONT_FILE，再不给用内嵌的霞鹜文楷。
+        /// 文件不可用时打印警告并回退到内嵌字体，不中断出片
+        #[arg(long)]
+        font: Option<String>,
         /// 画幅方向：landscape（1920x1080，默认）或 portrait（1080x1920）；不给则取 $ORIENTATION
         #[arg(long)]
         orientation: Option<String>,
@@ -525,13 +533,21 @@ async fn main() -> Result<()> {
             watermark_cover,
             watermark_icon,
             logo,
+            font,
             orientation,
             out,
             frames,
         } => run_debug_frames(
             vtt,
             title,
-            Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo),
+            Branding::resolve(
+                brand,
+                watermark,
+                watermark_cover,
+                watermark_icon,
+                logo,
+                font,
+            ),
             Orientation::resolve(orientation)?.canvas(),
             out,
             frames,
@@ -545,6 +561,7 @@ async fn main() -> Result<()> {
             watermark_cover,
             watermark_icon,
             logo,
+            font,
             orientation,
             title_json,
             bg,
@@ -554,8 +571,14 @@ async fn main() -> Result<()> {
             out,
         } => {
             let paths = resolve_render_paths(title_json, bg, bgm, out);
-            let branding =
-                Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo);
+            let branding = Branding::resolve(
+                brand,
+                watermark,
+                watermark_cover,
+                watermark_icon,
+                logo,
+                font,
+            );
             let sfx = SfxSources::resolve(sfx_intro, sfx_typewriter);
             let canvas = Orientation::resolve(orientation)?.canvas();
             compose_video(&compose_inputs(
