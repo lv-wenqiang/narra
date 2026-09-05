@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use panda::config;
-use panda::config::{Branding, SfxSources};
+use panda::config::{Branding, Orientation, SfxSources};
 use panda::render::canvas::Canvas;
 use panda::render::frame::FrameSource;
 use panda::render::timeline::FPS;
@@ -56,6 +56,9 @@ enum Commands {
         /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
         #[arg(long)]
         logo: Option<String>,
+        /// 画幅方向：landscape（1920x1080，默认）或 portrait（1080x1920）；不给则取 $ORIENTATION
+        #[arg(long)]
+        orientation: Option<String>,
         /// 输出目录
         #[arg(short, long)]
         out: PathBuf,
@@ -89,6 +92,9 @@ enum Commands {
         /// 封面上排与片尾的 logo（.svg 或 .png）；不给则取 $LOGO_FILE，再不给用内嵌的那张
         #[arg(long)]
         logo: Option<String>,
+        /// 画幅方向：landscape（1920x1080，默认）或 portrait（1080x1920）；不给则取 $ORIENTATION
+        #[arg(long)]
+        orientation: Option<String>,
         /// 标题 JSON，默认 public/video/title.json
         #[arg(long)]
         title_json: Option<PathBuf>,
@@ -139,6 +145,7 @@ fn run_debug_frames(
     vtt: PathBuf,
     title: Option<String>,
     branding: Branding,
+    canvas: Canvas,
     out: PathBuf,
     frames: Option<String>,
 ) -> Result<()> {
@@ -146,7 +153,7 @@ fn run_debug_frames(
         .with_context(|| format!("读取 VTT 文件失败：{}", vtt.display()))?;
     let title = config::non_blank(title).unwrap_or_else(|| branding.brand.clone());
 
-    let mut source = FrameSource::new(&vtt_text, title, &branding, Canvas::BASE)?;
+    let mut source = FrameSource::new(&vtt_text, title, &branding, canvas)?;
     let total_frames = source.total_frames();
     let frame_ids = parse_frame_list(frames.as_deref(), total_frames)?;
 
@@ -381,6 +388,7 @@ struct ComposeVideoInputs<'a> {
     bg: &'a Path,
     bgm: &'a Path,
     out: &'a Path,
+    canvas: Canvas,
 }
 
 /// `render` 与 `make` 收敛到同一条合成路径的那个汇合点：把「音频 / 字幕 /
@@ -397,6 +405,7 @@ fn compose_inputs<'a>(
     branding: &'a Branding,
     sfx: &'a SfxSources,
     paths: &'a ResolvedRenderPaths,
+    canvas: Canvas,
 ) -> ComposeVideoInputs<'a> {
     ComposeVideoInputs {
         audio,
@@ -408,6 +417,7 @@ fn compose_inputs<'a>(
         bg: &paths.bg,
         bgm: &paths.bgm,
         out: &paths.out,
+        canvas,
     }
 }
 
@@ -445,6 +455,7 @@ fn compose_video_with_runner(
         bg,
         bgm,
         out,
+        canvas,
     } = *inputs;
 
     check_render_inputs_exist(audio, vtt, bg, bgm)?;
@@ -463,10 +474,12 @@ fn compose_video_with_runner(
     let tmp = TempPath::create_dir("panda_render")?;
     let (intro, typewriter) = resolve_sfx_paths(sfx, tmp.path())?;
 
-    let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding, Canvas::BASE)?;
+    let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding, canvas)?;
 
     println!(
-        "标题「{resolved_title}」，音频 {:.2}s，共 {} 帧（{:.2}s），输出 {}",
+        "标题「{resolved_title}」，画幅 {}x{}，音频 {:.2}s，共 {} 帧（{:.2}s），输出 {}",
+        source.canvas().w,
+        source.canvas().h,
         source.audio_secs(),
         source.total_frames(),
         source.total_frames() as f64 / FPS as f64,
@@ -483,9 +496,11 @@ fn compose_video_with_runner(
 }
 
 /// `compose_video_with_runner` 接上真正的 ffmpeg 执行器。全仓库唯一的一条
-/// 合成路径：`Commands::Render` 与 `Commands::Make` 的分支体都只是它的一层
-/// 薄胶水（备齐输入 → `compose_inputs` → 调用本函数），区别仅在音频/字幕
-/// 是命令行给的还是刚跑完的 TTS 产的。
+/// 合成路径：`Commands::Render` 的分支体只是它的一层薄胶水（备齐输入 →
+/// `compose_inputs` → 调用本函数）。一条龙的两步（先 `tts` 再 `render`）
+/// 编排现在在 `justfile` 的 `make` 配方里，不再是本 crate 的一个
+/// `Commands` 变体——两步各自调用本二进制，音频/字幕来自刚跑完的 TTS
+/// 产物路径，与 `render` 分支从命令行拿到的是同一套字段。
 fn compose_video(inputs: &ComposeVideoInputs) -> Result<()> {
     compose_video_with_runner(inputs, panda::ffmpeg::run_render)
 }
@@ -510,12 +525,14 @@ async fn main() -> Result<()> {
             watermark_cover,
             watermark_icon,
             logo,
+            orientation,
             out,
             frames,
         } => run_debug_frames(
             vtt,
             title,
             Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo),
+            Orientation::resolve(orientation)?.canvas(),
             out,
             frames,
         ),
@@ -528,6 +545,7 @@ async fn main() -> Result<()> {
             watermark_cover,
             watermark_icon,
             logo,
+            orientation,
             title_json,
             bg,
             bgm,
@@ -539,6 +557,7 @@ async fn main() -> Result<()> {
             let branding =
                 Branding::resolve(brand, watermark, watermark_cover, watermark_icon, logo);
             let sfx = SfxSources::resolve(sfx_intro, sfx_typewriter);
+            let canvas = Orientation::resolve(orientation)?.canvas();
             compose_video(&compose_inputs(
                 &audio,
                 &vtt,
@@ -546,6 +565,7 @@ async fn main() -> Result<()> {
                 &branding,
                 &sfx,
                 &paths,
+                canvas,
             ))
         }
     }
@@ -905,6 +925,7 @@ mod tests {
             bg: &bg,
             bgm: &bgm,
             out: &out,
+            canvas: Canvas::BASE,
         };
 
         // 出口 1：runner 成功。
@@ -1017,6 +1038,7 @@ mod tests {
             bg: &bg,
             bgm: &bgm,
             out: &out,
+            canvas: Canvas::BASE,
         };
 
         let mut runner_called = false;
@@ -1097,6 +1119,7 @@ mod tests {
             bg: &bg,
             bgm: &bgm,
             out: &out,
+            canvas: Canvas::BASE,
         };
         let err = compose_video_with_runner(&inputs, |_, _| {
             panic!("runner 不应被调用：应该在存在性检查这一步就失败")
@@ -1125,6 +1148,7 @@ mod tests {
             bg: &bg,
             bgm: &bgm,
             out: &out,
+            canvas: Canvas::BASE,
         };
         let err = compose_video_with_runner(&inputs, |_, _| {
             panic!("runner 不应被调用：应该在存在性检查这一步就失败")
@@ -1157,7 +1181,15 @@ mod tests {
 
         let branding = Branding::plain(TEST_BRAND);
         let sfx = SfxSources::default();
-        let inputs = compose_inputs(&audio, &vtt, Some("标题"), &branding, &sfx, &paths);
+        let inputs = compose_inputs(
+            &audio,
+            &vtt,
+            Some("标题"),
+            &branding,
+            &sfx,
+            &paths,
+            Canvas::PORTRAIT,
+        );
 
         assert_eq!(inputs.audio, audio.as_path());
         assert_eq!(inputs.vtt, vtt.as_path());
@@ -1166,6 +1198,11 @@ mod tests {
         assert_eq!(inputs.bg, paths.bg.as_path());
         assert_eq!(inputs.bgm, paths.bgm.as_path());
         assert_eq!(inputs.out, paths.out.as_path());
+        assert_eq!(
+            inputs.canvas,
+            Canvas::PORTRAIT,
+            "canvas 应原样传入，而不是被 compose_inputs 内部写死"
+        );
     }
 
     /// 一条龙侧的接线：TTS 跑完之后，喂给合成的 `audio`/`vtt` 必须正是
@@ -1183,7 +1220,7 @@ mod tests {
 
         let branding = Branding::plain(TEST_BRAND);
         let sfx = SfxSources::default();
-        let inputs = compose_inputs(&audio, &vtt, None, &branding, &sfx, &paths);
+        let inputs = compose_inputs(&audio, &vtt, None, &branding, &sfx, &paths, Canvas::BASE);
 
         assert_eq!(
             inputs.audio,
@@ -1199,5 +1236,20 @@ mod tests {
         assert_eq!(inputs.bg, Path::new(&config::bg_video_path()));
         assert_eq!(inputs.bgm, Path::new(&config::bgm_path()));
         assert_eq!(inputs.out, Path::new(&config::video_output_path()));
+    }
+
+    /// **默认画幅是 1920×1080，不再是 1280×720。**
+    ///
+    /// 这是本计划唯一改变用户可见行为的地方，值得单独钉住：`Canvas::BASE`
+    /// 退化成了调优基准与测试基线，不再是任何一条生产路径的输出尺寸。
+    #[test]
+    fn default_orientation_renders_at_landscape_not_base() {
+        let canvas = Orientation::resolve(None).unwrap().canvas();
+        assert_eq!(canvas, Canvas::LANDSCAPE);
+        assert_ne!(
+            canvas,
+            Canvas::BASE,
+            "BASE 是调优基准与测试基线，不该再是任何生产路径的输出尺寸"
+        );
     }
 }

@@ -572,3 +572,71 @@ fn blank_material_env_vars_are_treated_as_unset() {
         std::env::remove_var("VIDEO_OUTPUT");
     }
 }
+
+/// `--orientation` 的三级兜底：命令行 > `$ORIENTATION` > 横版。
+///
+/// 与 `Branding::resolve` 同一套写法与同一个理由——装配逻辑跟着它组合的
+/// 那些函数走，才测得到；放在 `main.rs`（bin crate）里，本文件的环境变量
+/// 夹具够不着它。
+#[test]
+fn orientation_resolve_prefers_cli_over_env_over_landscape() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    use panda::config::Orientation;
+    use panda::render::canvas::Canvas;
+    // SAFETY: 持有 ENV_LOCK，本文件内串行。
+    let clear = || unsafe { std::env::remove_var("ORIENTATION") };
+
+    clear();
+    assert_eq!(
+        Orientation::resolve(None).unwrap(),
+        Orientation::Landscape,
+        "都没给时应是横版"
+    );
+    assert_eq!(
+        Orientation::resolve(None).unwrap().canvas(),
+        Canvas::LANDSCAPE
+    );
+
+    unsafe { std::env::set_var("ORIENTATION", "portrait") };
+    assert_eq!(Orientation::resolve(None).unwrap(), Orientation::Portrait);
+    assert_eq!(
+        Orientation::resolve(None).unwrap().canvas(),
+        Canvas::PORTRAIT
+    );
+
+    // 命令行优先于环境变量。
+    assert_eq!(
+        Orientation::resolve(Some("landscape".into())).unwrap(),
+        Orientation::Landscape,
+        "命令行应压过环境变量"
+    );
+
+    // 大小写与首尾空白都容忍——这几个值是人手打的。
+    for raw in ["PORTRAIT", " portrait ", "Portrait"] {
+        assert_eq!(
+            Orientation::resolve(Some(raw.into())).unwrap(),
+            Orientation::Portrait,
+            "「{raw}」应被接受"
+        );
+    }
+
+    // 全空白视同没给，继续往下兜底到环境变量（此刻是 portrait）。
+    assert_eq!(
+        Orientation::resolve(Some("   ".into())).unwrap(),
+        Orientation::Portrait,
+        "全空白的命令行参数应视同没给"
+    );
+
+    // 认不出来的值必须**报错**，不能默默回落——默默回落会让打错一个字母
+    // 的用户拿到一支横版成片却以为是竖版，而中间没有任何提示。
+    let err = Orientation::resolve(Some("vertical".into()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("vertical"), "报错应点名那个值：{err}");
+    assert!(
+        err.contains("landscape") && err.contains("portrait"),
+        "报错应列出可选值：{err}"
+    );
+
+    clear();
+}

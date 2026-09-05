@@ -134,6 +134,47 @@ impl Branding {
     }
 }
 
+/// 成片的画幅方向。
+///
+/// **是枚举而不是一对宽高数字**：两档各自的版式常量都是在确定的宽度上调优
+/// 过的，接受任意尺寸等于放弃这个基准（规格 §5）。枚举也让「认不出来的值」
+/// 成为一个可以报错的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Landscape,
+    Portrait,
+}
+
+impl Orientation {
+    /// 三级兜底：`--orientation` > `$ORIENTATION` > 横版。
+    ///
+    /// 每一级都要求非空白（沿用本模块 [`non_blank`] / `non_empty_env` 的
+    /// 规矩，后者是私有项，故意不做 intra-doc 链接）。**认不出来的值报错而
+    /// 非回落**：默默回落会让打错一个字母的人
+    /// 拿到一支横版成片却以为是竖版，整条链上没有任何提示。
+    pub fn resolve(cli: Option<String>) -> anyhow::Result<Self> {
+        let raw = non_blank(cli).or_else(|| non_empty_env("ORIENTATION"));
+        match raw {
+            None => Ok(Self::Landscape),
+            Some(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "landscape" => Ok(Self::Landscape),
+                "portrait" => Ok(Self::Portrait),
+                other => anyhow::bail!(
+                    "认不出的画幅方向「{other}」，可选值：landscape（横版 1920x1080）、portrait（竖版 1080x1920）"
+                ),
+            },
+        }
+    }
+
+    /// 本方向对应的画布尺寸。
+    pub fn canvas(&self) -> crate::render::canvas::Canvas {
+        match self {
+            Self::Landscape => crate::render::canvas::Canvas::LANDSCAPE,
+            Self::Portrait => crate::render::canvas::Canvas::PORTRAIT,
+        }
+    }
+}
+
 /// 「全空白视同没给」——命令行参数侧的 `non_empty_env` 对应物（私有项，
 /// 故意不做 intra-doc 链接：链到私有项会让 `cargo rustdoc` 报
 /// `private_intra_doc_links` 告警）。

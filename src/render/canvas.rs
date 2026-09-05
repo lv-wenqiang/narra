@@ -99,10 +99,13 @@ mod tests {
         let base_px = Canvas::BASE.w as u64 * Canvas::BASE.h as u64;
         for c in [Canvas::LANDSCAPE, Canvas::PORTRAIT] {
             let px = c.w as u64 * c.h as u64;
+            // 整数等式而非「先乘 100 再整除再比对 225」：后者会截断，例如
+            // 1920x1081 的像素量整除后同样落在 225，也会侥幸通过。
+            // `px * 4 == base_px * 9` 是同一个 2.25 倍关系的精确整数形式。
             assert_eq!(
-                px * 100 / base_px,
-                225,
-                "{}x{} 的像素量应为 BASE 的 2.25 倍",
+                px * 4,
+                base_px * 9,
+                "{}x{} 的像素量应恰为 BASE 的 2.25 倍",
                 c.w,
                 c.h
             );
