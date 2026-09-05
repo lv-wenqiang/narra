@@ -89,9 +89,18 @@ panda tts    [INPUT] [OUTDIR]
              --voice <name>  --batch-size <n>
 
 panda render --audio <mp3> --vtt <vtt> [--title <s>] [--title-json <path>]
-             --bg <mp4> --bgm <mp3> -o <out.mp4>
+             --bg <mp4> --bgm <mp3> -o <out.mp4> [--orientation landscape|portrait]
+
+panda debug-frames --vtt <vtt> -o <dir> [--frames <list>] [--orientation landscape|portrait]
 
 ```
+
+**`--orientation` 加入（2026-09-05，见 `.superpowers/sdd/2026-09-05-orientation-landscape-portrait/`）**：
+`panda render` 与 `panda debug-frames` 都接受该参数，三级兜底
+`--orientation` > `$ORIENTATION` > `landscape`（对应画布 1920×1080；
+`portrait` 对应 1080×1920）。**认不出的值直接报错并列出可选值，不回落到
+默认**——这是刻意的：默默回落会让打错一个字母的人拿到一支画幅错误的成片，
+而全程没有任何提示。
 
 **「一条龙」不再是子命令**（2026-09-04）：`panda make` 曾把「跑 TTS → 拼产物
 路径 → 转手调用合成」串在一起，在二进制里是一层纯胶水——没有可注入的接缝、
