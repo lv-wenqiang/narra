@@ -167,7 +167,10 @@ impl Orientation {
     }
 
     /// 本方向对应的画布尺寸。
-    pub fn canvas(&self) -> crate::render::canvas::Canvas {
+    ///
+    /// 按值接收 `self`：本枚举是无字段的 `Copy` 类型，取 `&self` 既没有
+    /// 省下拷贝，也与本模块其它同类方法的写法不一致。
+    pub fn canvas(self) -> crate::render::canvas::Canvas {
         match self {
             Self::Landscape => crate::render::canvas::Canvas::LANDSCAPE,
             Self::Portrait => crate::render::canvas::Canvas::PORTRAIT,
