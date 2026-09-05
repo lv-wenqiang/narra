@@ -27,11 +27,11 @@ fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
     // `Command::new("ffmpeg")` 无论在哪一步被调用都找不到它。这个进程
     // 只跑这一条测试，改 PATH 不会影响任何其它测试。
     let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\n短。\n";
-    let mut fs = panda::render::frame::FrameSource::new(
+    let mut fs = narra::render::frame::FrameSource::new(
         vtt,
         "标题".into(),
-        &panda::config::Branding::plain("测试品牌"),
-        panda::render::canvas::Canvas::BASE,
+        &narra::config::Branding::plain("测试品牌"),
+        narra::render::canvas::Canvas::BASE,
     )
     .unwrap();
     let bad = Path::new("/nonexistent-xyz.mp4");
@@ -45,15 +45,15 @@ fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
     unsafe {
         std::env::set_var("PATH", std::env::temp_dir());
     }
-    let result = panda::ffmpeg::run_render(
+    let result = narra::ffmpeg::run_render(
         &mut fs,
-        &panda::ffmpeg::RenderInputs {
+        &narra::ffmpeg::RenderInputs {
             bg: bad,
             tts_audio: bad,
             bgm: bad,
             typewriter: bad,
             intro: bad,
-            out: Path::new("/tmp/panda_missing_ffmpeg_test.mp4"),
+            out: Path::new("/tmp/narra_missing_ffmpeg_test.mp4"),
             total_frames,
             audio_secs,
             content_frames,
@@ -68,5 +68,5 @@ fn run_render_returns_assert_available_error_when_ffmpeg_is_missing() {
         "应是 assert_available() 那句面向用户的安装提示，说明它真的被调用了；\
          如果这一行被删掉，这里会看到的是 spawn() 自己泛泛的「启动 ffmpeg 失败」：{msg}"
     );
-    std::fs::remove_file("/tmp/panda_missing_ffmpeg_test.mp4").ok();
+    std::fs::remove_file("/tmp/narra_missing_ffmpeg_test.mp4").ok();
 }

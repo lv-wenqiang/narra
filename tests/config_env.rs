@@ -42,10 +42,10 @@ fn material_paths_have_the_documented_defaults() {
         std::env::remove_var("TITLE_JSON");
         std::env::remove_var("VIDEO_OUTPUT");
     }
-    assert_eq!(panda::config::bg_video_path(), "public/video/0.mp4");
-    assert_eq!(panda::config::bgm_path(), "public/bgm/0.mp3");
-    assert_eq!(panda::config::title_json_path(), "public/video/title.json");
-    assert_eq!(panda::config::video_output_path(), "output/video/video.mp4");
+    assert_eq!(narra::config::bg_video_path(), "public/video/0.mp4");
+    assert_eq!(narra::config::bgm_path(), "public/bgm/0.mp3");
+    assert_eq!(narra::config::title_json_path(), "public/video/title.json");
+    assert_eq!(narra::config::video_output_path(), "output/video/video.mp4");
 }
 
 /// 鉴别性测试：把「哪个值属于哪个名字」作为一个整体断言，而不是逐项检查。
@@ -69,10 +69,10 @@ fn each_material_env_var_is_wired_to_exactly_one_function() {
 
     let snapshot = || {
         (
-            panda::config::bg_video_path(),
-            panda::config::bgm_path(),
-            panda::config::title_json_path(),
-            panda::config::video_output_path(),
+            narra::config::bg_video_path(),
+            narra::config::bgm_path(),
+            narra::config::title_json_path(),
+            narra::config::video_output_path(),
         )
     };
 
@@ -138,18 +138,18 @@ fn env_backed_paths_read_the_environment_and_fall_back() {
         std::env::remove_var("TTS_OUTPUT_DIR");
         std::env::remove_var("TTS_INPUT_FILE");
     }
-    assert_eq!(panda::config::spider_output_dir(), "output/spider");
-    assert_eq!(panda::config::tts_output_dir(), "output/tts");
+    assert_eq!(narra::config::spider_output_dir(), "output/spider");
+    assert_eq!(narra::config::tts_output_dir(), "output/tts");
     assert_eq!(
-        panda::config::tts_input_file(),
+        narra::config::tts_input_file(),
         "output/spider/input.txt",
         "应基于 SPIDER_OUTPUT_DIR 推导"
     );
 
     unsafe { std::env::set_var("SPIDER_OUTPUT_DIR", "/tmp/spider") };
-    assert_eq!(panda::config::spider_output_dir(), "/tmp/spider");
+    assert_eq!(narra::config::spider_output_dir(), "/tmp/spider");
     assert_eq!(
-        panda::config::tts_input_file(),
+        narra::config::tts_input_file(),
         "/tmp/spider/input.txt",
         "推导应跟随 SPIDER_OUTPUT_DIR"
     );
@@ -157,14 +157,14 @@ fn env_backed_paths_read_the_environment_and_fall_back() {
     // 空白值等同于未设置
     unsafe { std::env::set_var("TTS_OUTPUT_DIR", "   ") };
     assert_eq!(
-        panda::config::tts_output_dir(),
+        narra::config::tts_output_dir(),
         "output/tts",
         "全空白应回落默认值"
     );
 
     unsafe { std::env::set_var("TTS_INPUT_FILE", "/tmp/x.txt") };
     assert_eq!(
-        panda::config::tts_input_file(),
+        narra::config::tts_input_file(),
         "/tmp/x.txt",
         "显式设置应优先于推导"
     );
@@ -194,18 +194,18 @@ fn brand_and_watermarks_have_the_documented_defaults() {
         std::env::remove_var("SFX_INTRO");
         std::env::remove_var("SFX_TYPEWRITER");
     }
-    assert_eq!(panda::config::brand(), "墨风");
-    assert_eq!(panda::config::watermark(), None, "未配置时不画正文水印");
+    assert_eq!(narra::config::brand(), "墨风");
+    assert_eq!(narra::config::watermark(), None, "未配置时不画正文水印");
     assert_eq!(
-        panda::config::watermark_cover(),
+        narra::config::watermark_cover(),
         None,
         "未配置时不画封面/片尾水印"
     );
-    assert_eq!(panda::config::watermark_icon(), None, "未配置时不画图标");
-    assert_eq!(panda::config::logo_path(), None, "未配置时用内嵌 logo");
-    assert_eq!(panda::config::sfx_intro(), None, "未配置时用内嵌片尾音效");
+    assert_eq!(narra::config::watermark_icon(), None, "未配置时不画图标");
+    assert_eq!(narra::config::logo_path(), None, "未配置时用内嵌 logo");
+    assert_eq!(narra::config::sfx_intro(), None, "未配置时用内嵌片尾音效");
     assert_eq!(
-        panda::config::sfx_typewriter(),
+        narra::config::sfx_typewriter(),
         None,
         "未配置时用内嵌打字机音效"
     );
@@ -232,20 +232,20 @@ fn each_branding_env_var_is_wired_to_exactly_one_function() {
 
     clear_all();
     unsafe { std::env::set_var("BRAND", "某某频道") };
-    assert_eq!(panda::config::brand(), "某某频道");
-    assert_eq!(panda::config::watermark(), None, "BRAND 不应影响正文水印");
+    assert_eq!(narra::config::brand(), "某某频道");
+    assert_eq!(narra::config::watermark(), None, "BRAND 不应影响正文水印");
     assert_eq!(
-        panda::config::watermark_cover(),
+        narra::config::watermark_cover(),
         None,
         "BRAND 不应影响封面水印"
     );
 
     clear_all();
     unsafe { std::env::set_var("WATERMARK", "正文水印") };
-    assert_eq!(panda::config::watermark().as_deref(), Some("正文水印"));
-    assert_eq!(panda::config::brand(), "墨风", "WATERMARK 不应影响品牌名");
+    assert_eq!(narra::config::watermark().as_deref(), Some("正文水印"));
+    assert_eq!(narra::config::brand(), "墨风", "WATERMARK 不应影响品牌名");
     assert_eq!(
-        panda::config::watermark_cover(),
+        narra::config::watermark_cover(),
         None,
         "WATERMARK 不应影响封面水印"
     );
@@ -253,12 +253,12 @@ fn each_branding_env_var_is_wired_to_exactly_one_function() {
     clear_all();
     unsafe { std::env::set_var("WATERMARK_COVER", "封面水印") };
     assert_eq!(
-        panda::config::watermark_cover().as_deref(),
+        narra::config::watermark_cover().as_deref(),
         Some("封面水印")
     );
-    assert_eq!(panda::config::brand(), "墨风");
+    assert_eq!(narra::config::brand(), "墨风");
     assert_eq!(
-        panda::config::watermark(),
+        narra::config::watermark(),
         None,
         "WATERMARK_COVER 不应影响正文水印"
     );
@@ -286,37 +286,37 @@ fn blank_branding_env_vars_are_treated_as_unset() {
         std::env::set_var("SFX_TYPEWRITER", "\t");
     }
     assert_eq!(
-        panda::config::brand(),
+        narra::config::brand(),
         "墨风",
         "全空白的 BRAND 应回落默认值"
     );
     assert_eq!(
-        panda::config::watermark(),
+        narra::config::watermark(),
         None,
         "全空白的 WATERMARK 应视同未配置"
     );
     assert_eq!(
-        panda::config::watermark_cover(),
+        narra::config::watermark_cover(),
         None,
         "全空白的 WATERMARK_COVER 应视同未配置"
     );
     assert_eq!(
-        panda::config::watermark_icon(),
+        narra::config::watermark_icon(),
         None,
         "全空白的 WATERMARK_ICON 应视同未配置"
     );
     assert_eq!(
-        panda::config::logo_path(),
+        narra::config::logo_path(),
         None,
         "全空白的 LOGO_FILE 应视同未配置"
     );
     assert_eq!(
-        panda::config::sfx_intro(),
+        narra::config::sfx_intro(),
         None,
         "全空白的 SFX_INTRO 应视同未配置"
     );
     assert_eq!(
-        panda::config::sfx_typewriter(),
+        narra::config::sfx_typewriter(),
         None,
         "全空白的 SFX_TYPEWRITER 应视同未配置"
     );
@@ -348,7 +348,7 @@ fn blank_branding_env_vars_are_treated_as_unset() {
 #[test]
 fn branding_resolve_prefers_cli_over_env_over_default() {
     let _guard = ENV_LOCK.lock().unwrap();
-    use panda::config::Branding;
+    use narra::config::Branding;
     // SAFETY: 持有 ENV_LOCK，本文件内串行。
     let clear = || unsafe {
         std::env::remove_var("BRAND");
@@ -464,7 +464,7 @@ fn branding_resolve_prefers_cli_over_env_over_default() {
 #[test]
 fn sfx_resolve_prefers_cli_over_env_over_embedded() {
     let _guard = ENV_LOCK.lock().unwrap();
-    use panda::config::SfxSources;
+    use narra::config::SfxSources;
     use std::path::PathBuf;
     // SAFETY: 持有 ENV_LOCK，本文件内串行。
     let clear = || unsafe {
@@ -548,22 +548,22 @@ fn blank_material_env_vars_are_treated_as_unset() {
     }
 
     assert_eq!(
-        panda::config::bg_video_path(),
+        narra::config::bg_video_path(),
         "public/video/0.mp4",
         "全空白的 BG_VIDEO 应回落默认值"
     );
     assert_eq!(
-        panda::config::bgm_path(),
+        narra::config::bgm_path(),
         "public/bgm/0.mp3",
         "全空白的 BGM_FILE 应回落默认值"
     );
     assert_eq!(
-        panda::config::title_json_path(),
+        narra::config::title_json_path(),
         "public/video/title.json",
         "全空白的 TITLE_JSON 应回落默认值"
     );
     assert_eq!(
-        panda::config::video_output_path(),
+        narra::config::video_output_path(),
         "output/video/video.mp4",
         "全空白的 VIDEO_OUTPUT 应回落默认值"
     );
@@ -585,8 +585,8 @@ fn blank_material_env_vars_are_treated_as_unset() {
 #[test]
 fn orientation_resolve_prefers_cli_over_env_over_landscape() {
     let _guard = ENV_LOCK.lock().unwrap();
-    use panda::config::Orientation;
-    use panda::render::canvas::Canvas;
+    use narra::config::Orientation;
+    use narra::render::canvas::Canvas;
     // SAFETY: 持有 ENV_LOCK，本文件内串行。
     let clear = || unsafe { std::env::remove_var("ORIENTATION") };
 
@@ -654,7 +654,7 @@ fn orientation_resolve_prefers_cli_over_env_over_landscape() {
 #[test]
 fn font_resolve_prefers_cli_over_env_over_embedded() {
     let _guard = ENV_LOCK.lock().unwrap();
-    use panda::config::Branding;
+    use narra::config::Branding;
     // SAFETY: 持有 ENV_LOCK，本文件内串行。
     unsafe {
         std::env::remove_var("FONT_FILE");

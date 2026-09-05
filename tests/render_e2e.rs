@@ -26,19 +26,19 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
         bgm.display()
     );
 
-    let tmp = std::env::temp_dir().join(format!("panda_e2e_{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("narra_e2e_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let (intro, typewriter) = panda::assets::write_embedded_audio(&tmp).unwrap();
+    let (intro, typewriter) = narra::assets::write_embedded_audio(&tmp).unwrap();
 
     // 用打字机音效充当 TTS 音轨——本测试只验证管道通、流齐、时长对，
     // 不验证语音内容。
     let vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:03.000\n第一条字幕。\n\n\
                2\n00:00:03.000 --> 00:00:06.000\n第二条字幕，稍微长一点点。\n";
-    let mut fs = panda::render::frame::FrameSource::new(
+    let mut fs = narra::render::frame::FrameSource::new(
         vtt,
         "端到端测试标题".into(),
-        &panda::config::Branding::plain("测试品牌"),
-        panda::render::canvas::Canvas::BASE,
+        &narra::config::Branding::plain("测试品牌"),
+        narra::render::canvas::Canvas::BASE,
     )
     .unwrap();
     let out = tmp.join("out.mp4");
@@ -47,9 +47,9 @@ fn produces_a_playable_mp4_with_video_and_audio_streams() {
     let audio_secs = fs.audio_secs();
     let content_frames = fs.content_frames();
     let canvas = fs.canvas();
-    panda::ffmpeg::run_render(
+    narra::ffmpeg::run_render(
         &mut fs,
-        &panda::ffmpeg::RenderInputs {
+        &narra::ffmpeg::RenderInputs {
             bg,
             tts_audio: &typewriter,
             bgm,

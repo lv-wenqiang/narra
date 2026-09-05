@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn dropping_removes_the_directory_and_everything_in_it() {
         let path = {
-            let tmp = TempPath::create_dir("panda_tmp_test").unwrap();
+            let tmp = TempPath::create_dir("narra_tmp_test").unwrap();
             std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
             std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
             std::fs::write(tmp.path().join("sub/b.txt"), b"y").unwrap();
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn dropping_removes_a_plain_file_too() {
-        let path = std::env::temp_dir().join(format!("panda_tmp_file_{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("narra_tmp_file_{}", std::process::id()));
         std::fs::write(&path, b"x").unwrap();
         {
             let _guard = TempPath::new(path.clone());
@@ -90,7 +90,7 @@ mod tests {
     /// 无论是 `?` 提前返回还是 unwind，都由 `Drop` 兜住。
     #[test]
     fn dropping_happens_even_when_the_scope_unwinds() {
-        let path = std::env::temp_dir().join(format!("panda_tmp_panic_{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("narra_tmp_panic_{}", std::process::id()));
         let p = path.clone();
         let result = std::panic::catch_unwind(move || {
             let _guard = TempPath::new(p.clone());
@@ -109,15 +109,15 @@ mod tests {
     /// 删掉另一次仍被 ffmpeg 读取的内嵌音效，表现为偶发失败。
     #[test]
     fn create_dir_gives_a_distinct_directory_each_time() {
-        let a = TempPath::create_dir("panda_render").unwrap();
-        let b = TempPath::create_dir("panda_render").unwrap();
+        let a = TempPath::create_dir("narra_render").unwrap();
+        let b = TempPath::create_dir("narra_render").unwrap();
         assert_ne!(a.path(), b.path(), "同一进程内两次调用必须给出不同目录");
         assert_eq!(a.path().parent(), Some(std::env::temp_dir().as_path()));
         assert!(
             a.path()
                 .file_name()
                 .and_then(|f| f.to_str())
-                .is_some_and(|n| n.starts_with("panda_render_")),
+                .is_some_and(|n| n.starts_with("narra_render_")),
             "目录名应保留前缀便于人工辨认：{:?}",
             a.path()
         );
@@ -127,7 +127,7 @@ mod tests {
     /// 路径不存在时 `Drop` 不 panic——接管一个「将要创建」的路径是合法用法。
     #[test]
     fn dropping_a_never_created_path_is_harmless() {
-        let path = std::env::temp_dir().join("panda_tmp_never_created_xyz");
+        let path = std::env::temp_dir().join("narra_tmp_never_created_xyz");
         drop(TempPath::new(path.clone()));
         assert!(!path.exists());
     }

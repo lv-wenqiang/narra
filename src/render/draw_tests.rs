@@ -1136,7 +1136,7 @@ fn separator_splitting_isolates_each_middot() {
 /// 恢复 `tint_icon` 的变异会存活。
 #[test]
 fn watermark_icon_is_drawn_and_keeps_its_own_colors() {
-    let dir = std::env::temp_dir().join(format!("panda_wm_icon_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("narra_wm_icon_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("mark.png");
     // 纯蓝不透明方块。
@@ -1179,7 +1179,7 @@ fn watermark_icon_is_drawn_and_keeps_its_own_colors() {
 /// 画东西」（整行右移、文字位置错了）完全无感。
 #[test]
 fn watermark_without_an_icon_starts_at_the_text() {
-    let dir = std::env::temp_dir().join(format!("panda_wm_noicon_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("narra_wm_noicon_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("mark.png");
     image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0xff, 0xff]))
@@ -1413,14 +1413,14 @@ fn cover_row_and_outro_title_render_the_configured_brand() {
     );
 }
 
-/// 配了 `--logo` 时 Cover 上排与 Outro 画的是**那张**图，不是内嵌的熊猫。
+/// 配了 `--logo` 时 Cover 上排与 Outro 画的是**那张**图，不是内嵌的那张（Lucide feather）。
 ///
 /// 判据是「换 logo 后那两段的像素必须变」。用一张纯红方块——它与内嵌 logo
 /// （黑白线稿）在任何一处都不可能逐字节相同；同时顺带断言红色确实出现在
 /// 画面上，堵住「读了文件但画的还是内嵌那张」这种半吊子实现。
 #[test]
 fn cover_and_outro_use_the_configured_logo() {
-    let dir = std::env::temp_dir().join(format!("panda_logo_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("narra_logo_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("logo.png");
     image::RgbaImage::from_pixel(64, 64, image::Rgba([0xff, 0, 0, 0xff]))

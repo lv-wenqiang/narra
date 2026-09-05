@@ -61,9 +61,9 @@ async fn synth_with_retry<B: TtsBackend + ?Sized>(backend: &B, text: &str) -> Re
 /// TTS 流水线两个产物的固定文件名。
 ///
 /// **唯一真相源**：下面写文件的两处、`tests/justfile_defaults.rs`（`justfile`
-/// 的 `make` 配方要靠它拼出喂给 `panda render` 的路径）都对着这两个常量。
+/// 的 `make` 配方要靠它拼出喂给 `narra render` 的路径）都对着这两个常量。
 /// 此前 `main.rs` 另有一份 `tts_artifact_paths` 把同样的字面量抄了一遍，
-/// `panda make` 移到 justfile 之后它成了死代码，一并删掉。
+/// `narra make` 移到 justfile 之后它成了死代码，一并删掉。
 pub const AUDIO_FILE_NAME: &str = "audio.mp3";
 pub const VTT_FILE_NAME: &str = "audio.vtt";
 
@@ -288,7 +288,7 @@ mod tests {
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "panda_pipeline_{tag}_{}_{}",
+            "narra_pipeline_{tag}_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ))
@@ -334,7 +334,7 @@ mod tests {
     /// 需要它），与 `tests/ffmpeg_test.rs` 里生成测试音频的方式一致。
     fn tiny_valid_mp3_bytes() -> Vec<u8> {
         let path = std::env::temp_dir().join(format!(
-            "panda_pipeline_tiny_mp3_{}_{}.mp3",
+            "narra_pipeline_tiny_mp3_{}_{}.mp3",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));

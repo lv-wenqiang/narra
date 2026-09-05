@@ -569,7 +569,7 @@ mod tests {
 
     /// `FrameSource::new` 必须在解析不出任何字幕时报错。
     ///
-    /// 没有这条守卫时，`panda render --vtt 拿错的文件.txt` 会走完整条流程：
+    /// 没有这条守卫时，`narra render --vtt 拿错的文件.txt` 会走完整条流程：
     /// `audio_secs=0` → `content_frames=60` → 总帧 300 → 产出一个 10 秒、字幕
     /// 全空、把长旁白截断到 10 秒的 mp4，**退出码 0 并打印「成片已写入」**。
     #[test]

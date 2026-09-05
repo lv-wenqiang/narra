@@ -1134,7 +1134,7 @@ mod tests {
     /// 只测 `with_optional_font` 的话两者都返回 `Ok`，断言不到任何东西。
     #[test]
     fn try_with_font_loads_a_valid_ttf() {
-        let dir = std::env::temp_dir().join(format!("panda_font_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_font_ok_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("embedded-copy.ttf");
         std::fs::write(&p, crate::assets::FONT).unwrap();
@@ -1156,7 +1156,7 @@ mod tests {
     /// 的改动不会让任何测试变红——实测确认过该变异原本可以存活。
     #[test]
     fn try_with_font_accepts_otf_extension() {
-        let dir = std::env::temp_dir().join(format!("panda_font_otf_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_font_otf_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("some-font.otf");
         std::fs::write(&p, crate::assets::FONT).unwrap();
@@ -1174,7 +1174,7 @@ mod tests {
     /// 若判定改成嗅探文件头，这条会变绿，正是要拦住的那种改动。
     #[test]
     fn try_with_font_rejects_unsupported_extension() {
-        let dir = std::env::temp_dir().join(format!("panda_font_ext_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_font_ext_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("actually-a-font.png");
         std::fs::write(&p, crate::assets::FONT).unwrap();
@@ -1190,14 +1190,14 @@ mod tests {
     /// 扩展名合法但文件不存在：报错并带上路径。
     #[test]
     fn try_with_font_reports_missing_file() {
-        let p = std::env::temp_dir().join("panda_font_definitely_absent_9c3f.ttf");
+        let p = std::env::temp_dir().join("narra_font_definitely_absent_9c3f.ttf");
         std::fs::remove_file(&p).ok();
         let msg = match TextRenderer::try_with_font(&p) {
             Ok(_) => panic!("文件不存在时应报错"),
             Err(e) => format!("{e:#}"),
         };
         assert!(
-            msg.contains("panda_font_definitely_absent_9c3f.ttf"),
+            msg.contains("narra_font_definitely_absent_9c3f.ttf"),
             "报错应带上出错的路径：{msg}"
         );
     }
@@ -1205,7 +1205,7 @@ mod tests {
     /// 扩展名合法但内容不是字体：报错而不是 panic。
     #[test]
     fn try_with_font_rejects_garbage_content() {
-        let dir = std::env::temp_dir().join(format!("panda_font_junk_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_font_junk_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("not-a-font.ttf");
         std::fs::write(&p, b"this is definitely not a font file").unwrap();
@@ -1221,7 +1221,7 @@ mod tests {
     #[test]
     fn with_optional_font_falls_back_instead_of_failing() {
         let embedded = TextRenderer::new().unwrap().family;
-        let dir = std::env::temp_dir().join(format!("panda_font_fb_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_font_fb_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let junk = dir.join("junk.ttf");

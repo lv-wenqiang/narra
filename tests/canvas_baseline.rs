@@ -31,9 +31,9 @@
 //! BASE 上的字面值——若它的缩放公式将来被改错，这里的四帧快照不会有任何
 //! 反应。
 
-use panda::config::Branding;
-use panda::render::canvas::Canvas;
-use panda::render::frame::FrameSource;
+use narra::config::Branding;
+use narra::render::canvas::Canvas;
+use narra::render::frame::FrameSource;
 
 const VTT: &str = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:04.000\n第一条字幕。\n\n2\n00:00:04.000 --> 00:00:10.000\n第二条字幕，稍微长一点。\n";
 const FRAMES: [u32; 4] = [0, 100, 200, 550];

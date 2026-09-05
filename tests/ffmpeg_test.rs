@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 #[test]
 fn concat_list_escapes_single_quotes() {
-    let body = panda::ffmpeg::concat_list_body(&[PathBuf::from("/tmp/it's here.mp3")]).unwrap();
+    let body = narra::ffmpeg::concat_list_body(&[PathBuf::from("/tmp/it's here.mp3")]).unwrap();
     assert_eq!(body, r"file '/tmp/it'\''s here.mp3'");
 }
 
@@ -31,14 +31,14 @@ fn merges_two_clips_and_applies_atempo() {
             .unwrap();
     }
     let out = Path::new("/tmp/merged.mp3");
-    panda::ffmpeg::merge_mp3_with_speed(
+    narra::ffmpeg::merge_mp3_with_speed(
         &[PathBuf::from("/tmp/m1.mp3"), PathBuf::from("/tmp/m2.mp3")],
         out,
         1.1,
     )
     .unwrap();
 
-    let d = panda::duration::mp3_duration_seconds(out);
+    let d = narra::duration::mp3_duration_seconds(out);
     assert!((d - 3.64).abs() < 0.2, "期望约 3.64 秒，实际 {d}");
     // 中间的 concat 清单文件必须被清理
     assert!(!Path::new("/tmp/merged.mp3.concat.txt").exists());
@@ -46,14 +46,14 @@ fn merges_two_clips_and_applies_atempo() {
 
 #[test]
 fn rejects_empty_input_list() {
-    let err = panda::ffmpeg::merge_mp3_with_speed(&[], Path::new("/tmp/x.mp3"), 1.1).unwrap_err();
+    let err = narra::ffmpeg::merge_mp3_with_speed(&[], Path::new("/tmp/x.mp3"), 1.1).unwrap_err();
     assert!(err.to_string().contains("no input files"));
 }
 
 #[test]
 fn rejects_paths_with_newlines() {
     let err =
-        panda::ffmpeg::concat_list_body(&[PathBuf::from("/tmp/with\nnewline.mp3")]).unwrap_err();
+        narra::ffmpeg::concat_list_body(&[PathBuf::from("/tmp/with\nnewline.mp3")]).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("换行符") || msg.contains("newline"));
     assert!(msg.contains("/tmp/with"));

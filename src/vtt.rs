@@ -140,7 +140,7 @@ pub struct ParsedVtt {
 /// 解析 WebVTT 并**报告跳过了什么**。
 ///
 /// **为什么要报告**：自产自销的路径（`generate_vtt` → 这里）永远不会有读不懂的
-/// 东西，但 `panda debug-frames --vtt` 读的是用户给的任意文件。静默跳过一条 cue
+/// 东西，但 `narra debug-frames --vtt` 读的是用户给的任意文件。静默跳过一条 cue
 /// 的表现是「某段字幕莫名其妙不见了」——用户手上没有任何线索可查。
 pub fn parse_vtt_reporting(text: &str) -> ParsedVtt {
     /// 当前正在收的这一条 cue 处于什么状态。
@@ -452,7 +452,7 @@ mod tests {
 
     /// 跳过一条读不懂的 cue 时必须留下话，不能静默。
     ///
-    /// `panda debug-frames --vtt` 读的是用户给的任意文件。静默跳过的表现是
+    /// `narra debug-frames --vtt` 读的是用户给的任意文件。静默跳过的表现是
     /// 「某段字幕莫名其妙不见了」，用户没有任何线索可查——而 cue 的正文就在
     /// 手边，警告里带上它，用户一眼就能定位到是文件哪一段。
     #[test]

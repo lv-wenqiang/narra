@@ -1,6 +1,6 @@
 //! 渲染器单独跑的吞吐探针（`#[ignore]`，手动跑）。
 //!
-//! **为什么需要它**：`panda render` 的挂钟耗时是「tiny-skia 逐帧渲染 + 反预乘 +
+//! **为什么需要它**：`narra render` 的挂钟耗时是「tiny-skia 逐帧渲染 + 反预乘 +
 //! 写 stdin」与「ffmpeg 解码背景 + overlay + x264 编码」两段**并行**跑出来的，
 //! 端到端数字（`docs/ffmpeg-pipeline.md` §10：LANDSCAPE 约 35fps，实时余量只有
 //! 1.17×）本身分不出这两段谁是瓶颈——而这个问题的答案决定了下一步该往哪使劲：
@@ -15,9 +15,9 @@
 //! cargo test --release --test render_throughput -- --ignored --nocapture
 //! ```
 
-use panda::config::Branding;
-use panda::render::canvas::Canvas;
-use panda::render::frame::FrameSource;
+use narra::config::Branding;
+use narra::render::canvas::Canvas;
+use narra::render::frame::FrameSource;
 
 /// 与 §10 实测同源的输入：`output/tts/audio.vtt`（A=16.276s，789 帧）。
 /// 找不到就退回一段内置 VTT，只是帧数不同，比例仍可读。
@@ -78,7 +78,7 @@ fn renderer_alone_base() {
 #[test]
 #[ignore = "吞吐探针，需 --release 才有意义；手动跑"]
 fn renderer_cost_by_segment_landscape() {
-    use panda::render::timeline::{Segment, layout, segment_at};
+    use narra::render::timeline::{Segment, layout, segment_at};
 
     let canvas = Canvas::LANDSCAPE;
     let mut fs = FrameSource::new(

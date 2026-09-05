@@ -1371,7 +1371,7 @@ mod tests {
         )
         .unwrap();
         let out_dir_guard =
-            crate::tmp::TempPath::new(std::env::temp_dir().join("panda_ffmpeg_stderr_test"));
+            crate::tmp::TempPath::new(std::env::temp_dir().join("narra_ffmpeg_stderr_test"));
         let out_dir = out_dir_guard.path().to_path_buf();
         let out = out_dir.join("out.mp4");
         let bg = std::path::Path::new("/nonexistent-bg-xyz.mp4");
@@ -1424,7 +1424,7 @@ mod tests {
     fn write_fake_ffmpeg(name: &str, script: &str) -> crate::tmp::TempPath {
         use std::os::unix::fs::PermissionsExt;
         let path =
-            std::env::temp_dir().join(format!("panda_fake_ffmpeg_{name}_{}", std::process::id()));
+            std::env::temp_dir().join(format!("narra_fake_ffmpeg_{name}_{}", std::process::id()));
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         crate::tmp::TempPath::new(path)
@@ -1495,7 +1495,7 @@ mod tests {
         // 守卫在作用域末尾删产物：`run_with_timeout` 的闭包 panic 或超时时
         // 它自己就 `panic!`，写在测试尾部的清理执行不到（销「族 A」测试侧）。
         let out_guard = crate::tmp::TempPath::new(std::env::temp_dir().join(format!(
-            "panda_stderr_deadlock_test_{}.mp4",
+            "narra_stderr_deadlock_test_{}.mp4",
             std::process::id()
         )));
         let out = out_guard.path().to_path_buf();
@@ -1557,7 +1557,7 @@ mod tests {
         let bad = std::path::Path::new("/nonexistent-xyz.mp4");
         // 同上：清理挂到作用域上，不写在尾部。
         let out_guard = crate::tmp::TempPath::new(std::env::temp_dir().join(format!(
-            "panda_write_swallow_test_{}.mp4",
+            "narra_write_swallow_test_{}.mp4",
             std::process::id()
         )));
         let out = out_guard.path().to_path_buf();
@@ -1628,7 +1628,7 @@ mod tests {
         // 特意让输出的父目录（两层，逼 create_dir_all 而不是单层 mkdir）
         // 在测试开始前不存在。
         let out_dir_guard = crate::tmp::TempPath::new(
-            std::env::temp_dir().join(format!("panda_create_dir_test_{}", std::process::id())),
+            std::env::temp_dir().join(format!("narra_create_dir_test_{}", std::process::id())),
         );
         let out_dir = out_dir_guard.path().to_path_buf();
         std::fs::remove_dir_all(&out_dir).ok();
@@ -1690,7 +1690,7 @@ mod tests {
     #[cfg(unix)]
     fn merge_leaves_the_previous_output_intact_when_ffmpeg_fails_after_writing() {
         let script = fake_ffmpeg_writing_its_target("merge_partial_then_fail", 1);
-        let dir = crate::tmp::TempPath::create_dir("panda_merge_atomic").unwrap();
+        let dir = crate::tmp::TempPath::create_dir("narra_merge_atomic").unwrap();
         let input = dir.path().join("seg0.mp3");
         std::fs::write(&input, b"seg0").unwrap();
         let out = dir.path().join("audio.mp3");
@@ -1722,7 +1722,7 @@ mod tests {
     #[cfg(unix)]
     fn merge_hands_ffmpeg_a_sibling_temp_path_and_renames_it_into_place() {
         let script = fake_ffmpeg_writing_its_target("merge_records_target", 0);
-        let dir = crate::tmp::TempPath::create_dir("panda_merge_target").unwrap();
+        let dir = crate::tmp::TempPath::create_dir("narra_merge_target").unwrap();
         let input = dir.path().join("seg0.mp3");
         std::fs::write(&input, b"seg0").unwrap();
         let out = dir.path().join("audio.mp3");
@@ -1765,7 +1765,7 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
 
         let script = fake_ffmpeg_writing_its_target("merge_inode_swap", 0);
-        let dir = crate::tmp::TempPath::create_dir("panda_merge_inode").unwrap();
+        let dir = crate::tmp::TempPath::create_dir("narra_merge_inode").unwrap();
         let input = dir.path().join("seg0.mp3");
         std::fs::write(&input, b"seg0").unwrap();
         let out = dir.path().join("audio.mp3");
@@ -1827,7 +1827,7 @@ mod tests {
     /// 立体声输入**不能**被 `pan=stereo|c0=c0|c1=c0` 塌成左声道。
     ///
     /// 与上一条是同一枚硬币的两面，方向相反：TTS 那一路此前**无条件**用 pan
-    /// （Edge TTS 恒为单声道，这个假设对自产音频成立），但 `panda render --audio`
+    /// （Edge TTS 恒为单声道，这个假设对自产音频成立），但 `narra render --audio`
     /// 收的是用户任意文件——传一份立体声进来，右声道会整个消失。
     #[test]
     fn a_stereo_source_is_never_collapsed_onto_its_left_channel() {

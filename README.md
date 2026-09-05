@@ -1,6 +1,11 @@
-# panda
+# narra
 
 口播文稿 → 语音 → 成片的命令行工具。一个 Rust 二进制，外部只依赖 `ffmpeg`。
+
+> 本项目 2026-09-05 由 `panda` 改名为 `narra`（narration——它的输入是口播稿、
+> 主线是旁白；代码里本来就叫 `process_narration_file`）。`docs/` 下的实测记录与
+> `docs/superpowers/` 下的历史计划**保留改名前的命令行原文**：那些是「当时确实
+> 这样跑过」的记录，改掉就成了不实陈述。
 
 给一份文稿，它产出一支 1920×1080 / 30fps 的 mp4（`--orientation portrait`
 可换成 1080×1920）：Edge TTS 合成旁白与字幕，
@@ -31,7 +36,7 @@
 |---|---|
 | Rust | edition 2024（需较新的稳定版工具链） |
 | `ffmpeg` / `ffprobe` | 必须在 `PATH` 上，合成与音频处理全靠它 |
-| 网络 | 仅 `panda tts` 需要（连 Edge TTS 服务） |
+| 网络 | 仅 `narra tts` 需要（连 Edge TTS 服务） |
 | [`just`](https://github.com/casey/just) | 可选，只用来跑「一条龙」配方 |
 
 字体、logo、两段音效已内嵌进二进制，不必额外准备，且**来源与授权都已记录**
@@ -70,10 +75,10 @@ cargo run --release -- render \
 
 ## 功能
 
-### 语音与字幕（`panda tts`）
+### 语音与字幕（`narra tts`）
 
 ```
-panda tts [INPUT] [OUTDIR] [--voice <name>] [--batch-size <n>]
+narra tts [INPUT] [OUTDIR] [--voice <name>] [--batch-size <n>]
 ```
 
 按标点切句后并发调用 Edge TTS，合并为单条 mp3 并加速到 1.1×，同时按各段实际
@@ -83,10 +88,10 @@ panda tts [INPUT] [OUTDIR] [--voice <name>] [--batch-size <n>]
 - 单段失败自动重试；整轮失败时清理中间文件，不留半成品
 - 文稿为空、或解析不出任何内容时直接报错
 
-### 帧渲染（`panda debug-frames`）
+### 帧渲染（`narra debug-frames`）
 
 ```
-panda debug-frames --vtt <vtt> -o <dir> [--frames 0,60,150] [品牌选项...]
+narra debug-frames --vtt <vtt> -o <dir> [--frames 0,60,150] [品牌选项...]
 ```
 
 把指定帧渲染成 PNG，用来在合成之前核对视觉。不给 `--frames` 则每 30 帧导一张。
@@ -109,10 +114,10 @@ panda debug-frames --vtt <vtt> -o <dir> [--frames 0,60,150] [品牌选项...]
 文字排版用 `cosmic-text` + `tiny-skia` 自绘：合成粗体、描边、字距、按字符数
 切换字号（>50 字用 52px，否则 80px）。
 
-### 成片合成（`panda render`）
+### 成片合成（`narra render`）
 
 ```
-panda render --audio <mp3> --vtt <vtt> [-o <out.mp4>] [素材/品牌选项...]
+narra render --audio <mp3> --vtt <vtt> [-o <out.mp4>] [素材/品牌选项...]
 ```
 
 把帧流经管道喂给 ffmpeg，与背景视频、四路音频一次合成：

@@ -2,7 +2,7 @@
 fn main() -> anyhow::Result<()> {
     let a: Vec<String> = std::env::args().collect();
     let (src, dst, size) = (&a[1], &a[2], a[3].parse::<u32>()?);
-    let (rgba, w, h) = panda::assets::load_icon(std::path::Path::new(src), size)?;
+    let (rgba, w, h) = narra::assets::load_icon(std::path::Path::new(src), size)?;
     image::save_buffer(dst, &rgba, w, h, image::ColorType::Rgba8)?;
     println!("  写出 {dst} ({w}x{h})");
     Ok(())

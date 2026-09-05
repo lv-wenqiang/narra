@@ -3,16 +3,16 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use panda::config;
-use panda::config::{Branding, Orientation, SfxSources};
-use panda::render::canvas::Canvas;
-use panda::render::frame::FrameSource;
-use panda::render::timeline::FPS;
-use panda::tmp::TempPath;
-use panda::tts::pipeline::{ProcessOptions, process_narration_file};
+use narra::config;
+use narra::config::{Branding, Orientation, SfxSources};
+use narra::render::canvas::Canvas;
+use narra::render::frame::FrameSource;
+use narra::render::timeline::FPS;
+use narra::tmp::TempPath;
+use narra::tts::pipeline::{ProcessOptions, process_narration_file};
 
 #[derive(Parser)]
-#[command(name = "panda", about = "熊猫视频自动化引擎（Rust）")]
+#[command(name = "narra", about = "口播文稿 → 语音 → 成片（Rust）")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -193,7 +193,7 @@ fn run_debug_frames(
 /// `audio.mp3`/`audio.vtt`，所以兜底后的目录必须由本函数交回调用方，而不是
 /// 让调用方各自再算一遍（两处各算一次就是两个真相源）。
 ///
-/// `panda tts` 与 `panda make` 共用这一条 TTS 路径：音色、并发段数、超时的
+/// `narra tts` 与 `narra make` 共用这一条 TTS 路径：音色、并发段数、超时的
 /// 环境变量兜底只在这里出现一次。
 async fn run_tts(
     input: Option<PathBuf>,
@@ -211,7 +211,7 @@ async fn run_tts(
         .unwrap_or_else(|| config::DEFAULT_VOICE.to_string());
 
     let opts = ProcessOptions {
-        voice: panda::tts::edge::normalize_voice_for_edge(&voice_raw),
+        voice: narra::tts::edge::normalize_voice_for_edge(&voice_raw),
         speed_factor: config::SPEED_FACTOR,
         batch_size: match batch_size {
             Some(n) => config::resolve_batch_size_from_value(Some(n)),
@@ -316,7 +316,7 @@ fn check_render_inputs_exist(audio: &Path, vtt: &Path, bg: &Path, bgm: &Path) ->
 /// 不在所有构建里都留着这条检查。真正兜底的门禁始终是下面 `mod tests`
 /// 里的普通测试断言，这里的 `assert_eq!` 只是多一层运行时保险。
 fn write_embedded_audio_checked(tmp_dir: &Path) -> Result<(PathBuf, PathBuf)> {
-    let (intro, typewriter) = panda::assets::write_embedded_audio(tmp_dir)?;
+    let (intro, typewriter) = narra::assets::write_embedded_audio(tmp_dir)?;
     assert_eq!(
         intro.file_name().and_then(|f| f.to_str()),
         Some("intro.mp3")
@@ -344,8 +344,8 @@ fn build_render_inputs<'a>(
     typewriter: &'a Path,
     intro: &'a Path,
     out: &'a Path,
-) -> panda::ffmpeg::RenderInputs<'a> {
-    panda::ffmpeg::RenderInputs {
+) -> narra::ffmpeg::RenderInputs<'a> {
+    narra::ffmpeg::RenderInputs {
         bg,
         tts_audio,
         bgm,
@@ -431,7 +431,7 @@ fn compose_inputs<'a>(
 
 /// `Commands::Render` 分支体的可测核心：把「检查输入是否存在 → 读标题/
 /// 字幕 → 落盘内嵌音效 → 构造 `FrameSource` → 组装 `RenderInputs`」这条
-/// 调用链跑一遍，最后一步不硬编码调用 `panda::ffmpeg::run_render`，而是
+/// 调用链跑一遍，最后一步不硬编码调用 `narra::ffmpeg::run_render`，而是
 /// 交给 `runner` 参数。
 ///
 /// 这不是为了给 `run_render` 本身增加抽象层——它已经在 `ffmpeg.rs` 里被
@@ -446,12 +446,12 @@ fn compose_inputs<'a>(
 ///   有没有被打乱（用「只有其中一个文件缺失」的场景验证报错点名的确实是
 ///   那一个，而不是被换了标签的另一个）。
 ///
-/// 生产路径的 `runner` 就是 `panda::ffmpeg::run_render` 本身，见
-/// `compose_video`；`panda render` 与 `panda make` 都经由 `compose_video`
+/// 生产路径的 `runner` 就是 `narra::ffmpeg::run_render` 本身，见
+/// `compose_video`；`narra render` 与 `narra make` 都经由 `compose_video`
 /// 走这一条路径，没有第二条合成路径。
 fn compose_video_with_runner(
     inputs: &ComposeVideoInputs,
-    runner: impl FnOnce(&mut FrameSource, &panda::ffmpeg::RenderInputs) -> Result<()>,
+    runner: impl FnOnce(&mut FrameSource, &narra::ffmpeg::RenderInputs) -> Result<()>,
 ) -> Result<()> {
     let ComposeVideoInputs {
         audio,
@@ -479,7 +479,7 @@ fn compose_video_with_runner(
     // （`resolve_sfx_paths` 与 `FrameSource::new`），走那两条路时临时目录连同
     // 两个 mp3 泄漏在 /tmp；注入的 `runner` 闭包 panic 时同样跳过清理。
     // 把清理挂到作用域上之后，出口有几个、走的是 `?` 还是 unwind 都不必再数。
-    let tmp = TempPath::create_dir("panda_render")?;
+    let tmp = TempPath::create_dir("narra_render")?;
     let (intro, typewriter) = resolve_sfx_paths(sfx, tmp.path())?;
 
     let mut source = FrameSource::new(&vtt_text, resolved_title.clone(), branding, canvas)?;
@@ -510,7 +510,7 @@ fn compose_video_with_runner(
 /// `Commands` 变体——两步各自调用本二进制，音频/字幕来自刚跑完的 TTS
 /// 产物路径，与 `render` 分支从命令行拿到的是同一套字段。
 fn compose_video(inputs: &ComposeVideoInputs) -> Result<()> {
-    compose_video_with_runner(inputs, panda::ffmpeg::run_render)
+    compose_video_with_runner(inputs, narra::ffmpeg::run_render)
 }
 
 #[tokio::main]
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn read_title_reads_the_json_file_when_it_exists() {
-        let p = std::env::temp_dir().join(format!("panda_title_{}.json", std::process::id()));
+        let p = std::env::temp_dir().join(format!("narra_title_{}.json", std::process::id()));
         std::fs::write(&p, r#"{"title": "文件里的标题"}"#).unwrap();
         assert_eq!(read_title(None, &p, TEST_BRAND), "文件里的标题");
         assert_eq!(
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn sfx_prefers_user_files_and_only_writes_the_embedded_ones_when_needed() {
         let dir =
-            std::env::temp_dir().join(format!("panda_sfx_{}_{}", std::process::id(), line!()));
+            std::env::temp_dir().join(format!("narra_sfx_{}_{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let mine_a = dir.join("mine_a.mp3");
         let mine_b = dir.join("mine_b.mp3");
@@ -715,7 +715,7 @@ mod tests {
     /// 自备的音效文件不存在时在这里报错并点名是哪一段，而不是留给 ffmpeg。
     #[test]
     fn missing_user_supplied_sfx_is_reported_by_name() {
-        let tmp = std::env::temp_dir().join(format!("panda_sfx_missing_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("narra_sfx_missing_{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
 
         let err = resolve_sfx_paths(
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn check_render_inputs_exist_names_the_missing_file() {
         let dir =
-            std::env::temp_dir().join(format!("panda_render_exist_test_{}", std::process::id()));
+            std::env::temp_dir().join(format!("narra_render_exist_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let audio = dir.join("a.mp3");
         let vtt = dir.join("a.vtt");
@@ -824,7 +824,7 @@ mod tests {
     #[test]
     fn write_embedded_audio_checked_keeps_intro_and_typewriter_in_order() {
         let dir =
-            std::env::temp_dir().join(format!("panda_render_audio_order_{}", std::process::id()));
+            std::env::temp_dir().join(format!("narra_render_audio_order_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let (intro, typewriter) = write_embedded_audio_checked(&dir).unwrap();
@@ -836,10 +836,10 @@ mod tests {
             typewriter.file_name().and_then(|f| f.to_str()),
             Some("intro_typewriter.mp3")
         );
-        assert_eq!(std::fs::read(&intro).unwrap(), panda::assets::INTRO_MP3);
+        assert_eq!(std::fs::read(&intro).unwrap(), narra::assets::INTRO_MP3);
         assert_eq!(
             std::fs::read(&typewriter).unwrap(),
-            panda::assets::INTRO_TYPEWRITER_MP3
+            narra::assets::INTRO_TYPEWRITER_MP3
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -923,7 +923,7 @@ mod tests {
     /// 调用返回后断言那个具体路径不存在——确定性，无竞态。
     #[test]
     fn compose_video_cleans_up_the_tmp_dir_on_every_exit_path() {
-        let dir = std::env::temp_dir().join(format!("panda_compose_leak_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_compose_leak_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let audio = dir.join("a.mp3");
         let bg = dir.join("bg.mp4");
@@ -1004,7 +1004,7 @@ mod tests {
     #[test]
     fn cleanup_output_on_failure_deletes_only_when_result_is_err() {
         let ok_out =
-            std::env::temp_dir().join(format!("panda_cleanup_out_ok_{}.mp4", std::process::id()));
+            std::env::temp_dir().join(format!("narra_cleanup_out_ok_{}.mp4", std::process::id()));
         std::fs::write(&ok_out, b"fake mp4").unwrap();
         let r = cleanup_output_on_failure(&ok_out, Ok(()));
         assert!(r.is_ok());
@@ -1012,7 +1012,7 @@ mod tests {
         std::fs::remove_file(&ok_out).ok();
 
         let err_out =
-            std::env::temp_dir().join(format!("panda_cleanup_out_err_{}.mp4", std::process::id()));
+            std::env::temp_dir().join(format!("narra_cleanup_out_err_{}.mp4", std::process::id()));
         std::fs::write(&err_out, b"frozen-frame fake mp4").unwrap();
         let r = cleanup_output_on_failure(&err_out, Err(anyhow::anyhow!("run_render 写帧失败")));
         assert!(!err_out.exists(), "失败时应删除可能已落盘的误导性成片");
@@ -1047,7 +1047,7 @@ mod tests {
     /// 原因）；非正方形则顺带挡住「宽高被对调」。
     #[test]
     fn compose_video_wires_intro_typewriter_and_audio_bgm_without_swapping_at_the_call_site() {
-        let dir = std::env::temp_dir().join(format!("panda_compose_wiring_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_compose_wiring_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let audio = dir.join("real_audio.mp3");
@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn compose_video_names_the_correct_missing_input_without_swapping_audio_and_vtt() {
         let dir =
-            std::env::temp_dir().join(format!("panda_compose_missing_{}", std::process::id()));
+            std::env::temp_dir().join(format!("narra_compose_missing_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let audio = dir.join("real_audio.mp3");
@@ -1260,9 +1260,9 @@ mod tests {
     /// `justfile` 拼路径靠的就是这两个常量（见 `tests/justfile_defaults.rs`）。
     #[test]
     fn tts_artifacts_feed_into_the_shared_compose_inputs() {
-        let outdir = PathBuf::from("/tmp/panda-make-tts-out");
-        let audio = outdir.join(panda::tts::pipeline::AUDIO_FILE_NAME);
-        let vtt = outdir.join(panda::tts::pipeline::VTT_FILE_NAME);
+        let outdir = PathBuf::from("/tmp/narra-make-tts-out");
+        let audio = outdir.join(narra::tts::pipeline::AUDIO_FILE_NAME);
+        let vtt = outdir.join(narra::tts::pipeline::VTT_FILE_NAME);
         let paths = resolve_render_paths(None, None, None, None);
 
         let branding = Branding::plain(TEST_BRAND);
@@ -1271,12 +1271,12 @@ mod tests {
 
         assert_eq!(
             inputs.audio,
-            Path::new("/tmp/panda-make-tts-out/audio.mp3"),
+            Path::new("/tmp/narra-make-tts-out/audio.mp3"),
             "audio 应指向 TTS 的 mp3 产物"
         );
         assert_eq!(
             inputs.vtt,
-            Path::new("/tmp/panda-make-tts-out/audio.vtt"),
+            Path::new("/tmp/narra-make-tts-out/audio.vtt"),
             "vtt 应指向 TTS 的 vtt 产物"
         );
         // 与 render 分支相同的素材兜底，不是 make 自己另算一份。
@@ -1304,7 +1304,7 @@ mod tests {
     /// 尺寸判据一帧就够，不必为它付整条时间轴的渲染时间。
     #[test]
     fn debug_frames_exports_pngs_at_the_requested_canvas_size() {
-        let dir = std::env::temp_dir().join(format!("panda_debug_frames_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_debug_frames_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         let vtt = dir.join("a.vtt");

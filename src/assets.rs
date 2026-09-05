@@ -143,7 +143,7 @@ mod tests {
     /// 文件，扩展名写错时报「解析失败」比默默按另一种格式猜要好。
     #[test]
     fn load_icon_rasterizes_svg_and_png_at_the_requested_size() {
-        let dir = std::env::temp_dir().join(format!("panda_icon_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_icon_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // 一个最小的实心方块 SVG。
@@ -180,7 +180,7 @@ mod tests {
             "报错应点名那个文件：{err}"
         );
 
-        let dir = std::env::temp_dir().join(format!("panda_icon_ext_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_icon_ext_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let weird = dir.join("mark.txt");
         std::fs::write(&weird, b"not an image").unwrap();
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn write_embedded_audio_produces_two_readable_files() {
-        let dir = std::env::temp_dir().join(format!("panda_assets_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_assets_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (intro, typewriter) = write_embedded_audio(&dir).unwrap();
 
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn write_embedded_audio_is_idempotent() {
         // render 与 make 可能在同一个目录下先后调用，重复写不应报错。
-        let dir = std::env::temp_dir().join(format!("panda_assets_idem_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("narra_assets_idem_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let first = write_embedded_audio(&dir).unwrap();
         let second = write_embedded_audio(&dir).unwrap();

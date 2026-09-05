@@ -10,9 +10,9 @@
 // （解码失败老实返回 `None`，不做字节数回退），先断言 `Some(_)`（证明是真解码出来的、
 // 不是垃圾数据蒙混过关），再对解出的秒数做时长断言。
 
-use panda::duration::mp3_duration_seconds_strict;
-use panda::tts::backend::TtsBackend;
-use panda::tts::edge::EdgeBackend;
+use narra::duration::mp3_duration_seconds_strict;
+use narra::tts::backend::TtsBackend;
+use narra::tts::edge::EdgeBackend;
 use std::time::Duration;
 
 #[tokio::test]
@@ -22,7 +22,7 @@ async fn synthesizes_a_short_chinese_line() {
     let r = b.synth("这是一段测试文本。").await.unwrap();
     assert!(r.audio.len() > 5000, "音频过小：{} 字节", r.audio.len());
 
-    let path = std::env::temp_dir().join("panda_edge_smoke_short.mp3");
+    let path = std::env::temp_dir().join("narra_edge_smoke_short.mp3");
     std::fs::write(&path, &r.audio).unwrap();
     let secs =
         mp3_duration_seconds_strict(&path).expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
@@ -53,7 +53,7 @@ async fn synthesizes_a_long_chinese_paragraph() {
         r.audio.len()
     );
 
-    let path = std::env::temp_dir().join("panda_edge_smoke_long.mp3");
+    let path = std::env::temp_dir().join("narra_edge_smoke_long.mp3");
     std::fs::write(&path, &r.audio).unwrap();
     let secs =
         mp3_duration_seconds_strict(&path).expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");
@@ -79,7 +79,7 @@ async fn synthesizes_with_a_different_voice() {
     let r = b.synth("这是使用另一个音色的测试文本。").await.unwrap();
     assert!(r.audio.len() > 5000, "音频过小：{} 字节", r.audio.len());
 
-    let path = std::env::temp_dir().join("panda_edge_smoke_xiaoxiao.mp3");
+    let path = std::env::temp_dir().join("narra_edge_smoke_xiaoxiao.mp3");
     std::fs::write(&path, &r.audio).unwrap();
     let secs =
         mp3_duration_seconds_strict(&path).expect("应能严格解码出真实时长，而不是垃圾数据蒙混过关");

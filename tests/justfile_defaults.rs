@@ -36,10 +36,10 @@ fn justfile_mirrors_the_config_defaults() {
         (
             "tts_outdir",
             "TTS_OUTPUT_DIR",
-            panda::config::tts_output_dir(),
+            narra::config::tts_output_dir(),
         ),
-        ("bg", "BG_VIDEO", panda::config::bg_video_path()),
-        ("bgm", "BGM_FILE", panda::config::bgm_path()),
+        ("bg", "BG_VIDEO", narra::config::bg_video_path()),
+        ("bgm", "BGM_FILE", narra::config::bgm_path()),
     ] {
         let want = format!(r#"{just_var} := env_var_or_default("{env_key}", "{expected}")"#);
         assert!(
@@ -60,8 +60,8 @@ fn justfile_mirrors_the_config_defaults() {
 #[test]
 fn justfile_mirrors_the_tts_artifact_file_names() {
     for (label, name) in [
-        ("音频", panda::tts::pipeline::AUDIO_FILE_NAME),
-        ("字幕", panda::tts::pipeline::VTT_FILE_NAME),
+        ("音频", narra::tts::pipeline::AUDIO_FILE_NAME),
+        ("字幕", narra::tts::pipeline::VTT_FILE_NAME),
     ] {
         let want = format!("{{{{ tts_outdir }}}}/{name}");
         assert!(
@@ -72,9 +72,9 @@ fn justfile_mirrors_the_tts_artifact_file_names() {
     }
 }
 
-/// `justfile` 里出现的每个 `panda` 子命令都必须真的存在。
+/// `justfile` 里出现的每个 `narra` 子命令都必须真的存在。
 ///
-/// `panda make` 被移除时，`justfile` 的配方名仍叫 `make`——那是 just 的配方名，
+/// `narra make` 被移除时，`justfile` 的配方名仍叫 `make`——那是 just 的配方名，
 /// 不是子命令名。这条测试防的是反过来的错：配方体里写了一个已经不存在的子命令
 /// （比如哪天 `render` 改名），`just make` 会在跑完整轮 TTS 之后才炸。
 #[test]
@@ -82,11 +82,11 @@ fn justfile_only_invokes_existing_subcommands() {
     for sub in ["tts", "render"] {
         assert!(
             JUSTFILE.contains(&format!("-- {sub}")),
-            "justfile 应当调用 `panda {sub}`"
+            "justfile 应当调用 `narra {sub}`"
         );
     }
     assert!(
         !JUSTFILE.contains("-- make"),
-        "`panda make` 已移除，justfile 不应再调用它——编排现在由 just 配方本身负责"
+        "`narra make` 已移除，justfile 不应再调用它——编排现在由 just 配方本身负责"
     );
 }
