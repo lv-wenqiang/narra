@@ -42,6 +42,9 @@
 # 一条龙：文稿 → TTS → 成片
 just make 文稿.txt
 
+# 一份文稿出两档成片（横版 + 竖版），复用同一次 TTS
+just make-both 文稿.txt
+
 # 或者分两步，中间可以先检查 TTS 的产物
 cargo run --release -- tts 文稿.txt
 cargo run --release -- render \
@@ -52,6 +55,12 @@ cargo run --release -- render \
 
 `just make` 与手动两步的区别只有一个：它在跑 TTS **之前**先检查背景素材是否
 存在。`--bg` 打错一个字，否则要先付一整轮 Edge TTS 网络往返才报错。
+
+`just make-both` 把同一次 TTS 的产物渲染两遍，得到
+`output/video/landscape.mp4`（1920×1080）与 `output/video/portrait.mp4`
+（1080×1920）——TTS 是整条链上唯一要联网、唯一耗时以分钟计的一步，两档成片
+没有理由各付一次。它自己会给两条腿分别加上 `--orientation`，所以透传给它的
+额外参数里**不要再写 `--orientation`**（会变成重复 flag，clap 直接报错）。
 
 ---
 

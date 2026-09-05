@@ -53,6 +53,14 @@ make input="" *render_args="":
         --bgm "{{ bgm }}" \
         {{ render_args }}
 
+# `make-both` 把同一次 TTS 的产物渲染两遍——TTS 是整条链上唯一要联网、唯一
+# 耗时以分钟计的一步，两档成片没有理由各付一次。
+#
+# **`render_args` 里不要传 `--orientation`**：本配方已经给两条腿各自加了一个
+# （横版一次、竖版一次），再透传一个就是同一个 flag 出现两次，clap 会在**第
+# 一条腿**上直接报错退出，`set -euo pipefail` 让整个配方在那里停住——也就是
+# 白跑一轮 TTS 才失败。要单出一档请用 `just make … --orientation portrait`。
+
 # 一份文稿出两档成片（横版 + 竖版），复用同一次 TTS
 make-both input="" *render_args="":
     #!/usr/bin/env bash
