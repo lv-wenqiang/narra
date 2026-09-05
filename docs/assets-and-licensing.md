@@ -181,9 +181,26 @@ logo（ISC）、音效（自制）都满足，这不是巧合。
 | **Musopen** | 古典乐，公有领域录音 | https://musopen.org |
 | **Uppbeat** | 免费档需署名，付费档免署名 | https://uppbeat.io |
 | **Free Music Archive** | **混合 CC 授权，逐曲看**。别整站当免费 | https://freemusicarchive.org |
+| **Freesound** | 学术机构运营，**逐条标注具体 CC 授权**（含 CC0）。下载需注册；申请 API key 后可程序化取用 | https://freesound.org |
 | **ccMixter** | 混合 CC 授权，逐曲看 | http://ccmixter.org |
 | **Incompetech** (Kevin MacLeod) | CC-BY，**必须署名**。质量好但见下方警告 | https://incompetech.com/music/royalty-free/ |
 | **Bensound** | 免费档需署名 | https://www.bensound.com |
+
+### ⚠️ 名字撞车：`freesound.org` 不是 `freesound.cn`
+
+上表里的 **Freesound 指 `freesound.org`**——西班牙 Universitat Pompeu Fabra 运营的
+音频库，每个条目**逐条标注具体的 CC 授权**，能按 CC0 过滤。这是本文档推荐它的唯一
+理由：CC0 明确允许再分发，是内嵌素材少数几种可用的授权之一。
+
+**`freesound.cn` 是另一家完全不相干的商业站**（「FREESOUND 飞声无版权音乐库」，
+后端 API 在 `freesound-api.gongyier.com`），只是名字撞了。2026-09-05 实测：
+
+- 它的宣传语是**「无版权音乐库」**——正是本文档开头破的那个说法，没有素材是「无版权」的
+- 站点是纯前端渲染，**条款正文取不到**，因此本文档**不对它的授权模式做任何判断**
+- 就算它的条款允许商用，那也只是「你自己用」这一档；`assets/` 下的内嵌素材要的是
+  **明确的再分发授权**，而国内素材站几乎从不授予这个
+
+要用 Freesound，认准 **`.org`**。
 
 ### ⚠️ 最容易被忽略的坑：合规 ≠ 不被平台判侵权
 
