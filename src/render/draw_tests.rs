@@ -2116,18 +2116,34 @@ fn outro_logo_diameter_grows_from_about_43px_to_full_size() {
     // 只扫上半屏（0..500），避开 y≈576 的水印，logo/标题纵向组是该范围内
     // 唯一的墨迹来源。
     let (_, y0, _, y1) = ink_bbox_in_y_range(&f0, 0, 500).expect("frame 0 应有 logo 墨迹");
-    let diameter0 = (y1 - y0 + 1) as f32;
-    assert!(
-        (20.0..70.0).contains(&diameter0),
-        "frame 0（scale=0.2）logo 直径应约 43px（±较宽容差覆盖圆形留白），实得 {diameter0}"
-    );
+    let span0 = (y1 - y0 + 1) as f32;
 
     let (_, y0, _, y1) = ink_bbox_in_y_range(&f24, 0, 500).expect("frame 24 应有 logo 墨迹");
-    let diameter24 = (y1 - y0 + 1) as f32;
+    let span24 = (y1 - y0 + 1) as f32;
+
+    // 满尺寸时墨迹应占满 `outro_logo_size` 的相当一部分。用区间而不是等值，
+    // 是因为墨迹跨度取决于 logo 的形状：旧的圆形 logo 填满方框（跨度≈216），
+    // 羽毛是斜向且四周留白的线稿（跨度≈175）。区间下限守住「logo 被画得远
+    // 小于它该有的尺寸」这个真实回归，同时不把判据绑死在某一张图的轮廓上。
+    let full = Metrics::for_canvas(Canvas::BASE).outro_logo_size as f32;
+    let fill = span24 / full;
     assert!(
-        (195.0..220.0).contains(&diameter24),
-        "frame 24（scale=1.0）logo 直径应接近满尺寸 216px，实得 {diameter24}"
+        (0.55..=1.0).contains(&fill),
+        "frame 24（scale=1.0）logo 墨迹应占 outro_logo_size({full}px) 的 55%~100%，\
+         实得 {span24}px（{:.0}%）",
+        fill * 100.0
     );
+
+    // 起始 scale：用两帧的比值判定，与 logo 轮廓无关——同一张图在两个缩放
+    // 下的墨迹跨度之比，就等于缩放之比。这比钉死像素值更能抵抗换图。
+    let ratio = span0 / span24;
+    assert!(
+        (ratio - 0.2).abs() < 0.06,
+        "frame 0 的 logo 应为满尺寸的 0.2 倍，实得 {ratio:.3}（{span0}px / {span24}px）"
+    );
+
+    let diameter0 = span0;
+    let diameter24 = span24;
     assert!(
         diameter24 > diameter0 * 3.0,
         "frame 24 直径应远大于 frame 0：{diameter24} vs {diameter0}"

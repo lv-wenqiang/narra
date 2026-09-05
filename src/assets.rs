@@ -89,10 +89,35 @@ mod tests {
     #[test]
     fn embedded_assets_are_non_empty() {
         assert!(FONT.len() > 1_000_000, "字体过小：{} 字节", FONT.len());
+        assert!(LOGO_PNG.len() > 4_000, "logo 过小：{} 字节", LOGO_PNG.len());
+    }
+
+    /// logo 的**解码结果**判据，取代此前那条 `LOGO_PNG.len() > 100_000`。
+    ///
+    /// 字节门槛是代理指标：它只在 logo 恰好是一张巨大位图时才有鉴别力，
+    /// 2026-09-05 换成 512×512 的线稿 PNG（20.5KB，旧图 1.33MB）后就必须
+    /// 调低，而调低之后它离「空文件/残桩」的真实边界越来越远。
+    ///
+    /// 解码判据不依赖体积：内嵌成空文件、截断文件、或误把别的格式塞进来，
+    /// `logo_rgba()` 都会直接失败；尺寸对不上则说明换图时漏了同步。同时
+    /// 要求存在非全透明像素——一张全透明的合法 PNG 能骗过前两关。
+    #[test]
+    fn logo_decodes_to_the_expected_size_and_has_ink() {
+        let (rgba, w, h) = logo_rgba().expect("内嵌 logo 应能解码");
+        assert_eq!(
+            (w, h),
+            (512, 512),
+            "内嵌 logo 尺寸应为 512x512，实得 {w}x{h}"
+        );
+        assert_eq!(
+            rgba.len(),
+            (w * h * 4) as usize,
+            "RGBA 缓冲长度应与尺寸相符"
+        );
+        let opaque = rgba.chunks_exact(4).filter(|px| px[3] > 0).count();
         assert!(
-            LOGO_PNG.len() > 100_000,
-            "logo 过小：{} 字节",
-            LOGO_PNG.len()
+            opaque > 1_000,
+            "logo 应有可见墨迹，非全透明像素仅 {opaque} 个"
         );
     }
 
@@ -238,13 +263,18 @@ mod tests {
         );
     }
 
-    /// 尺寸关系哨兵：片尾音效（2.486s、44.1kHz）明显大于打字机音效（3.157s、24kHz）。
+    /// 尺寸关系哨兵：打字机音效（3.157s）明显大于片尾音效（2.486s）。
     /// 比上面那条弱，但失败信息更直白，能一眼看出是不是两者搞反了。
+    ///
+    /// **方向在 2026-09-05 随素材替换翻转过。** 旧素材两者编码档不同（片尾
+    /// 44.1kHz、打字机 24kHz），短的反而更大；新素材同为 44.1kHz/128k CBR，
+    /// 于是回到「时长更长的更大」这个符合直觉的关系。哨兵要的只是两者可靠地
+    /// 不等长，方向本身不承载语义——但断言必须写真实的那个方向，否则它恒假。
     #[test]
-    fn intro_is_substantially_larger_than_the_typewriter_clip() {
+    fn typewriter_is_substantially_larger_than_the_intro_clip() {
         assert!(
-            INTRO_MP3.len() > INTRO_TYPEWRITER_MP3.len(),
-            "片尾音效应大于打字机音效；若两者接近或反了，多半是 include_bytes! 路径写反：\
+            INTRO_TYPEWRITER_MP3.len() > INTRO_MP3.len(),
+            "打字机音效应大于片尾音效；若两者接近或反了，多半是 include_bytes! 路径写反：\
              intro={} typewriter={}",
             INTRO_MP3.len(),
             INTRO_TYPEWRITER_MP3.len()

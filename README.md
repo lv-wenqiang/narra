@@ -32,8 +32,9 @@
 | 网络 | 仅 `panda tts` 需要（连 Edge TTS 服务） |
 | [`just`](https://github.com/casey/just) | 可选，只用来跑「一条龙」配方 |
 
-字体、logo、两段音效已内嵌进二进制，不必额外准备（字体为霞鹜文楷 Lite，
-SIL OFL 1.1，可商用）。背景视频与背景音乐要
+字体、logo、两段音效已内嵌进二进制，不必额外准备，且**来源与授权都已记录**
+（字体：霞鹜文楷 Lite / SIL OFL 1.1；logo：Lucide feather / ISC；两段音效：
+自制合成）。背景视频与背景音乐要
 自备，默认放在 `public/video/0.mp4` 与 `public/bgm/0.mp3`（这两个路径在
 `.gitignore` 里，仓库不携带素材）。
 
@@ -222,13 +223,21 @@ N 次变异零响应」，那种测试会被改写或删掉，因为它占测试
 ## 素材与授权
 
 仓库不携带背景视频与背景音乐（`public/` 在 `.gitignore` 里）。内嵌的字体、logo
-与两段音效随二进制分发；其中字体是**霞鹜文楷 Lite（SIL OFL 1.1）**，许可证原文按
-OFL 要求附在 `assets/LICENSE-LXGWWenKai.txt`——打包时别把它漏掉。
+与两段音效随二进制分发，三者的来源与授权都已记录：
+
+| | 来源 | 授权 |
+|---|---|---|
+| 字体 | 霞鹜文楷 Lite | SIL OFL 1.1 |
+| Logo | Lucide `feather` | ISC |
+| 两段音效 | `tools/gen_sfx.py` 自制合成 | 无第三方牵扯 |
+
+字体与 logo 的许可证原文按各自要求附在 `assets/LICENSE-LXGWWenKai.txt` 与
+`assets/LICENSE-lucide.txt`——**打包时别把它们漏掉**。
 
 **如果你打算发布成片，请自行确认所用素材的授权。** 背景视频、背景音乐都有各自的
 使用条件，这个工具不对素材来源做任何检查或担保。
 
 [`docs/assets-and-licensing.md`](docs/assets-and-licensing.md) 里整理了：本项目
-自带素材的逐项授权状态（含三项**尚未记录来源**的资源）、免费可商用的中文字体清单、
+自带素材的逐项授权状态与复现方式、免费可商用的中文字体清单、
 视频与音乐素材站及其授权条件，以及一个容易被忽略的坑——**授权合规不等于不被平台
 判定侵权**。

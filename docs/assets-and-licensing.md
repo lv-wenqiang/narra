@@ -18,9 +18,9 @@
 | 素材 | 文件 | 授权 | 是否随二进制分发 |
 |---|---|---|---|
 | 正文字体 | `assets/LXGWWenKaiLite-Regular.ttf` | **SIL OFL 1.1**（见 `assets/LICENSE-LXGWWenKai.txt`） | 是（`include_bytes!`） |
-| Logo | `assets/logo.png` | **未记录** ⚠️ | 是 |
-| 片尾音效 | `assets/intro.mp3` | **未记录** ⚠️ | 是 |
-| 打字机音效 | `assets/intro_typewriter.mp3` | **未记录** ⚠️ | 是 |
+| Logo | `assets/logo.png`（源 `assets/logo.svg`） | **ISC**（Lucide，见 `assets/LICENSE-lucide.txt`） | 是 |
+| 片尾音效 | `assets/intro.mp3` | **自制**（`tools/gen_sfx.py` 合成） | 是 |
+| 打字机音效 | `assets/intro_typewriter.mp3` | **自制**（`tools/gen_sfx.py` 合成） | 是 |
 | 背景视频 | `public/video/0.mp4` | 用户自备 | 否（`.gitignore`） |
 | 背景音乐 | `public/bgm/0.mp3` | 用户自备 | 否（`.gitignore`） |
 
@@ -40,11 +40,45 @@
 > 分发、且原文件进了公开版本控制，于 2026-09-05 替换为霞鹜文楷 Lite。附带收益：
 > 字形覆盖从 7505 个码位增至 25598 个（CJK 基本汉字 32.2% → 87.8%）。
 
-### ⚠️ 三项待补的来源记录
+### Logo：Lucide `feather`
 
-`logo.png` 和两段音效的来源与授权**没有记录**，而它们和字体一样是编进二进制分发的。
-如果你打算公开发布成片或分发构建产物，这三项需要补上来源确认；来源不明的话，最省
-事的做法是用下面列出的免费素材站替换掉。
+- 图标集：https://lucide.dev （源码 https://github.com/lucide-icons/lucide ）
+- 授权：**ISC** —— 极宽松，允许商用、修改、再分发，只需保留版权声明
+  （原文在 `assets/LICENSE-lucide.txt`）
+- 改动：把 `stroke="currentColor"` 固化为墨色 `#171717`，viewBox 四周各加 2 单位
+  留白。源文件保留为 `assets/logo.svg`
+- `assets/logo.png` 是它光栅化到 512×512 的产物。要换图或改尺寸：
+
+  ```bash
+  cargo run --release --example rasterize_icon -- assets/logo.svg assets/logo.png 512
+  ```
+
+  内嵌 logo 走 PNG 路径（`logo_rgba()`），外部 `--logo` 才支持直接给 SVG。
+  512 是够用的尺寸：logo 最大显示于横版片尾，`outro_logo_size` 216 × 1.5 = 324px。
+
+### 两段音效：自制合成
+
+两段音效由 `tools/gen_sfx.py` 用 Python 标准库合成，**不涉及任何第三方素材**，
+因而没有授权问题。脚本用固定随机种子，可确定性复现：
+
+```bash
+cd tools && python3 gen_sfx.py     # 产出 typewriter.wav / bell.wav
+ffmpeg -i typewriter.wav -codec:a libmp3lame -b:a 128k -ar 44100 -ac 1 intro_typewriter.mp3
+ffmpeg -i bell.wav       -codec:a libmp3lame -b:a 128k -ar 44100 -ac 1 intro.mp3
+```
+
+- **打字机**（3.157s）：每次击键 = 高通白噪瞬态 + 两条略失谐的中频衰减正弦 +
+  低频闷响。实测 22 次击键、约 7 次每秒，间隔 96~155ms 并随机插入较长停顿。
+- **片尾钟声**（2.486s）：类管钟的非谐泛音（比率 1 / 2 / 2.76 / 4.07 / 5.4 / 8.93），
+  高次泛音衰减更快，全程衰减约 23dB。
+
+> **为什么是合成而不是下载**：音效站（Pixabay、Mixkit、Freesound）在本机所处的
+> 网络环境下不可达。自制的附带好处是授权彻底干净——但**合成音的听感未经人工
+> 确认**，如果不满意，用 §4 列的站下载替换即可，把文件放到 `assets/` 下同名位置
+> 重新编译就行。
+
+> **历史记录**：这三项在 2026-09-05 之前来源与授权均无记录，与替换前的字体处境
+> 相同。
 
 ---
 
@@ -157,6 +191,18 @@ cargo run --release -- render \
   里写明的流程处理：删掉 `tests/baseline/` 重新生成，并在提交信息里说明理由
 - 字形度量相关的测试常量（如 `COVER_WM_INK_WIDTH_PX`）需要重新实测。**重新实测
   之后要验证判据没有因此失去鉴别力**——改动被测参数，测试仍须变红
+
+换 logo 或音效同理。2026-09-05 那次替换连带动了三条判据，都不是「把数字改到通过」：
+
+- `embedded_assets_are_non_empty` 里 `LOGO_PNG.len() > 100_000` 的门槛是照旧那张
+  1.33MB 位图定的，新 logo 只有 20.5KB。**换成了解码判据**
+  `logo_decodes_to_the_expected_size_and_has_ink`——校验解码尺寸与非透明像素数，
+  不依赖体积。已验证截断、尺寸不同步、全透明三种变异都能抓住
+- `outro_logo_diameter_...` 用墨迹纵向跨度代替直径，前提是旧 logo 为填满方框的
+  圆形。羽毛是斜向线稿（跨度 175/216），**判据改为形状无关**：满尺寸占比落在
+  55%~100%，起始缩放用两帧跨度之比判定
+- 音效尺寸哨兵的方向翻转了（新素材同档编码，时长长的更大），断言随之改写并重新
+  验证仍能抓住 `include_bytes!` 路径对调
 
 ---
 
