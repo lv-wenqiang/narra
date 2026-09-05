@@ -26,7 +26,13 @@
 | 多平台发布 | 上传必须真实浏览器 | `pva`（playwright） |
 | LLM 文稿改写 | 实际流程中由 AI Agent 直接出稿，包内 LLM 仅为兜底 | 低优先级，见 §11 |
 | Windows exe | 首版先跑通 Linux | 交叉编译后续单独决策，见 §11 |
-| 竖版（1080×1920）合成 | 首版只做横版 | 见 §11 |
+
+> **竖版（1080×1920）合成已从「不做」移出**（2026-09-05）：本行原列在此表，
+> 首版起被视为非目标；现已通过 `--orientation portrait` 交付，
+> 用法见 §6，实现记录见
+> `docs/superpowers/plans/2026-09-05-orientation-landscape-portrait.md`。
+> 这不是把当时的决定抹去——首版确实没做，只是现在已经做了，条目挪出本表
+> 免得读者以为竖版至今仍不存在。
 
 交接边界是文件系统，与现状完全一致：上游产出 `input.txt` 和 `title.json`，本工具消费它们。
 
@@ -213,7 +219,7 @@ TS 原版的时、分由 `Math.floor` 独立计算，秒由 `seconds % 60` 得�
 
 ### 8.1 画布参数
 
-`Canvas::BASE`（`1280 × 720`）是版式常量的调优基准与命令行默认值，**不是写死的产品尺寸**——实际渲染画布由 `Canvas` 参数决定，见 §8.3。`30 fps`，H.264，`crf 23`。
+`Canvas::BASE`（`1280 × 720`）是版式常量的调优基准，也是 `canvas_baseline` 逐字节回归门禁比对用的画布——**不是写死的产品尺寸，也不再是命令行默认值**（2026-09-05 起：CLI 默认画布是 `Canvas::LANDSCAPE`/1920×1080，`BASE` 本身不能通过 `--orientation` 选到，见 §6）。实际渲染画布由 `Canvas` 参数决定，见 §8.3。`30 fps`，H.264，`crf 23`。
 
 ### 8.2 时间轴布局
 
@@ -392,8 +398,9 @@ Rust 每帧输出一张与画布同尺寸的 RGBA 位图：
    因此这里**明确豁免**字重 500，代价是水印字重比 TS 原版轻。`cover` 水印字重
    400，本来就不需要加粗，不受影响。
 
-4. **未配置的水印不预渲染**：`prepare_watermark` 要分配一张 1280×720 的暂存画布、
-   排版一次再裁剪。`Painter` 的两个水印字段是 `Option<PreparedWatermark>`，
+4. **未配置的水印不预渲染**：`prepare_watermark` 要分配一张**与画布同尺寸**的
+   暂存画布（BASE 上是 1280×720，LANDSCAPE/PORTRAIT 下随 `Canvas` 变化，
+   2026-09-05 画布参数化之后不再写死）、排版一次再裁剪。`Painter` 的两个水印字段是 `Option<PreparedWatermark>`，
    `None` 时整条路径跳过——而不是拿空文案走一遍得到一张零宽的图。两条路径在
    成片上等价，留两条只会让「到底画没画」多一种说法。
 
@@ -412,7 +419,7 @@ Rust 每帧输出一张与画布同尺寸的 RGBA 位图：
 ```
 ffmpeg -y
   -stream_loop -1 -i <bg.mp4>
-  -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i -
+  -f rawvideo -pix_fmt rgba -s <画布宽>x<画布高> -r 30 -i -
   -i <audio.mp3>
   -stream_loop -1 -i <bgm.mp3>
   -i <intro_typewriter.mp3>
@@ -426,8 +433,8 @@ ffmpeg -y
 ### 9.2 视频滤镜
 
 ```
-[0:v] scale=1280:720:force_original_aspect_ratio=increase,
-      crop=1280:720,
+[0:v] scale=<w>:<h>:force_original_aspect_ratio=increase,
+      crop=<w>:<h>,
       colorchannelmixer=rr=0.8:gg=0.8:bb=0.8 [bg];
 [bg][1:v] overlay=shortest=0 [v]
 ```
@@ -435,6 +442,11 @@ ffmpeg -y
 > **注意**：CSS 的 `filter: brightness(0.8)` 是**乘性**的（每通道 × 0.8）。ffmpeg 的 `eq=brightness` 是**加性**的，语义不同。正确的等价滤镜是 `colorchannelmixer`。
 
 `objectFit: cover` 的等价是 `scale=force_original_aspect_ratio=increase` 后 `crop`。
+
+> **`<w>`/`<h>` 由画布决定，不再是写死的 1280/720**（2026-09-05）：
+> `--orientation landscape` 时是 1920/1080，`portrait` 时是 1080/1920，
+> 实现见 `src/ffmpeg.rs` 里 `i.canvas.w` / `i.canvas.h` 拼接进 `-s` 与
+> `scale=`/`crop=` 参数，而不是隐式假定 `Canvas::BASE`（§8.1）。
 
 ### 9.3 音频滤镜
 
@@ -487,7 +499,7 @@ BGM 音量包络用 `volume` 滤镜的时间表达式实现，`amix` 时需设 `
 ## 12. 后续（不在本期范围）
 
 - Windows exe 交叉编译（`x86_64-pc-windows-gnu` + mingw），需处理 ffmpeg 可执行名与路径分隔差异
-- 竖版 1080×1920 合成（对应 `Video-Vertical`）
+- ~~竖版 1080×1920 合成（对应 `Video-Vertical`）~~ **已于 2026-09-05 交付**：`--orientation portrait`，见 §6 与 `docs/superpowers/plans/2026-09-05-orientation-landscape-portrait.md`。
 - 封面图导出（对应现有 `Cover-Still` → `cover.jpg`，发布时使用）
 - WordBoundary 词级精确字幕对齐
 - LLM 文稿改写（DeepSeek / Kimi，OpenAI 兼容接口）
