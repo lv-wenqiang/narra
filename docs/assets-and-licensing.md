@@ -19,8 +19,8 @@
 |---|---|---|---|
 | 正文字体 | `assets/LXGWWenKaiLite-Regular.ttf` | **SIL OFL 1.1**（见 `assets/LICENSE-LXGWWenKai.txt`） | 是（`include_bytes!`） |
 | Logo | `assets/logo.png`（源 `assets/logo.svg`） | **ISC**（Lucide，见 `assets/LICENSE-lucide.txt`） | 是 |
-| 片尾音效 | `assets/intro.mp3` | **自制**（`tools/gen_sfx.py` 合成） | 是 |
-| 打字机音效 | `assets/intro_typewriter.mp3` | **自制**（`tools/gen_sfx.py` 合成） | 是 |
+| 片尾音效 | `assets/intro.mp3` | **CC0**（Freesound #406243） | 是 |
+| 打字机音效 | `assets/intro_typewriter.mp3` | **CC0**（Freesound #455044） | 是 |
 | 背景视频 | `public/video/0.mp4` | 用户自备 | 否（`.gitignore`） |
 | 背景音乐 | `public/bgm/0.mp3` | 用户自备 | 否（`.gitignore`） |
 
@@ -56,28 +56,43 @@
   内嵌 logo 走 PNG 路径（`logo_rgba()`），外部 `--logo` 才支持直接给 SVG。
   512 是够用的尺寸：logo 最大显示于横版片尾，`outro_logo_size` 216 × 1.5 = 324px。
 
-### 两段音效：自制合成
+### 两段音效：Freesound CC0
 
-两段音效由 `tools/gen_sfx.py` 用 Python 标准库合成，**不涉及任何第三方素材**，
-因而没有授权问题。脚本用固定随机种子，可确定性复现：
+两段都取自 [freesound.org](https://freesound.org) 上标记 **Creative Commons 0** 的
+条目。CC0 等同于放弃著作权、进入公有领域：允许商用、修改、**再分发**，且**不要求
+署名**——最后两点正是内嵌素材需要的（理由见下）。
+
+| 用途 | 文件 | 来源 | 作者 | 原始时长 |
+|---|---|---|---|---|
+| 打字机 | `assets/intro_typewriter.mp3` | [Freesound #455044](https://freesound.org/s/455044/) | escritor1 | 27.75s |
+| 片尾「叮」 | `assets/intro.mp3` | [Freesound #406243](https://freesound.org/s/406243/) | stubb | 1.056s |
+
+两者同源于打字机，片头打字、片尾换行铃，听感上是一套。
+
+**加工方式**（原始文件未入库，按下述步骤可从源头复现）：
 
 ```bash
-cd tools && python3 gen_sfx.py     # 产出 typewriter.wav / bell.wav
-ffmpeg -i typewriter.wav -codec:a libmp3lame -b:a 128k -ar 44100 -ac 1 intro_typewriter.mp3
-ffmpeg -i bell.wav       -codec:a libmp3lame -b:a 128k -ar 44100 -ac 1 intro.mp3
+# 打字机：从 27.75s 的录音里截取 8.0~11.157s，两端各 5ms 淡入淡出防爆音
+ffmpeg -ss 8.0 -t 3.157 -i 455044__escritor1__typewriter-typing.wav \
+  -af "afade=t=in:st=0:d=0.005,afade=t=out:st=3.152:d=0.005" \
+  -codec:a libmp3lame -b:a 128k -ar 48000 -ac 2 intro_typewriter.mp3
+
+# 片尾「叮」：原样转码，尾部本就自然归零，只补 10ms 淡出
+ffmpeg -i 406243__stubb__typewriter-ding_near_mono.wav \
+  -af "afade=t=out:st=1.046:d=0.010" \
+  -codec:a libmp3lame -b:a 128k -ar 48000 -ac 1 intro.mp3
 ```
 
-- **打字机**（3.157s）：每次击键 = 高通白噪瞬态 + 两条略失谐的中频衰减正弦 +
-  低频闷响。实测 22 次击键、约 7 次每秒，间隔 96~155ms 并随机插入较长停顿。
-- **片尾钟声**（2.486s）：类管钟的非谐泛音（比率 1 / 2 / 2.76 / 4.07 / 5.4 / 8.93），
-  高次泛音衰减更快，全程衰减约 23dB。
+**为什么截 8.0~11.157s**：逐 0.5s 量过整段录音的 RMS，稳定连打的区段是 1.0~5.5s、
+7.0~12.5s、13.5~16.0s、23.0~26.0s。8.0s 起的七个窗口 RMS 全在 -38~-41dB 之间、
+没有停顿缺口，是最匀的一段。3.157s 这个长度沿用替换前的时长，使改动只涉及素材本身。
 
-> **为什么是合成**：起初的理由是「音效站不可达」，**这个判断是错的**，已于
-> 2026-09-05 当天复核推翻——详见下面「一次判断错误的更正」。真正成立的理由只有
-> 一条，而且更重要：**内嵌素材需要授权明确允许再分发**，见下。
->
-> **合成音的听感未经人工确认**——生成环境下无法试听。若不满意可以替换，但替换前
-> 请先读下面关于「内嵌 ≠ 自用」的部分。
+**采样率取 48kHz** 而非此前的 44.1kHz：滤镜图的 `MIX_FORMAT` 本就把所有支路统一到
+48kHz（`src/ffmpeg.rs`），源文件也是 48kHz，直接对齐可少一次重采样。
+
+> **历史记录**：2026-09-05 这两段曾短暂用过 `tools/gen_sfx.py` 的合成音，原因是
+> 当时误判「音效站不可达」（见下）。该脚本仍保留在仓库里可供参考，但**已不是**
+> 内嵌音效的来源。
 
 #### ⚠️ 内嵌素材的授权门槛比自用素材高
 
@@ -93,28 +108,26 @@ ffmpeg -i bell.wav       -codec:a libmp3lame -b:a 128k -ar 44100 -ac 1 intro.mp3
 
 所以 §4 那张表对 `--bgm` 完全适用，对 `assets/` 下这三项则不然。内嵌素材要找的是
 CC0 / OFL / MIT / ISC 这类**明确授予再分发权**的授权——本项目现在的字体（OFL）、
-logo（ISC）、音效（自制）都满足，这不是巧合。
+logo（ISC）、音效（CC0）都满足，这不是巧合。
 
-若要用第三方音效替换内嵌的这两段，优先找 **Freesound 上标记 CC0 的条目**（CC0 明确
-允许再分发；Freesound 下载需要注册并申请 API key）。
+**CC-BY 也允许再分发**，技术上可用，但署名义务会传染到成片：你发布的每一支视频都
+包含那段素材，严格讲每支都要带署名。对持续产出的管线这是一条永久的运营负担，
+所以本项目选 CC0。
 
 #### 一次判断错误的更正（2026-09-05）
 
-替换素材时我判定「音效站在本机网络环境下不可达」，并据此写进了提交信息和本文档。
-**这个判断是错的。** 起因是拿一条**猜测的** CDN 直链去探测，失败后就外推为整站不可达，
-没有从页面里取真实链接复核。当天实测：
+替换素材时我判定「音效站在本机网络环境下不可达」，并据此改用合成音、写进了提交
+信息和本文档。**这个判断是错的。** 起因是拿一条**猜测的** CDN 直链去探测，失败后
+就外推为整站不可达，没有从页面里取真实链接复核。当天实测：
 
 | 站点 | 实测 | 说明 |
 |---|---|---|
 | `mixkit.co` | **HTTP 200** | 可达；从页面取真实直链后，`assets.mixkit.co` 上的 mp3 **下载成功** |
-| `freesound.org` | **HTTP 200** | 可达；但音频直链由 JS 渲染，下载需注册并申请 API key |
+| `freesound.org` | **HTTP 200** | 可达；网页搜索结果页即含条目信息，**无需 API key 即可检索** |
 | `pixabay.com` / `cdn.pixabay.com` | **HTTP 403** | 确实被代理拒绝 |
 
-也就是说三站里只有 Pixabay 真的不可达。**教训与本仓库对变异验证的那条一样：
-探测失败时先确认探测本身有效，再下结论。**
-
-> **历史记录**：这三项在 2026-09-05 之前来源与授权均无记录，与替换前的字体处境
-> 相同。
+三站里只有 Pixabay 真的不可达。更正后即从 Freesound 取到了 CC0 素材替换合成音。
+**教训与本仓库对变异验证的那条一样：探测失败时先确认探测本身有效，再下结论。**
 
 ---
 

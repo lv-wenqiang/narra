@@ -34,7 +34,7 @@
 
 字体、logo、两段音效已内嵌进二进制，不必额外准备，且**来源与授权都已记录**
 （字体：霞鹜文楷 Lite / SIL OFL 1.1；logo：Lucide feather / ISC；两段音效：
-自制合成）。背景视频与背景音乐要
+Freesound CC0）。背景视频与背景音乐要
 自备，默认放在 `public/video/0.mp4` 与 `public/bgm/0.mp3`（这两个路径在
 `.gitignore` 里，仓库不携带素材）。
 
@@ -229,7 +229,7 @@ N 次变异零响应」，那种测试会被改写或删掉，因为它占测试
 |---|---|---|
 | 字体 | 霞鹜文楷 Lite | SIL OFL 1.1 |
 | Logo | Lucide `feather` | ISC |
-| 两段音效 | `tools/gen_sfx.py` 自制合成 | 无第三方牵扯 |
+| 两段音效 | Freesound #455044 / #406243 | CC0（公有领域，无需署名） |
 
 字体与 logo 的许可证原文按各自要求附在 `assets/LICENSE-LXGWWenKai.txt` 与
 `assets/LICENSE-lucide.txt`——**打包时别把它们漏掉**。
