@@ -1,0 +1,92 @@
+# 发布到 crates.io。
+#
+# **为什么放在 CI 里发**：本机（2026-09-05 实测）到 crates.io 的上传链路撑不住
+# 8.4 MiB 的请求体——走本地代理时 Fastly 边缘在约 800KB 处返回
+# `503 backend write error`，关掉 HTTP/2 改走 HTTP/1.1 则是 TLS 连接被拆
+# （`unexpected eof while reading`），绕过代理直连更差。四次尝试全部失败，
+# 而同一条链路上的小体积写请求能正常拿到源站响应，打包与验证编译也每次都过——
+# 也就是说卡的是本机出口，不是包、不是配置、不是 crates.io。GitHub 的网络没有
+# 这个问题。
+#
+# **两种触发方式**：
+# - 推 `v*` 标签 → 跑完全部检查后**真的发布**；
+# - 手动 `workflow_dispatch` → 同样跑完全部检查，但**止步于 dry-run**，
+#   用来在打标签之前先验证 CI 本身是通的。
+#
+# 发布不可逆（版本不能覆盖、代码不能删、名字先到先得），所以真正的上传只挂在
+# 标签这一条路径上，手动触发不会误发。
+
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 三份测试要真实 ffmpeg/ffprobe：tests/ffmpeg_test.rs 用它现造两段 mp3 再
+      # 合并、tests/ffmpeg_missing.rs 要先确认 PATH 上本来有它、AudioLayouts::probe
+      # 用 ffprobe 读声道数。装不上就等于把这些测试静默跳过成"通过"。
+      - name: 安装 ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      # edition 2024 要 1.85+，与 Cargo.toml 的 rust-version 一致。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 标签与 Cargo.toml 的版本号必须一致。不校验的话，`v0.2.0` 的标签可能发出
+      # 一个 0.1.0——而版本一旦发布就无法覆盖，只能作废（yank）后换号重发。
+      - name: 校验标签与 Cargo.toml 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          echo "标签 $tag / Cargo.toml $manifest"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::标签 v$tag 与 Cargo.toml 的 $manifest 不一致，拒绝发布" >&2
+            exit 1
+          fi
+
+      - name: fmt
+        run: cargo fmt --check
+
+      # 仓库的既定标准是"应零告警"，所以这里把告警当错误。
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # 需要网络（Edge TTS）与本地素材（public/）的用例都已 #[ignore]，
+      # 这里跑的是不依赖外部条件的那 293 条。
+      - name: 测试
+        run: cargo test --locked
+
+      # 打包 + 从包内副本验证编译。它会顺带确认内嵌素材（字体/logo/音效）确实
+      # 进了包——漏了的话 include_bytes! 会在这一步编译失败，而不是等到用户装完
+      # 才发现。
+      - name: 打包预检（dry-run）
+        run: cargo publish --dry-run --locked
+
+      - name: 发布
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --locked
