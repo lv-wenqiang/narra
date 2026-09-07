@@ -1,6 +1,6 @@
 [package]
 name = "narra"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # edition 2024 的最低工具链。写上它，工具链太旧的人拿到的是一句清楚的版本要求，
 # 而不是一串语法错误。

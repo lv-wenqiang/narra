@@ -75,7 +75,7 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
 
       # 需要网络（Edge TTS）与本地素材（public/）的用例都已 #[ignore]，
-      # 这里跑的是不依赖外部条件的那 293 条。
+      # 这里跑的是不依赖外部条件的那 297 条。
       - name: 测试
         run: cargo test --locked
 
