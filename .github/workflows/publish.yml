@@ -33,7 +33,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 三份测试要真实 ffmpeg/ffprobe：tests/ffmpeg_test.rs 用它现造两段 mp3 再
       # 合并、tests/ffmpeg_missing.rs 要先确认 PATH 上本来有它、AudioLayouts::probe
@@ -90,3 +90,11 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: cargo publish --locked
+
+      # `cargo publish` 会在 target/package/ 下解出一份包内副本，而 rust-cache 的
+      # 收尾步骤会去遍历 target/ 下的目录，对着这份副本里并不存在的
+      # `tests/trybuild`、`tests/target` 报一串 ENOENT 注解（不影响结果，但每次
+      # 都刷四条红色注解，掩盖真正的问题）。跑完就删掉，收尾步骤自然不再撞上。
+      - name: 清掉打包临时目录
+        if: always()
+        run: rm -rf target/package
