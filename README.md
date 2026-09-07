@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/narra.svg)](https://crates.io/crates/narra)
 [![license](https://img.shields.io/crates/l/narra.svg)](LICENSE)
+[![publish](https://github.com/lv-wenqiang/narra/actions/workflows/publish.yml/badge.svg)](https://github.com/lv-wenqiang/narra/actions/workflows/publish.yml)
 
 口播文稿 → 语音 → 成片的命令行工具。一个 Rust 二进制，外部只依赖 `ffmpeg`。
 
