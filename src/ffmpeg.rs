@@ -251,7 +251,7 @@ impl AudioLayouts {
     /// 用 `ffprobe` 而不是仓库里已有的 symphonia（`src/duration.rs`）：这里要
     /// 回答的是「**ffmpeg** 会把这个文件看成几声道」，那就该问 ffmpeg 自己的
     /// 工具，而不是另一套解析器——两者对边角文件的判断可能不一致，而滤镜图是
-    /// 按 ffmpeg 的判断执行的。`ffprobe` 本来就是硬依赖（见 README「环境要求」）。
+    /// 按 ffmpeg 的判断执行的。`ffprobe` 本来就是硬依赖（见 README「安装」）。
     pub fn probe(i: &RenderInputs) -> Self {
         let d = Self::default();
         Self {
