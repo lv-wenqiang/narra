@@ -144,6 +144,46 @@ impl TextRenderer {
         })
     }
 
+    /// 列出这批文本里**当前字体画不出来的字符**（去重，保持首次出现的顺序）。
+    ///
+    /// **为什么需要它**：本渲染器刻意禁用了系统字体回退（见 [`new`]），所以缺
+    /// 字形不会退到别的字体，而是画成豆腐块。这个失败形式是整条链上最难受的
+    /// 一种——**不报错、能播放、时长正确**，要人眼看到成片才发现，而这是一条
+    /// 以「无人值守出片」为目标的管线。
+    ///
+    /// 查的是字体的 `cmap`（`glyph_index`），不是「渲染一遍看看有没有墨迹」：
+    /// 空格之类的字符本来就没有轮廓，按墨迹判会把它们全报成缺失。
+    ///
+    /// 保持首次出现的顺序而不是排序：警告里的字符顺序与文稿里的一致，人对着
+    /// 文稿找起来更快。
+    ///
+    /// [`new`]: Self::new
+    pub fn missing_glyphs(&mut self, texts: &[&str]) -> Vec<char> {
+        let Some(face_id) = self.font_system.db_mut().faces().next().map(|f| f.id) else {
+            return Vec::new();
+        };
+        self.font_system
+            .db_mut()
+            .with_face_data(face_id, |data, index| {
+                let Ok(face) = Face::parse(data, index) else {
+                    return Vec::new();
+                };
+                let mut seen = std::collections::HashSet::new();
+                let mut missing = Vec::new();
+                for c in texts.iter().flat_map(|t| t.chars()) {
+                    // 换行/制表这类控制字符不进排版，报了只是噪声。
+                    if c.is_control() || !seen.insert(c) {
+                        continue;
+                    }
+                    if face.glyph_index(c).is_none() {
+                        missing.push(c);
+                    }
+                }
+                missing
+            })
+            .unwrap_or_default()
+    }
+
     /// 按用户指定的字体文件构造；`None`、或该文件不可用时，回退到内嵌字体。
     ///
     /// **回退而非报错**是明确的产品选择（与 `--orientation` 的硬报错不同），
@@ -1429,5 +1469,33 @@ mod tests {
                 "中心 ({cx}, {cy})：与整幅参照实现最大差 {worst}，越界裁剪口径不一致"
             );
         }
+    }
+
+    /// 缺字形检测：只报字体画不出来的字符，且去重。
+    ///
+    /// 判据用 `ا`（U+0627，阿拉伯字母）——`docs/text-rendering.md` 的系统字体
+    /// 回退实验用的就是它，已实测内嵌的霞鹜文楷不覆盖。**这条检测存在的理由**：
+    /// 本渲染器刻意禁用了系统字体回退，缺字形不会退到别的字体，而是画成豆腐块；
+    /// 失败形式是「不报错、能播放、时长正确」，要人眼看到成片才发现。
+    #[test]
+    fn missing_glyphs_lists_only_the_characters_the_font_cannot_draw() {
+        let mut r = TextRenderer::new().unwrap();
+        let missing = r.missing_glyphs(&["标题正常", "含一个 ا 的行", "ا 又一次"]);
+        assert_eq!(
+            missing,
+            vec!['ا'],
+            "只该报缺的那个字符，中文与空格不该入列，重复的也只报一次：{missing:?}"
+        );
+    }
+
+    /// 字体覆盖得住的文本不该产生任何噪声——否则每次出片都刷一屏假警告，
+    /// 真有问题时反而没人看。
+    #[test]
+    fn missing_glyphs_is_empty_for_text_the_font_covers() {
+        let mut r = TextRenderer::new().unwrap();
+        assert!(
+            r.missing_glyphs(&["中文标题 ASCII 123", "，。！？（）—— ·", "", "\n\t "])
+                .is_empty()
+        );
     }
 }

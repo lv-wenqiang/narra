@@ -723,6 +723,12 @@ impl Painter {
         );
     }
 
+    /// 转交给 [`TextRenderer::missing_glyphs`]：列出这批文本里当前字体画不出来
+    /// 的字符。`Painter` 是 `TextRenderer` 唯一的持有者，检测必须从这里过。
+    pub fn missing_glyphs(&mut self, texts: &[&str]) -> Vec<char> {
+        self.renderer.missing_glyphs(texts)
+    }
+
     /// 绘制 Cover 段一帧（规格 §8.4「Cover」小节）：不透明白底 + 左上排
     /// （logo + 品牌名，整体 0.30 透明度，左对齐）+ 主标题（BASE 上 100px，
     /// 即 `Metrics::cover_title_font_size`，粗体，居中，支持换行）+

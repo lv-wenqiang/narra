@@ -24,6 +24,50 @@ pub struct FrameSource {
     canvas: Canvas,
 }
 
+/// 汇总本次渲染会画出来的全部文字：标题、每条字幕、品牌名、两处水印。
+///
+/// 单独成函数是为了能被直接断言——「漏收一处」是这类检测最典型的写错方式，
+/// 而漏收的表现与「检测没写」完全一样：成片照样出豆腐块，照样没有提示。
+fn texts_to_check<'a>(
+    title: &'a str,
+    captions: &'a [Caption],
+    branding: &'a Branding,
+) -> Vec<&'a str> {
+    let mut texts = vec![title, branding.brand.as_str()];
+    texts.extend(captions.iter().map(|c| c.text.as_str()));
+    texts.extend(branding.watermark.as_deref());
+    texts.extend(branding.watermark_cover.as_deref());
+    texts
+}
+
+/// 缺字形警告的文案。没缺就返回 `None`（不产生噪声）。
+///
+/// 字符多时只列前 [`MISSING_GLYPH_SAMPLE`] 个再报总数：一段生僻字密集的文稿
+/// 可能缺上百个字，整屏刷出去反而没人看。
+fn missing_glyph_warning(missing: &[char]) -> Option<String> {
+    if missing.is_empty() {
+        return None;
+    }
+    let shown: String = missing
+        .iter()
+        .take(MISSING_GLYPH_SAMPLE)
+        .map(|c| format!("「{c}」"))
+        .collect();
+    let more = missing.len().saturating_sub(MISSING_GLYPH_SAMPLE);
+    let tail = if more > 0 {
+        format!("（另有 {more} 个未列出）")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "警告：当前字体画不出这 {} 个字符：{shown}{tail}\n         　　　它们会渲染成豆腐块，而不是回退到别的字体（本渲染器刻意禁用了系统字体回退）。\n         　　　换一份覆盖它们的字体（`--font` / `$FONT_FILE`），或改掉文稿里的这些字。",
+        missing.len()
+    ))
+}
+
+/// 警告里最多列几个字符。
+const MISSING_GLYPH_SAMPLE: usize = 12;
+
 impl FrameSource {
     /// 由 VTT 文本与标题构造。音频时长取**所有字幕结束时间的最大值**
     /// （不是文件里最后一条字幕的结束时间——VTT 不保证按结束时间单调排列，
@@ -43,8 +87,17 @@ impl FrameSource {
             );
         }
         let audio_secs = captions.iter().map(|c| c.end_ms).max().unwrap_or(0) as f64 / 1000.0;
+
+        let mut painter = Painter::new(branding, canvas)?;
+        // 开工前查一次，而不是逐帧查：同一条字幕会被画上百帧，逐帧查等于把同一
+        // 条警告刷上百遍。这里一次性覆盖本次渲染会画出来的全部文字。
+        let texts = texts_to_check(&title, &captions, branding);
+        if let Some(w) = missing_glyph_warning(&painter.missing_glyphs(&texts)) {
+            eprintln!("{w}");
+        }
+
         Ok(Self {
-            painter: Painter::new(branding, canvas)?,
+            painter,
             layout: layout(audio_secs),
             captions,
             title,
@@ -764,5 +817,42 @@ mod tests {
             format!("{err:#}").contains("管道"),
             "错误应透出底层原因：{err:#}"
         );
+    }
+
+    /// 检测要覆盖**所有会被画出来的文字**，一处不落。
+    ///
+    /// 这条是配对断言：只查标题和字幕的话，用户把 `--watermark-cover` 写成一段
+    /// 字体不覆盖的文案，成片上照样出豆腐块而没有任何提示。五个来源各给一段
+    /// 互不相同的文字，少收一处就变红。
+    #[test]
+    fn every_piece_of_drawn_text_is_checked_for_glyph_coverage() {
+        let captions = vec![Caption {
+            text: "字幕文本".into(),
+            start_ms: 0,
+            end_ms: 1000,
+        }];
+        let branding = Branding {
+            brand: "品牌名".into(),
+            watermark: Some("正文水印".into()),
+            watermark_cover: Some("封面水印".into()),
+            watermark_icon: None,
+            logo: None,
+            font: None,
+        };
+        let texts = texts_to_check("主标题", &captions, &branding);
+        for expected in ["主标题", "字幕文本", "品牌名", "正文水印", "封面水印"] {
+            assert!(texts.contains(&expected), "漏了 {expected}：{texts:?}");
+        }
+    }
+
+    /// 警告要说清三件事：缺了哪些字、会有什么后果、该去改什么。
+    #[test]
+    fn the_warning_names_the_missing_characters_and_what_to_do() {
+        assert_eq!(missing_glyph_warning(&[]), None, "没缺就不该有噪声");
+
+        let w = missing_glyph_warning(&['ا', '☃']).expect("有缺失就该出警告");
+        assert!(w.contains('ا') && w.contains('☃'), "要列出缺的字符：{w}");
+        assert!(w.contains("豆腐块"), "要说清后果：{w}");
+        assert!(w.contains("--font"), "要指出该去改什么：{w}");
     }
 }
