@@ -11,6 +11,12 @@ repository = "https://github.com/lv-wenqiang/narra"
 readme = "README.md"
 keywords = ["video", "tts", "ffmpeg", "subtitle", "cli"]
 categories = ["command-line-utilities", "multimedia::video"]
+# 发布包不带 tests/。大头是 tests/baseline/ 那四张逐字节比对的 RGBA 快照：
+# 解包后 11MB，下游一个字节都用不上（压缩后只占约 0.1MiB，所以这不是为了
+# 挤 crates.io 的 10MiB 上限——那 8.8MiB 里几乎全是内嵌字体）。真正的理由是
+# canvas_baseline 那条测试在快照缺失时会先自动生成再报红：只排 baseline、留
+# 下测试，等于给发布包塞一条必然失败的测试。测试留在仓库里跑，不进 crate。
+exclude = ["tests/"]
 
 [dependencies]
 anyhow = "1.0.104"
